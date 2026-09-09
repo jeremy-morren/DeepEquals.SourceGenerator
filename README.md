@@ -18,8 +18,8 @@ and avoid steady-state allocations wherever the runtime allows.
 ## Installation
 
 ```xml
-<PackageReference Include="DeepEquals.SourceGenerator" Version="1.0.0-beta01" PrivateAssets="all" />
-<PackageReference Include="DeepEquals.SourceGeneration.Framework" Version="1.0.0-beta01" />
+<PackageReference Include="DeepEquals.SourceGenerator" Version="1.0.0-beta02" PrivateAssets="all" />
+<PackageReference Include="DeepEquals.SourceGeneration.Framework" Version="1.0.0-beta02" />
 ```
 
 Two packages, in every project that declares a context. `DeepEquals.SourceGenerator` is the generator, an analyzer with no runtime surface of its own. 
