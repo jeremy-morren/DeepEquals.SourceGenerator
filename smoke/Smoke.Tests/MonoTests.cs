@@ -12,10 +12,10 @@ using Xunit.Abstractions;
 namespace DeepEquals.Smoke.Tests;
 
 /// <summary>
-/// The netstandard2.0 asset under the other runtime that executes it. Everything that exists because
-/// .NET Framework lacks the modern helpers — Marvin32 string hashing, the decimal bit arrays, the
-/// pooled buffers, the span work with nothing beneath it — runs on Mono here, where struct layout,
-/// string hashing and <c>Unsafe</c> are a separate implementation from CoreCLR's.
+/// The netstandard2.0 asset under the other runtime that executes it.
+/// Everything that exists because .NET Framework lacks the modern helpers:
+/// Marvin32 string hashing, the decimal bit arrays, the pooled buffers, the span work with nothing beneath it,
+/// runs on Mono here, where struct layout, string hashing and <c>Unsafe</c> are a separate implementation from CoreCLR's.
 /// </summary>
 [Trait("Category", "Mono")]
 public sealed class MonoTests
@@ -27,7 +27,7 @@ public sealed class MonoTests
     [Fact]
     public void A_net472_consumer_runs_under_mono()
     {
-        string? mono = FindMono();
+        var mono = FindMono();
         if (mono is null)
         {
             // Skipping keeps a Windows developer from needing Mono to see the rest of the suite pass.
@@ -42,13 +42,13 @@ public sealed class MonoTests
 
         _output.WriteLine($"using {mono}");
 
-        CommandResult build = ConsumerProject.Build(_output, "net472");
+        var build = ConsumerProject.Build(_output, "net472");
         build.ExitCode.Should().Be(0, "the net472 consumer must build against the package");
 
-        string executable = ConsumerProject.Executable("net472");
+        var executable = ConsumerProject.Executable("net472");
         File.Exists(executable).Should().BeTrue("the net472 consumer must produce {0}", executable);
 
-        CommandResult run = Run(mono, executable);
+        var run = Run(mono, executable);
 
         run.Output.Should().Contain("OK ", "the assertions must pass under mono");
         run.Output.Should().Contain("runtime=mono", "the executable must actually be running on Mono");
@@ -69,8 +69,8 @@ public sealed class MonoTests
 
         _output.WriteLine($"$ {mono} {executable}");
 
-        using Process process = Process.Start(start)!;
-        string text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        using var process = Process.Start(start)!;
+        var text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
         process.WaitForExit();
         _output.WriteLine(text);
 
@@ -79,21 +79,16 @@ public sealed class MonoTests
 
     private static string? FindMono()
     {
-        string? path = Environment.GetEnvironmentVariable("PATH");
-        if (path is null)
-        {
-            return null;
-        }
+        var path = Environment.GetEnvironmentVariable("PATH");
+        if (path is null) return null;
 
-        foreach (string directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
-            foreach (string name in new[] { "mono", "mono.exe" })
+            foreach (var name in new[] { "mono", "mono.exe" })
             {
-                string candidate = Path.Combine(directory, name);
-                if (File.Exists(candidate))
-                {
+                var candidate = Path.Combine(directory, name);
+                if (File.Exists(candidate)) 
                     return candidate;
-                }
             }
         }
 

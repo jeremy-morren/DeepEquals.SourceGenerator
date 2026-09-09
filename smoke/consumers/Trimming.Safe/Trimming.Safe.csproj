@@ -1,24 +1,24 @@
 <!--
-  The safe half of the trimming boundary. On net10.0 both registered types take the UnsafeAccessor
-  path, and this consumer touches only the plain comparer, so publishing must produce no trimming or
-  AOT warning at all. See Trimming.Unsafe for the other half.
+    The safe half of the trimming boundary. On net10.0 both registered types take the UnsafeAccessor
+    path, and this consumer touches only the plain comparer, so publishing must produce no trimming or
+    AOT warning at all. See Trimming.Unsafe for the other half.
 -->
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>DeepEquals.Smoke.Trimming</RootNamespace>
-    <PublishTrimmed>true</PublishTrimmed>
-    <IsTrimmable>true</IsTrimmable>
-    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
-    <EnableAotAnalyzer>true</EnableAotAnalyzer>
-    <TrimmerSingleWarn>false</TrimmerSingleWarn>
-    <SelfContained>true</SelfContained>
-  </PropertyGroup>
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <RootNamespace>DeepEquals.Smoke.Trimming</RootNamespace>
+        <PublishTrimmed>true</PublishTrimmed>
+        <IsTrimmable>true</IsTrimmable>
+        <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+        <EnableAotAnalyzer>true</EnableAotAnalyzer>
+        <TrimmerSingleWarn>false</TrimmerSingleWarn>
+        <SelfContained>true</SelfContained>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Include="../Shared/TrimmingModels.cs" Link="TrimmingModels.cs" />
-  </ItemGroup>
+    <ItemGroup>
+        <Compile Include="../Shared/TrimmingModels.cs" Link="TrimmingModels.cs" />
+    </ItemGroup>
 
 </Project>

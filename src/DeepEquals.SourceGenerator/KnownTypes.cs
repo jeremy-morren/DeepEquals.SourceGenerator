@@ -2,39 +2,42 @@
 // Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
+// ReSharper disable MemberCanBePrivate.Global
+// ReSharper disable InconsistentNaming
+// ReSharper disable UnusedMember.Global
+
 namespace DeepEquals.SourceGenerator;
 
 /// <summary>Metadata names the generator probes or emits. Nothing here references the framework assembly at compile time.</summary>
 internal static class KnownTypes
 {
-    public const string FrameworkNamespace = "DeepEquals.SourceGeneration.Framework";
+    private const string FrameworkNamespace = "DeepEquals.SourceGeneration.Framework";
 
     /// <summary>The namespace a context file needs: the attributes and <c>DeepEqualsContextBase</c>. The runtime stays under <c>.Framework</c>.</summary>
-    public const string UserNamespace = "DeepEquals.SourceGeneration";
+    private const string UserNamespace = "DeepEquals.SourceGeneration";
 
-    public const string GenerateDeepEqualsAttribute = UserNamespace + ".GenerateDeepEqualsAttribute";
-    public const string OptionsAttribute = UserNamespace + ".DeepEqualsSourceGenerationOptionsAttribute";
-    public const string SimpleTypeAttribute = UserNamespace + ".SimpleTypeAttribute";
-    public const string CustomEqualityComparerAttribute = UserNamespace + ".CustomEqualityComparerAttribute";
-    public const string IgnoreAttribute = UserNamespace + ".DeepEqualsIgnoreAttribute";
-    public const string ContextBase = UserNamespace + ".DeepEqualsContextBase";
-    public const string Collections = FrameworkNamespace + ".DeepEqualsCollections";
-    public const string HashCode = FrameworkNamespace + ".DeepEqualsHashCode";
-    public const string Helpers = FrameworkNamespace + ".DeepEqualsHelpers";
+    public const string GenerateDeepEqualsAttribute = $"{UserNamespace}.GenerateDeepEqualsAttribute";
+    public const string OptionsAttribute = $"{UserNamespace}.DeepEqualsSourceGenerationOptionsAttribute";
+    public const string SimpleTypeAttribute = $"{UserNamespace}.SimpleTypeAttribute";
+    public const string CustomEqualityComparerAttribute = $"{UserNamespace}.CustomEqualityComparerAttribute";
+    public const string IgnoreAttribute = $"{UserNamespace}.DeepEqualsIgnoreAttribute";
+    public const string ContextBase = $"{UserNamespace}.DeepEqualsContextBase";
+    public const string Collections = $"{FrameworkNamespace}.DeepEqualsCollections";
+    public const string HashCode = $"{FrameworkNamespace}.DeepEqualsHashCode";
 
     // Emitted, global::-qualified.
-    public const string GlobalFramework = "global::" + FrameworkNamespace;
-    public const string GlobalState = GlobalFramework + ".DeepEqualsState";
-    public const string GlobalHashCode = GlobalFramework + ".DeepEqualsHashCode";
-    public const string GlobalHelpers = GlobalFramework + ".DeepEqualsHelpers";
-    public const string GlobalCollections = GlobalFramework + ".DeepEqualsCollections";
-    public const string GlobalUnordered = GlobalFramework + ".DeepEqualsUnordered";
-    public const string GlobalReflection = GlobalFramework + ".DeepEqualsReflection";
-    public const string GlobalFieldGetter = GlobalFramework + ".FieldGetter";
-    public const string GlobalHashOps = GlobalFramework + ".IDeepEqualsHashOps";
-    public const string GlobalElementOps = GlobalFramework + ".IDeepEqualsElementOps";
-    public const string GlobalStatelessElementOps = GlobalFramework + ".IDeepEqualsStatelessElementOps";
-    public const string GlobalUnknownTypeException = GlobalFramework + ".DeepEqualsUnknownTypeException";
+    public const string GlobalFramework = $"global::{FrameworkNamespace}";
+    public const string GlobalState = $"{GlobalFramework}.DeepEqualsState";
+    public const string GlobalHashCode = $"{GlobalFramework}.DeepEqualsHashCode";
+    public const string GlobalHelpers = $"{GlobalFramework}.DeepEqualsHelpers";
+    public const string GlobalCollections = $"{GlobalFramework}.DeepEqualsCollections";
+    public const string GlobalUnordered = $"{GlobalFramework}.DeepEqualsUnordered";
+    public const string GlobalReflection = $"{GlobalFramework}.DeepEqualsReflection";
+    public const string GlobalFieldGetter = $"{GlobalFramework}.FieldGetter";
+    public const string GlobalHashOps = $"{GlobalFramework}.IDeepEqualsHashOps";
+    public const string GlobalElementOps = $"{GlobalFramework}.IDeepEqualsElementOps";
+    public const string GlobalStatelessElementOps = $"{GlobalFramework}.IDeepEqualsStatelessElementOps";
+    public const string GlobalUnknownTypeException = $"{GlobalFramework}.DeepEqualsUnknownTypeException";
     public const string GlobalRuntimeHelpers = "global::System.Runtime.CompilerServices.RuntimeHelpers";
     public const string GlobalUnsafe = "global::System.Runtime.CompilerServices.Unsafe";
     public const string GlobalUnsafeAccessor = "global::System.Runtime.CompilerServices.UnsafeAccessor";

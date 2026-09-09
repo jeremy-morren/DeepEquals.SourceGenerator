@@ -1,6 +1,8 @@
 # DeepEquals.SourceGenerator
 
-A Roslyn source generator that emits deep, by-value `IEqualityComparer<T>` implementations for a closed set of types. Generated comparison cores are static, cycle-safe, compare instance storage rather than property getters, and avoid steady-state allocations wherever the runtime allows.
+A Roslyn source generator that emits deep, by-value `IEqualityComparer<T>` implementations for a closed set of types. 
+Generated comparison cores are static, cycle-safe, compare instance storage rather than property getters, 
+and avoid steady-state allocations wherever the runtime allows.
 
 - [Installation](#installation)
 - [Project setup](#project-setup)
@@ -20,31 +22,33 @@ A Roslyn source generator that emits deep, by-value `IEqualityComparer<T>` imple
 <PackageReference Include="DeepEquals.SourceGeneration.Framework" Version="1.0.0-beta01" />
 ```
 
-Two packages, in every project that declares a context. `DeepEquals.SourceGenerator` is the generator, an analyzer with no runtime surface of its own. `DeepEquals.SourceGeneration.Framework` is the library the generated code compiles and runs against, for `netstandard2.0`, `netstandard2.1`, `net6.0`, `net8.0` and `net10.0`. The consuming project must be C# and compile with Roslyn 4.3.1 or later (.NET SDK 6.0.400, Visual Studio 17.3). Generated source is C# 7.3-compatible; nullable annotations appear from C# 8.
+Two packages, in every project that declares a context. `DeepEquals.SourceGenerator` is the generator, an analyzer with no runtime surface of its own. 
+`DeepEquals.SourceGeneration.Framework` is the library the generated code compiles and runs against, for `netstandard2.0`, `netstandard2.1`, `net6.0`, `net8.0` and `net10.0`. 
+The consuming project must be C# and compile with Roslyn 4.3.1 or later (.NET SDK 6.0.400, Visual Studio 17.3). Generated source is C# 7.3-compatible; nullable annotations appear from C# 8.
 
-**`PrivateAssets="all"` on the generator is what keeps it to this project.** Analyzers otherwise propagate across a `ProjectReference` and out of a package built from it, and no narrower setting prevents that — neither `PrivateAssets="analyzers"` on the reference nor `ExcludeAssets="analyzers"` on the consuming `ProjectReference` has any effect. The runtime library is referenced separately and without that flag, so it still flows to everything downstream, which is what a project consuming your generated comparers needs at run time.
+**`PrivateAssets="all"` on the generator keeps it to the project that declares it.** Leaving the flag off is not an error;
+it means every project downstream of yours also loads the generator. It emits nothing where no context is declared, so the cost is only analyzer load time.
 
-Leaving the flag off is not an error; it means every project downstream of yours also loads the generator. It emits nothing where no context is declared, so the cost is analyzer load time, and a downstream project that does declare a context gets it generated without naming the package — which works, but leaves the dependency invisible in that project file.
+Everything under [Project setup](#project-setup) applies to the project that **declares the context**.
 
-Referencing only `DeepEquals.SourceGenerator`, with or without the flag, also works: it depends on the runtime library at the same version. The two-line form above is the one to prefer, because `PrivateAssets="all"` suppresses that dependency along with the analyzer.
+| Consumer target                   | Runtime asset  | Notes                                                                                                                             |
+|-----------------------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------|
+| `netstandard2.0`, `net472`        | netstandard2.0 | `System.Buffers` and `System.Runtime.CompilerServices.Unsafe` flow transitively. Field access below net8.0 uses cached delegates. |
+| `netstandard2.1`, `netcoreapp3.1` | netstandard2.1 | `System.Runtime.CompilerServices.Unsafe` flows transitively.                                                                      |
+| `net6.0`, `net7.0`                | net6.0         | No extra dependencies. Compiles and runs; not a run-time test tier.                                                               |
+| `net8.0`                          | net8.0         | `[UnsafeAccessor]` field access; generic declaring types still use delegates.                                                     |
+| `net10.0`                         | net10.0        | `[UnsafeAccessor]` for every field, including generic declaring types.                                                            |
 
-Everything under [Project setup](#project-setup) applies to the project that **declares the context**, not to projects that merely reference it.
-
-| Consumer target | Runtime asset | Notes |
-|---|---|---|
-| `netstandard2.0`, `net472` | netstandard2.0 | `System.Buffers` and `System.Runtime.CompilerServices.Unsafe` flow transitively. Field access below net8.0 uses cached delegates. |
-| `netstandard2.1`, `netcoreapp3.1` | netstandard2.1 | `System.Runtime.CompilerServices.Unsafe` flows transitively. |
-| `net6.0`, `net7.0` | net6.0 | No extra dependencies. Compiles and runs; not a run-time test tier. |
-| `net8.0` | net8.0 | `[UnsafeAccessor]` field access; generic declaring types still use delegates. |
-| `net10.0` | net10.0 | `[UnsafeAccessor]` for every field, including generic declaring types. |
-
-`net5.0` and earlier .NET Core versions are unsupported as direct consumers (the netstandard2.1 asset's trimming attributes conflict with the in-box ones, CS0433). A `netstandard2.1` library using this package still runs on them.
+`net5.0` and earlier .NET Core versions are unsupported as direct consumers (the netstandard2.1 asset's trimming attributes conflict with the in-box ones, CS0433). 
+A `netstandard2.1` library using this package still runs on them.
 
 ## Project setup
 
 **Same project.** When the context and the types it compares live in one project, nothing is needed beyond the package reference.
 
-**Types in another project.** A `ProjectReference` normally hands the compiler a reference assembly, from which private fields and auto-property backing fields are stripped. The generator then reports [`DEQ017`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#referenced-assemblies) for every class it would have to walk. Put this in the project that **declares the context**:
+**Types in another project.** A `ProjectReference` normally hands the compiler a reference assembly, from which private fields and auto-property backing fields are stripped. 
+The generator then reports [`DEQ017`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#referenced-assemblies) for every class it would have to walk. 
+Set the MSBuild property `CompileUsingReferenceAssemblies` to `false` in the project that **declares the context**:
 
 ```xml
 <PropertyGroup>
@@ -57,9 +61,10 @@ Everything under [Project setup](#project-setup) applies to the project that **d
 
 The property has no effect on a `PackageReference` whose package ships a `ref/` assembly; register such types with `[SimpleType]` or `[CustomEqualityComparer]` instead.
 
-**Internal types in another project.** A member whose type is `internal` to another assembly is [`DEQ003`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#members). Add `InternalsVisibleTo` for the context's assembly in the declaring project, or ignore the member.
+**Internal types in another project.** A member whose type is `internal` to another assembly is [`DEQ003`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#members). 
+Add `InternalsVisibleTo` for the context's assembly in the declaring project, or ignore the member.
 
-**Classic `net472` executables.** The transitive `System.Runtime.CompilerServices.Unsafe` package needs binding redirects:
+**Projects targeting `net472` or later** The transitive `System.Runtime.CompilerServices.Unsafe` package needs binding redirects:
 
 ```xml
 <PropertyGroup>
@@ -68,11 +73,14 @@ The property has no effect on a `PackageReference` whose package ships a `ref/` 
 </PropertyGroup>
 ```
 
-**`netstandard2.0` with spans.** Referencing `System.Memory` lets the generator emit `Memory<T>`/`ReadOnlyMemory<T>` shapes and direct span equality loops. Hash loops and interface-typed collection views still use streaming and indexer/enumerator fallbacks on that tier.
+**`netstandard2.0` with spans.** Referencing `System.Memory` lets the generator emit `Memory<T>`/`ReadOnlyMemory<T>` shapes and direct span equality loops. 
+Hash loops and interface-typed collection views still use streaming and indexer/enumerator fallbacks on that tier.
 
-**Trimming and NativeAOT.** Field access through `[UnsafeAccessor]` is trim- and AOT-safe. Where the delegate fallback is needed (below net8.0, and generic declaring types on net8.0), the affected type's convenience property getter and `GetEqualityComparer<T>()` carry `[RequiresUnreferencedCode]`/`[RequiresDynamicCode]`, so the warning appears at your access of that type and nowhere else. Safe types in the same context produce no warning.
+**Trimming and NativeAOT.** Field access through `[UnsafeAccessor]` is trim- and AOT-safe. Where the delegate fallback is needed (below net8.0, and generic declaring types on net8.0), 
+the affected type's convenience property getter and `GetEqualityComparer<T>()` carry `[RequiresUnreferencedCode]`/`[RequiresDynamicCode]`, 
+so the warning appears on access of that type and nowhere else. Safe types in the same context produce no warning.
 
-**Warnings as errors.** Generated files disable `CS0612`, `CS0618`, `CS8632` and every custom obsolete, `[Experimental]` and preview-feature diagnostic id carried by a type they reference, so a consumer with `TreatWarningsAsErrors` builds. Generator diagnostics themselves are ordinary analyzer diagnostics: silence one with `<NoWarn>DEQ004</NoWarn>` or `dotnet_diagnostic.DEQ004.severity = none` in `.editorconfig`.
+**Warnings as errors.** Generated files disable `CS0612`, `CS0618`, `CS8632` and every custom obsolete, `[Experimental]` and preview-feature diagnostic id carried by a type they reference.
 
 ## Usage
 
@@ -88,17 +96,19 @@ int hash  = MyDeepEqualsContext.Customer.GetHashCode(a);
 IEqualityComparer<Order> orders = MyDeepEqualsContext.GetEqualityComparer<Order>();
 ```
 
-The context must be a non-generic, non-abstract `partial` class deriving from `DeepEqualsContextBase`, and its user-written half must stay empty: generated convenience properties occupy names such as `String`, `Int32` and `Object`, so application code belongs outside it.
+The context must be a non-generic, non-abstract `partial` class deriving from `DeepEqualsContextBase`.
 
-Registering a type registers its closure: member types, element/key/value types, tuple items, base classes and implemented interfaces. Every type in the closure gets
-
+Registering a type registers its closure: member types, element/key/value types, tuple items, base classes and implemented interfaces.
+Every type in the closure gets:
 - a nested `{Name}EqualityComparer` wrapper with a singleton `Instance`,
 - a static convenience property `MyDeepEqualsContext.{Name}`,
 - an entry behind `GetEqualityComparer<T>()`, which throws `DeepEqualsMissingComparerException` for a type outside the closure.
 
-Derived types are **not** discovered. Register every runtime type a polymorphic member (`object`, an interface, an abstract or unsealed class) can hold; an unregistered runtime type throws `DeepEqualsUnknownTypeException` at comparison time.
+Derived types are **not** discovered. Register every runtime type a polymorphic member (`object`, an interface, an abstract or unsealed class) can hold; 
+an unregistered runtime type throws `DeepEqualsUnknownTypeException` at comparison time.
 
-**Shared registrations.** Attributes on an abstract base context are inherited. A derived context must carry at least one `[GenerateDeepEquals]` or a `[DeepEqualsSourceGenerationOptions]` on its own declaration to be discovered:
+**Shared registrations.** Attributes on an abstract base context are inherited. A derived context must carry at least one 
+`[GenerateDeepEquals]` or a `[DeepEqualsSourceGenerationOptions]` on its own declaration to be discovered:
 
 ```csharp
 [GenerateDeepEquals(typeof(Customer))]
@@ -118,15 +128,15 @@ Deriving one concrete context from another is unsupported.
 
 All attributes live in `DeepEquals.SourceGeneration`.
 
-| Attribute | Target | Meaning |
-|---|---|---|
-| `[GenerateDeepEquals(typeof(T))]` | context, repeatable | Registers `T` as a closure root. Only a root marker: it never overrides a simple or custom rule for `T`. Registering both a base and a derived type equals registering the derived type. |
-| `[DeepEqualsSourceGenerationOptions(...)]` | context, once | Per-context options (below). An empty attribute also marks a derived context. Options merge per property along the base chain; derived wins. |
-| `[SimpleType(typeof(T))]` | context, repeatable | `T` and every type assignable to it is a leaf using its own default equality for the static type in use: a direct `Equals(TStatic)` call when `TStatic` implements `IEquatable<TStatic>` itself, otherwise `EqualityComparer<TStatic>.Default`. Registering an interface such as `IInterface` covers every implementing struct or class. `typeof(S?)` for a struct normalizes to `S` ([`DEQ028`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#custom-comparers-and-simple-types)). A `Base` and a `Derived` rule overlap; the narrower is ignored ([`DEQ025`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#custom-comparers-and-simple-types)). |
-| `[CustomEqualityComparer(typeof(TComparer), handleNulls = false)]` | context, repeatable | Compares `T`, taken from `TComparer`'s single `IEqualityComparer<T>`, with that comparer everywhere `T` or an assignable type appears. The instance comes from a public static `Instance` or `Default` member, else a public parameterless constructor. |
-| `[CustomEqualityComparer(typeof(TComparer), "MemberName", handleNulls = false)]` | context, repeatable | Same, taking the instance from a named public static field, property or parameterless method. Abstract comparer classes are allowed: `[CustomEqualityComparer(typeof(StringComparer), nameof(StringComparer.OrdinalIgnoreCase))]`. |
-| `[DeepEqualsIgnore]` | field, auto-property, `field`-keyword property, captured primary-constructor parameter | Excludes that storage from comparison and hashing. |
-| `[DeepEqualsIgnore(typeof(Declaring), "member")]` | context, repeatable | Excludes storage you cannot annotate, such as a private field of a base class in another assembly. The name resolves as a field first, otherwise as a property whose backing field is excluded. |
+| Attribute                                                                        | Target                                                                                 | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+|----------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `[GenerateDeepEquals(typeof(T))]`                                                | context, repeatable                                                                    | Registers `T` as a closure root. Only a root marker: it never overrides a simple or custom rule for `T`. Registering both a base and a derived type equals registering the derived type.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `[DeepEqualsSourceGenerationOptions(...)]`                                       | context, once                                                                          | Per-context options (below). An empty attribute also marks a derived context. Options merge per property along the base chain; derived wins.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `[SimpleType(typeof(T))]`                                                        | context, repeatable                                                                    | `T` and every type assignable to it is a leaf using its own default equality for the static type in use: a direct `Equals(TStatic)` call when `TStatic` implements `IEquatable<TStatic>` itself, otherwise `EqualityComparer<TStatic>.Default`. Registering an interface such as `IInterface` covers every implementing struct or class. `typeof(S?)` for a struct normalizes to `S` ([`DEQ028`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#custom-comparers-and-simple-types)). A `Base` and a `Derived` rule overlap; the narrower is ignored ([`DEQ025`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#custom-comparers-and-simple-types)). |
+| `[CustomEqualityComparer(typeof(TComparer), handleNulls = false)]`               | context, repeatable                                                                    | Compares `T`, taken from `TComparer`'s single `IEqualityComparer<T>`, with that comparer everywhere `T` or an assignable type appears. The instance comes from a public static `Instance` or `Default` member, else a public parameterless constructor.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `[CustomEqualityComparer(typeof(TComparer), "MemberName", handleNulls = false)]` | context, repeatable                                                                    | Same, taking the instance from a named public static field, property or parameterless method. Abstract comparer classes are allowed: `[CustomEqualityComparer(typeof(StringComparer), nameof(StringComparer.OrdinalIgnoreCase))]`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `[DeepEqualsIgnore]`                                                             | field, auto-property, `field`-keyword property, captured primary-constructor parameter | Excludes that storage from comparison and hashing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `[DeepEqualsIgnore(typeof(Declaring), "member")]`                                | context, repeatable                                                                    | Excludes storage you cannot annotate, such as a private field of a base class in another assembly. The name resolves as a field first, otherwise as a property whose backing field is excluded.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 Custom comparer rules:
 
@@ -140,14 +150,14 @@ Custom comparer rules:
 
 Set on `[DeepEqualsSourceGenerationOptions]`. Invalid values warn ([`DEQ013`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#options-and-bounds)) and fall back to the default.
 
-| Option | Default | Range | Effect |
-|---|---|---|---|
-| `MaxSwitchCases` | 12 | ≥ 1 | Exact dispatch cases above which a polymorphic core switches from an `if` chain to a `Dictionary<Type, int>` lookup and `switch`. |
-| `MaxUnorderedCollisionRun` | 64 | 1..512 | Longest run of equal-hash entries a set or dictionary comparison resolves by exact matching; longer runs throw. |
-| `MaxComparisonPairs` | 1,000,000 | 1..2^29 | Distinct `(kind, left, right)` triples one comparison may retain; the next novel triple throws. Bounds memory as well as cyclic work. |
-| `MaxBinaryExpressionArity` | 64 | ≥ 1 | Largest generated `&&` chain; longer member lists are split into consecutive `if` statements. |
-| `StructPassByValueMaxByteSize` | 8 | ≥ 0 | Structs whose estimated field size is at most this are passed by value to generated cores; larger ones by `in`. |
-| `ExcludeInterfacesByPrefix` | empty | namespace prefixes | Interfaces whose namespace equals a prefix or starts with `prefix + "."` are skipped by the automatic base/interface crawl, as `System` already is. Does not affect explicit roots or member types. |
+| Option                         | Default   | Range              | Effect                                                                                                                                                                                              |
+|--------------------------------|-----------|--------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `MaxSwitchCases`               | 12        | ≥ 1                | Exact dispatch cases above which a polymorphic core switches from an `if` chain to a `Dictionary<Type, int>` lookup and `switch`.                                                                   |
+| `MaxUnorderedCollisionRun`     | 64        | 1..512             | Longest run of equal-hash entries a set or dictionary comparison resolves by exact matching; longer runs throw.                                                                                     |
+| `MaxComparisonPairs`           | 1,000,000 | 1..2^29            | Distinct `(kind, left, right)` triples one comparison may retain; the next novel triple throws. Bounds memory as well as cyclic work.                                                               |
+| `MaxBinaryExpressionArity`     | 64        | ≥ 1                | Largest generated `&&` chain; longer member lists are split into consecutive `if` statements.                                                                                                       |
+| `StructPassByValueMaxByteSize` | 8         | ≥ 0                | Structs whose estimated field size is at most this are passed by value to generated cores; larger ones by `in`.                                                                                     |
+| `ExcludeInterfacesByPrefix`    | empty     | namespace prefixes | Interfaces whose namespace equals a prefix or starts with `prefix + "."` are skipped by the automatic base/interface crawl, as `System` already is. Does not affect explicit roots or member types. |
 
 ## What is compared
 
@@ -170,13 +180,13 @@ Register a custom comparer for any type where the BCL's normalized equality is w
 
 ## Exceptions and limits
 
-| Exception | When |
-|---|---|
-| `DeepEqualsUnknownTypeException` | A polymorphic member holds a runtime type outside the closure, on both sides with the same type, or on any hash. Two *different* unregistered types compare unequal without throwing. |
-| `DeepEqualsMissingComparerException` | `GetEqualityComparer<T>()` for a `T` outside the closure. |
-| `DeepEqualsComplexityException` | `MaxComparisonPairs` exceeded, or a set/dictionary hash-collision run longer than `MaxUnorderedCollisionRun`. |
-| `InsufficientExecutionStackException` | Recursion deep enough to threaten the thread stack; checked at every entry point and recursive core. |
-| `InvalidOperationException` | A collection enumerated more or fewer elements than its advertised `Count`. |
+| Exception                             | When                                                                                                                                                                                  |
+|---------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DeepEqualsUnknownTypeException`      | A polymorphic member holds a runtime type outside the closure, on both sides with the same type, or on any hash. Two *different* unregistered types compare unequal without throwing. |
+| `DeepEqualsMissingComparerException`  | `GetEqualityComparer<T>()` for a `T` outside the closure.                                                                                                                             |
+| `DeepEqualsComplexityException`       | `MaxComparisonPairs` exceeded, or a set/dictionary hash-collision run longer than `MaxUnorderedCollisionRun`.                                                                         |
+| `InsufficientExecutionStackException` | Recursion deep enough to threaten the thread stack; checked at every entry point and recursive core.                                                                                  |
+| `InvalidOperationException`           | A collection enumerated more or fewer elements than its advertised `Count`.                                                                                                           |
 
 Neither budget bounds cumulative work or elapsed time; nested unordered trials may repeat comparisons. Allocation-free steady state holds for acyclic graphs and known collections; cyclic graphs beyond 8 retained pairs and every set/dictionary comparison rent pooled arrays, and exact `decimal` below net8.0 allocates small arrays. Near the default pair budget a spilled state can hold roughly 32 MB of pooled arrays.
 

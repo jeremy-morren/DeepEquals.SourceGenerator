@@ -21,12 +21,9 @@ public sealed record CommandResult(int ExitCode, string Output)
     {
         get
         {
-            foreach (string line in Lines)
+            foreach (var line in Lines)
             {
-                if (System.Text.RegularExpressions.Regex.IsMatch(line, @"\b(IL2\d{3}|IL3\d{3})\b"))
-                {
-                    yield return line.Trim();
-                }
+                if (System.Text.RegularExpressions.Regex.IsMatch(line, @"\b(IL2\d{3}|IL3\d{3})\b")) yield return line.Trim();
             }
         }
     }
@@ -58,20 +55,14 @@ public static class Dotnet
         start.Environment["DOTNET_NOLOGO"] = "1";
         start.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
 
-        if (environment is not null)
-        {
-            foreach (KeyValuePair<string, string> pair in environment)
-            {
-                start.Environment[pair.Key] = pair.Value;
-            }
-        }
+        if (environment is not null) foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
 
         output.WriteLine($"$ dotnet {arguments}");
 
         StringBuilder captured = new();
         using Process process = new() { StartInfo = start };
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) { lock (captured) { captured.Append(e.Data).Append('\n'); } } };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) { lock (captured) { captured.Append(e.Data).Append('\n'); } } };
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) lock (captured) captured.Append(e.Data).Append('\n'); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) lock (captured) captured.Append(e.Data).Append('\n'); };
 
         process.Start();
         process.BeginOutputReadLine();
@@ -87,7 +78,7 @@ public static class Dotnet
         process.WaitForExit();
 
         string text;
-        lock (captured) { text = captured.ToString(); }
+        lock (captured) text = captured.ToString();
         output.WriteLine(text);
 
         return new CommandResult(process.ExitCode, text);
@@ -101,13 +92,10 @@ public static class Dotnet
     /// </summary>
     public static CommandResult Publish(ITestOutputHelper output, string project)
     {
-        foreach (string generated in new[] { "obj", "bin" })
+        foreach (var generated in new[] { "obj", "bin" })
         {
-            string path = Path.Combine(project, generated);
-            if (Directory.Exists(path))
-            {
-                Directory.Delete(path, recursive: true);
-            }
+            var path = Path.Combine(project, generated);
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
         }
 
         return Run(output, $"publish \"{project}\" -c {SmokePaths.Configuration}");
@@ -116,10 +104,7 @@ public static class Dotnet
     /// <summary>Runs an executable the SDK produced, and returns what it printed.</summary>
     public static CommandResult RunExecutable(ITestOutputHelper output, string path, IDictionary<string, string>? environment = null)
     {
-        if (!File.Exists(path))
-        {
-            throw new FileNotFoundException($"the consumer did not produce {path}", path);
-        }
+        if (!File.Exists(path)) throw new FileNotFoundException($"the consumer did not produce {path}", path);
 
         ProcessStartInfo start = new()
         {
@@ -130,18 +115,12 @@ public static class Dotnet
             UseShellExecute = false,
         };
 
-        if (environment is not null)
-        {
-            foreach (KeyValuePair<string, string> pair in environment)
-            {
-                start.Environment[pair.Key] = pair.Value;
-            }
-        }
+        if (environment is not null) foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
 
         output.WriteLine($"$ {path}");
 
-        using Process process = Process.Start(start)!;
-        string text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
+        using var process = Process.Start(start)!;
+        var text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();
         process.WaitForExit();
         output.WriteLine(text);
 

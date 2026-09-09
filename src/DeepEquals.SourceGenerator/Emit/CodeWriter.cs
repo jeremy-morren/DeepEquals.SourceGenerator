@@ -3,6 +3,7 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace DeepEquals.SourceGenerator.Emit;
@@ -10,6 +11,8 @@ namespace DeepEquals.SourceGenerator.Emit;
 /// <summary>A StringBuilder with indentation, sized up front; the only place generated text is produced.</summary>
 internal sealed class CodeWriter
 {
+    private const string IndentUnit = "    ";
+
     private readonly StringBuilder _builder;
     private int _indent;
     private bool _atLineStart = true;
@@ -39,31 +42,58 @@ internal sealed class CodeWriter
             Write(newline < 0 ? text.Substring(start) : text.Substring(start, newline - start));
             Line();
 
-            if (newline < 0)
-            {
-                return;
-            }
+            if (newline < 0) return;
 
             start = newline + 1;
         }
     }
 
-    public void Write(string text)
-    {
-        if (_atLineStart && text.Length > 0)
-        {
-            _builder.Append(' ', _indent * 4);
-            _atLineStart = false;
-        }
+    public void Return(string expression) => Line($"return {expression};");
 
-        _builder.Append(text);
+    /// <summary>An expression-bodied member: the signature, the arrow, the body.</summary>
+    public void Arrow(string signature, string body) => Line($"{signature} => {body};");
+
+    /// <summary>
+    /// <paramref name="open"/>, then one item per line indented a further level, each but the last followed by
+    /// <paramref name="separator"/> and the last by <paramref name="close"/>. A member is the unit a reader scans
+    /// for, so a list of them reads as a column rather than as one line that wraps wherever the editor happens to
+    /// be wide, and a business object with thirty properties is the case that matters. Indenting rather than
+    /// padding to the opening text keeps the column in the same place whatever opened it, and keeps a long prefix
+    /// from pushing every item to the right. A single item stays on the line it started on.
+    ///
+    /// The result carries relative indentation only. It is equally usable as a whole statement and as one item of
+    /// an enclosing list, because <see cref="Line(string)"/> adds the block indentation to every line it is given.
+    /// </summary>
+    public static string ItemList(string open, List<string> items, string separator, string close)
+    {
+        if (items.Count == 1) return open + items[0] + close;
+
+        var text = new StringBuilder(open);
+        for (var i = 0; i < items.Count; i++) text.Append('\n').Append(IndentLines(items[i])).Append(i == items.Count - 1 ? close : separator);
+
+        return text.ToString();
     }
 
-    /// <summary>Indents without opening a brace, for the continuation lines of one statement.</summary>
-    public void Indent() => _indent++;
+    /// <summary>One level in on every line, so a nested list sits inside the list containing it.</summary>
+    private static string IndentLines(string text) => IndentUnit + text.Replace("\n", "\n" + IndentUnit);
 
-    public void Unindent() => _indent--;
+    /// <summary>
+    /// A braced block, closed when the returned scope is disposed. The emitter's own nesting then mirrors the
+    /// generated code's, and the compiler rather than convention keeps the braces balanced.
+    /// </summary>
+    public IDisposable Block(string header)
+    {
+        Open(header);
+        return new Closer(this);
+    }
 
+    /// <summary>A counted loop over <c>i</c> from zero to <paramref name="limit"/>, the shape every element walk takes.</summary>
+    public IDisposable For(string limit) => Block($"for (int i = 0; i < {limit}; i++)");
+
+    /// <summary>
+    /// Opens a block that a later <see cref="Close"/> ends. For the file skeleton only, whose namespace and
+    /// containing types are a run of blocks whose number is not known until the model is read.
+    /// </summary>
     public void Open(string header)
     {
         Line(header);
@@ -71,25 +101,24 @@ internal sealed class CodeWriter
         _indent++;
     }
 
-    public void Open()
-    {
-        Line("{");
-        _indent++;
-    }
-
-    public void Close(string suffix = "")
+    public void Close()
     {
         _indent--;
-        Line("}" + suffix);
-    }
-
-    public IDisposable Block(string header)
-    {
-        Open(header);
-        return new Closer(this);
+        Line("}");
     }
 
     public override string ToString() => _builder.ToString();
+
+    private void Write(string text)
+    {
+        if (_atLineStart && text.Length > 0)
+        {
+            for (var i = 0; i < _indent; i++) _builder.Append(IndentUnit);
+            _atLineStart = false;
+        }
+
+        _builder.Append(text);
+    }
 
     private sealed class Closer : IDisposable
     {

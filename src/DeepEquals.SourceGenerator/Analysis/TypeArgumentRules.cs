@@ -6,6 +6,8 @@ using System.Linq;
 using Microsoft.CodeAnalysis;
 using TypeKind = Microsoft.CodeAnalysis.TypeKind;
 
+// ReSharper disable IdentifierTypo
+
 namespace DeepEquals.SourceGenerator.Analysis;
 
 /// <summary>
@@ -18,21 +20,13 @@ internal static class TypeArgumentRules
     /// <summary>True for an interface with an unimplemented <c>static abstract</c> member anywhere in its hierarchy.</summary>
     public static bool IsConstraintOnlyInterface(ITypeSymbol type)
     {
-        if (type is not INamedTypeSymbol { TypeKind: TypeKind.Interface } iface)
-        {
+        if (type is not INamedTypeSymbol { TypeKind: TypeKind.Interface } iface) 
             return false;
-        }
 
-        foreach (INamedTypeSymbol source in iface.AllInterfaces.Concat(new[] { iface }))
-        {
-            foreach (ISymbol member in source.GetMembers())
-            {
-                if (member.IsStatic && member.IsAbstract && iface.FindImplementationForInterfaceMember(member) is null)
-                {
+        foreach (var source in iface.AllInterfaces.Concat([iface]))
+            foreach (var member in source.GetMembers())
+                if (member.IsStatic && member.IsAbstract && iface.FindImplementationForInterfaceMember(member) is null) 
                     return true;
-                }
-            }
-        }
 
         return false;
     }
@@ -42,7 +36,8 @@ internal static class TypeArgumentRules
     {
         IArrayTypeSymbol array => FindConstraintOnlyInterface(array.ElementType),
         INamedTypeSymbol named when IsConstraintOnlyInterface(named) => named,
-        INamedTypeSymbol named => named.TypeArguments.Select(FindConstraintOnlyInterface).FirstOrDefault(found => found is not null),
+        INamedTypeSymbol named => 
+            named.TypeArguments.Select(FindConstraintOnlyInterface).FirstOrDefault(found => found is not null),
         _ => null,
     };
 }

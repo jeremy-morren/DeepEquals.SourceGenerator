@@ -32,8 +32,8 @@ public sealed class ShapeTests
 
     private GeneratorRun Clean(string source, params string[] expectedWarnings)
     {
-        GeneratorRun run = GeneratorHost.Run(Prelude + source);
-        string? dump = Environment.GetEnvironmentVariable("DEEPEQUALS_DUMP");
+        var run = GeneratorHost.Run(Prelude + source);
+        var dump = Environment.GetEnvironmentVariable("DEEPEQUALS_DUMP");
         if (dump is not null)
         {
             System.IO.Directory.CreateDirectory(dump);
@@ -49,18 +49,15 @@ public sealed class ShapeTests
         run.GeneratorDiagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty();
         run.CompileErrors.Should().BeEmpty();
         run.Assembly.Should().NotBeNull();
-        foreach (string id in expectedWarnings)
-        {
-            run.GeneratorDiagnosticIds.Should().Contain(id);
-        }
+        foreach (var id in expectedWarnings) run.GeneratorDiagnosticIds.Should().Contain(id);
 
         return run;
     }
 
     private static void Set(object target, string member, object? value)
     {
-        Type type = target.GetType();
-        System.Reflection.FieldInfo? field = type.GetField(member, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var type = target.GetType();
+        var field = type.GetField(member, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         if (field is not null)
         {
             field.SetValue(target, value);
@@ -73,38 +70,38 @@ public sealed class ShapeTests
     [Fact]
     public void Upward_crawl_skips_interfaces_with_unimplemented_static_abstract_members()
     {
-        GeneratorRun run = Clean("""
-            public interface IId<TSelf, TRaw> : IEquatable<TSelf> where TSelf : struct, IId<TSelf, TRaw>
-            {
-                TRaw Serialize();
-                static abstract TSelf Deserialize(TRaw raw);
-            }
+        var run = Clean("""
+                        public interface IId<TSelf, TRaw> : IEquatable<TSelf> where TSelf : struct, IId<TSelf, TRaw>
+                        {
+                            TRaw Serialize();
+                            static abstract TSelf Deserialize(TRaw raw);
+                        }
 
-            public interface IWithDefault<TSelf>
-            {
-                static virtual TSelf Create() => default!;
-            }
+                        public interface IWithDefault<TSelf>
+                        {
+                            static virtual TSelf Create() => default!;
+                        }
 
-            public readonly struct SkuId : IId<SkuId, string>, IWithDefault<SkuId>
-            {
-                public readonly string Value;
-                public SkuId(string value) { Value = value; }
-                public string Serialize() => Value;
-                public static SkuId Deserialize(string raw) => new SkuId(raw);
-                public bool Equals(SkuId other) => Value == other.Value;
-            }
+                        public readonly struct SkuId : IId<SkuId, string>, IWithDefault<SkuId>
+                        {
+                            public readonly string Value;
+                            public SkuId(string value) { Value = value; }
+                            public string Serialize() => Value;
+                            public static SkuId Deserialize(string raw) => new SkuId(raw);
+                            public bool Equals(SkuId other) => Value == other.Value;
+                        }
 
-            public sealed class Product { public SkuId Id; }
+                        public sealed class Product { public SkuId Id; }
 
-            [GenerateDeepEquals(typeof(Product))]
-            public partial class Ctx : DeepEqualsContextBase { }
-            """);
+                        [GenerateDeepEquals(typeof(Product))]
+                        public partial class Ctx : DeepEqualsContextBase { }
+                        """);
 
         run.GeneratedSource.Should().NotContain("IIdOf", "an interface with an unimplemented static abstract member cannot be an IEqualityComparer<T> argument");
         run.GeneratedSource.Should().Contain("IWithDefaultOfSkuId", "a static virtual member with a body does not disqualify the interface");
-        object products = run.Comparer("Ctx", "Product");
-        object a = run.New("Product"); object b = run.New("Product");
-        Type sku = run.Assembly!.GetTypes().Single(t => t.Name == "SkuId");
+        var products = run.Comparer("Ctx", "Product");
+        var a = run.New("Product"); var b = run.New("Product");
+        var sku = run.Assembly!.GetTypes().Single(t => t.Name == "SkuId");
         Set(a, "Id", Activator.CreateInstance(sku, "x")); Set(b, "Id", Activator.CreateInstance(sku, "x"));
         run.Equals(products, a, b).Should().BeTrue();
         Set(b, "Id", Activator.CreateInstance(sku, "y"));
@@ -114,20 +111,20 @@ public sealed class ShapeTests
     [Fact]
     public void Containers_behind_object_select_canonical_family_cases()
     {
-        GeneratorRun run = Clean("""
-            public sealed class Bag
-            {
-                public object? Any;
-                public int[]? Ints;
-                public HashSet<string>? Set;
-                public Dictionary<string, int>? Map;
-            }
+        var run = Clean("""
+                        public sealed class Bag
+                        {
+                            public object? Any;
+                            public int[]? Ints;
+                            public HashSet<string>? Set;
+                            public Dictionary<string, int>? Map;
+                        }
 
-            [GenerateDeepEquals(typeof(Bag))]
-            public partial class Ctx : DeepEqualsContextBase { }
-            """);
+                        [GenerateDeepEquals(typeof(Bag))]
+                        public partial class Ctx : DeepEqualsContextBase { }
+                        """);
 
-        object objects = run.Comparer("Ctx", "Object");
+        var objects = run.Comparer("Ctx", "Object");
         run.Equals(objects, new[] { 1, 2, 3 }, new List<int> { 1, 2, 3 }).Should().BeTrue("an array and a list select the same ordered case");
         run.Hash(objects, new[] { 1, 2, 3 }).Should().Be(run.Hash(objects, new List<int> { 1, 2, 3 }));
         run.Equals(objects, new HashSet<string> { "a", "b" }, new SortedSet<string> { "b", "a" }).Should().BeTrue("both select the set case");
@@ -135,8 +132,8 @@ public sealed class ShapeTests
         run.Equals(objects, new Dictionary<string, int> { ["a"] = 1 }, new SortedDictionary<string, int> { ["a"] = 1 }).Should().BeTrue("dictionary vs sorted dictionary");
         run.Equals(objects, new[] { 1, 2 }, new[] { 2, 1 }).Should().BeFalse("order matters");
 
-        object bags = run.Comparer("Ctx", "Bag");
-        object a = run.New("Bag"); object b = run.New("Bag");
+        var bags = run.Comparer("Ctx", "Bag");
+        var a = run.New("Bag"); var b = run.New("Bag");
         Set(a, "Any", new[] { 7 }); Set(b, "Any", new List<int> { 7 });
         run.Equals(bags, a, b).Should().BeTrue("int array vs list behind an object member share the reached ordered-int case");
         run.Hash(bags, a).Should().Be(run.Hash(bags, b));
@@ -147,32 +144,32 @@ public sealed class ShapeTests
     [Fact]
     public void Memory_immutable_array_and_array_segment_compare_their_represented_sequences()
     {
-        GeneratorRun run = Clean("""
-            public sealed class Slices
-            {
-                public ReadOnlyMemory<byte> Bytes;
-                public Memory<int> Ints;
-                public ImmutableArray<string> Names;
-                public ArraySegment<int> Segment;
-                public object? Boxed;
-            }
+        var run = Clean("""
+                        public sealed class Slices
+                        {
+                            public ReadOnlyMemory<byte> Bytes;
+                            public Memory<int> Ints;
+                            public ImmutableArray<string> Names;
+                            public ArraySegment<int> Segment;
+                            public object? Boxed;
+                        }
 
-            [GenerateDeepEquals(typeof(Slices))]
-            public partial class Ctx : DeepEqualsContextBase { }
-            """);
+                        [GenerateDeepEquals(typeof(Slices))]
+                        public partial class Ctx : DeepEqualsContextBase { }
+                        """);
 
-        object comparer = run.Comparer("Ctx", "Slices");
-        object a = run.New("Slices"); object b = run.New("Slices");
-        byte[] backingA = { 9, 1, 2, 3, 9 };
-        byte[] backingB = { 1, 2, 3 };
+        var comparer = run.Comparer("Ctx", "Slices");
+        var a = run.New("Slices"); var b = run.New("Slices");
+        byte[] backingA = [9, 1, 2, 3, 9];
+        byte[] backingB = [1, 2, 3];
         Set(a, "Bytes", new ReadOnlyMemory<byte>(backingA, 1, 3));
         Set(b, "Bytes", new ReadOnlyMemory<byte>(backingB));
-        Set(a, "Ints", new Memory<int>(new[] { 4, 5 }));
-        Set(b, "Ints", new Memory<int>(new[] { 0, 4, 5, 0 }, 1, 2));
+        Set(a, "Ints", new Memory<int>([4, 5]));
+        Set(b, "Ints", new Memory<int>([0, 4, 5, 0], 1, 2));
         Set(a, "Names", ImmutableArray.Create("p", "q"));
         Set(b, "Names", ImmutableArray.Create("p", "q"));
-        Set(a, "Segment", new ArraySegment<int>(new[] { 7, 8, 9 }, 1, 2));
-        Set(b, "Segment", new ArraySegment<int>(new[] { 8, 9 }));
+        Set(a, "Segment", new ArraySegment<int>([7, 8, 9], 1, 2));
+        Set(b, "Segment", new ArraySegment<int>([8, 9]));
         run.Equals(comparer, a, b).Should().BeTrue("slices compare by contents, not by owner or offset");
         run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
 
@@ -183,7 +180,7 @@ public sealed class ShapeTests
         run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
 
         Set(a, "Segment", default(ArraySegment<int>));
-        Set(b, "Segment", new ArraySegment<int>(Array.Empty<int>()));
+        Set(b, "Segment", new ArraySegment<int>([]));
         run.Equals(comparer, a, b).Should().BeTrue("a default segment equals an initialized empty one");
         run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
 
@@ -195,25 +192,25 @@ public sealed class ShapeTests
     [Fact]
     public void Nullable_only_custom_registration_serves_the_non_nullable_value_by_wrapping()
     {
-        GeneratorRun run = Clean("""
-            public struct Money { public decimal Amount; public string? Currency; }
-            public sealed class MoneyComparer : IEqualityComparer<Money?>
-            {
-                public bool Equals(Money? x, Money? y) => x!.Value.Amount == y!.Value.Amount;
-                public int GetHashCode(Money? o) => o!.Value.Amount.GetHashCode();
-            }
-            public sealed class Order { public Money Total; public Money? Discount; }
+        var run = Clean("""
+                        public struct Money { public decimal Amount; public string? Currency; }
+                        public sealed class MoneyComparer : IEqualityComparer<Money?>
+                        {
+                            public bool Equals(Money? x, Money? y) => x!.Value.Amount == y!.Value.Amount;
+                            public int GetHashCode(Money? o) => o!.Value.Amount.GetHashCode();
+                        }
+                        public sealed class Order { public Money Total; public Money? Discount; }
 
-            [GenerateDeepEquals(typeof(Order))]
-            [CustomEqualityComparer(typeof(MoneyComparer))]
-            public partial class Ctx : DeepEqualsContextBase { }
-            """, "DEQ029");
+                        [GenerateDeepEquals(typeof(Order))]
+                        [CustomEqualityComparer(typeof(MoneyComparer))]
+                        public partial class Ctx : DeepEqualsContextBase { }
+                        """, "DEQ029");
 
-        object comparer = run.Comparer("Ctx", "Order");
-        Type money = run.Assembly!.GetTypes().Single(t => t.Name == "Money");
-        object m1 = Activator.CreateInstance(money)!; money.GetField("Amount")!.SetValue(m1, 1.0m); money.GetField("Currency")!.SetValue(m1, "USD");
-        object m2 = Activator.CreateInstance(money)!; money.GetField("Amount")!.SetValue(m2, 1.00m); money.GetField("Currency")!.SetValue(m2, "EUR");
-        object a = run.New("Order"); object b = run.New("Order");
+        var comparer = run.Comparer("Ctx", "Order");
+        var money = run.Assembly!.GetTypes().Single(t => t.Name == "Money");
+        var m1 = Activator.CreateInstance(money)!; money.GetField("Amount")!.SetValue(m1, 1.0m); money.GetField("Currency")!.SetValue(m1, "USD");
+        var m2 = Activator.CreateInstance(money)!; money.GetField("Amount")!.SetValue(m2, 1.00m); money.GetField("Currency")!.SetValue(m2, "EUR");
+        var a = run.New("Order"); var b = run.New("Order");
         Set(a, "Total", m1); Set(b, "Total", m2);
         run.Equals(comparer, a, b).Should().BeTrue("the non-nullable member is wrapped and handed to the nullable comparer");
         run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
@@ -229,7 +226,7 @@ public sealed class ShapeTests
     [InlineData("public sealed class P([DeepEqualsIgnore] int unused) { public int X; } [GenerateDeepEquals(typeof(P))] public partial class Ctx : DeepEqualsContextBase { }", "DEQ034")]
     public void Overlap_and_no_op_diagnostics(string source, string expected)
     {
-        GeneratorRun run = GeneratorHost.Run(Prelude + source, load: false);
+        var run = GeneratorHost.Run(Prelude + source, load: false);
         run.GeneratorDiagnosticIds.Should().Contain(expected);
     }
 }

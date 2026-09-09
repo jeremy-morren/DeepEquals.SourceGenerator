@@ -13,12 +13,10 @@ internal sealed record LocationInfo(string FilePath, TextSpan TextSpan, LinePosi
 {
     public Location ToLocation() => Location.Create(FilePath, TextSpan, LineSpan);
 
-    public static LocationInfo? From(Location? location)
+    private static LocationInfo? From(Location? location)
     {
-        if (location is null || !location.IsInSource)
-        {
+        if (location is null || !location.IsInSource) 
             return null;
-        }
 
         return new LocationInfo(location.SourceTree!.FilePath, location.SourceSpan, location.GetLineSpan().Span);
     }
@@ -27,18 +25,14 @@ internal sealed record LocationInfo(string FilePath, TextSpan TextSpan, LinePosi
 
     public static LocationInfo? From(ISymbol? symbol)
     {
-        if (symbol is null)
-        {
+        if (symbol is null) 
             return null;
-        }
 
-        foreach (Location location in symbol.Locations)
+        foreach (var location in symbol.Locations)
         {
-            LocationInfo? info = From(location);
-            if (info is not null)
-            {
+            var info = From(location);
+            if (info is not null) 
                 return info;
-            }
         }
 
         return null;
@@ -51,10 +45,12 @@ internal sealed record LocationInfo(string FilePath, TextSpan TextSpan, LinePosi
 internal sealed record DiagnosticInfo(DiagnosticDescriptor Descriptor, LocationInfo? Location, EquatableArray<string> Arguments)
 {
     public static DiagnosticInfo Create(DiagnosticDescriptor descriptor, LocationInfo? location, params object?[] arguments)
-        => new DiagnosticInfo(descriptor, location, new EquatableArray<string>(arguments.Select(a => a?.ToString() ?? string.Empty).ToArray()));
+        => new(descriptor, location, new EquatableArray<string>(arguments.Select(a => a?.ToString() ?? string.Empty).ToArray()));
 
     public bool IsError => Descriptor.DefaultSeverity == DiagnosticSeverity.Error;
 
     public Diagnostic ToDiagnostic(LocationInfo? fallback)
-        => Diagnostic.Create(Descriptor, (Location ?? fallback)?.ToLocation() ?? Microsoft.CodeAnalysis.Location.None, Arguments.ToArray());
+        => Diagnostic.Create(Descriptor, 
+            (Location ?? fallback)?.ToLocation() ?? Microsoft.CodeAnalysis.Location.None, 
+            Arguments.Cast<object>().ToArray());
 }

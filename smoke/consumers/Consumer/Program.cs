@@ -14,7 +14,7 @@ namespace DeepEquals.Smoke
     {
         public static int Main()
         {
-            string result = Checks.Run();
+            var result = Checks.Run();
             Console.WriteLine(result);
             return result.StartsWith("OK", StringComparison.Ordinal) ? 0 : 1;
         }

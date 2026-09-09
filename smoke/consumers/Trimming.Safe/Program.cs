@@ -4,15 +4,14 @@
 
 using System;
 
-namespace DeepEquals.Smoke.Trimming
+namespace DeepEquals.Smoke.Trimming;
+
+public static class Program
 {
-    public static class Program
+    public static int Main()
     {
-        public static int Main()
-        {
-            bool equal = TrimmingContext.Safe.Equals(new Safe(1) { Shown = 2 }, new Safe(1) { Shown = 2 });
-            Console.WriteLine(equal ? "OK" : "FAIL");
-            return equal ? 0 : 1;
-        }
+        var equal = TrimmingContext.Safe.Equals(new Safe(1) { Shown = 2 }, new Safe(1) { Shown = 2 });
+        Console.WriteLine(equal ? "OK" : "FAIL");
+        return equal ? 0 : 1;
     }
 }

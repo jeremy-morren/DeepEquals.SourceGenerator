@@ -5,6 +5,8 @@
 using System;
 using DeepEquals.SourceGeneration.Framework;
 
+// ReSharper disable All
+
 namespace DeepEquals.SourceGeneration;
 
 /// <summary>Generates deep equality comparer for the specified type and all base types</summary>
@@ -23,12 +25,25 @@ public sealed class GenerateDeepEqualsAttribute : Attribute
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface, AllowMultiple = false, Inherited = false)]
 public sealed class DeepEqualsSourceGenerationOptionsAttribute : Attribute
 {
+    /// <summary>Default value for <see cref="MaxSwitchCases"/></summary>
     public const int DefaultMaxSwitchCases = 12;
+    
+    /// <summary>Default value for <see cref="MaxUnorderedCollisionRun"/></summary>
     public const int DefaultMaxUnorderedCollisionRun = 64;
+    
+    /// <summary>Maximum value for <see cref="MaxUnorderedCollisionRun"/></summary>
     public const int MaximumMaxUnorderedCollisionRun = 512;
+    
+    /// <summary>Default value for <see cref="MaxComparisonPairs"/></summary>
     public const int DefaultMaxComparisonPairs = 1_000_000;
+    
+    /// <summary>Maximum value for <see cref="MaxComparisonPairs"/></summary>
     public const int MaximumMaxComparisonPairs = DeepEqualsState.MaxPairBudget;
+    
+    /// <summary>Default value for <see cref="MaxBinaryExpressionArity"/></summary>
     public const int DefaultMaxBinaryExpressionArity = 64;
+    
+    /// <summary>Default value for <see cref="StructPassByValueMaxByteSize"/></summary>
     public const int DefaultStructPassByValueMaxByteSize = 8;
 
     /// <summary>Exact dispatch cases above which a dispatch core switches from an <c>if</c> chain to a dictionary-indexed <c>switch</c>.</summary>
@@ -47,7 +62,7 @@ public sealed class DeepEqualsSourceGenerationOptionsAttribute : Attribute
     public int StructPassByValueMaxByteSize { get; set; } = DefaultStructPassByValueMaxByteSize;
 
     /// <summary>Namespace prefixes whose interfaces the upward crawl skips; a prefix matches a namespace equal to it or starting with it plus a dot.</summary>
-    public string[] ExcludeInterfacesByPrefix { get; set; } = Array.Empty<string>();
+    public string[] ExcludeInterfacesByPrefix { get; set; } = [];
 }
 
 /// <summary>Treats the type, and every type assignable to it, as a leaf compared with <c>EqualityComparer&lt;T&gt;.Default</c> for the static type in use.</summary>

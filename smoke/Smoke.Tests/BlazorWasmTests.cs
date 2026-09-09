@@ -3,7 +3,6 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -21,7 +20,7 @@ namespace DeepEquals.Smoke.Tests;
 /// there rather than merely compile for it.
 /// </summary>
 [Trait("Category", "Wasm")]
-public sealed class BlazorWasmTests
+public sealed partial class BlazorWasmTests
 {
     private readonly ITestOutputHelper _output;
 
@@ -35,35 +34,35 @@ public sealed class BlazorWasmTests
     [Fact]
     public async Task The_published_application_runs_the_comparers_in_a_browser()
     {
-        CommandResult publish = Dotnet.Publish(_output, Project);
+        var publish = Dotnet.Publish(_output, Project);
         publish.ExitCode.Should().Be(0, "the Blazor consumer must publish");
 
         // Blazor's own scaffolding warns about its router whatever the application references. Only a
         // warning whose message names this package, or that points inside a file this generator
         // emitted, belongs to this repository. Neither the leading path nor the trailing project name
         // is matched on its own, because the checkout directory can be called anything.
-        List<string> ours = publish.TrimmingWarnings.Where(IsOurs).ToList();
+        var ours = publish.TrimmingWarnings.Where(IsOurs).ToList();
         ours.Should().BeEmpty("a Blazor consumer must not be warned about a generated context");
 
         Directory.Exists(PublishedWebRoot).Should().BeTrue("the publish must produce {0}", PublishedWebRoot);
 
-        await using StaticSite site = await StaticSite.StartAsync(PublishedWebRoot);
+        await using var site = await StaticSite.StartAsync(PublishedWebRoot);
         _output.WriteLine($"serving {PublishedWebRoot} at {site.Url}");
 
-        using IPlaywright playwright = await Playwright.CreateAsync();
-        await using IBrowser browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
-        IPage page = await browser.NewPageAsync();
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        var page = await browser.NewPageAsync();
 
         page.Console += (_, message) => _output.WriteLine($"[console] {message.Text}");
         page.PageError += (_, error) => _output.WriteLine($"[page error] {error}");
 
-        IResponse? response = await page.GotoAsync(site.Url, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+        var response = await page.GotoAsync(site.Url, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
         response.Should().NotBeNull();
         response!.Status.Should().Be(200);
 
         // The element appears only once the assertions have run on the WebAssembly runtime.
         await page.WaitForSelectorAsync("#result", new PageWaitForSelectorOptions { Timeout = 120_000 });
-        string result = (await page.InnerTextAsync("#result")).Trim();
+        var result = (await page.InnerTextAsync("#result")).Trim();
 
         _output.WriteLine($"page reported: {result}");
 
@@ -73,10 +72,14 @@ public sealed class BlazorWasmTests
 
     private static bool IsOurs(string warning)
     {
-        string message = System.Text.RegularExpressions.Regex.Match(warning, @": warning IL\d+: (?<text>.*?)(?: \[[^\[\]]*\])?$").Groups["text"].Value;
-        bool emitted = warning.Contains(Path.Combine("DeepEquals.SourceGenerator", "DeepEquals.SourceGenerator.DeepEqualsGenerator"), StringComparison.Ordinal)
-            || warning.Contains("DeepEquals.SourceGenerator/DeepEquals.SourceGenerator.DeepEqualsGenerator", StringComparison.Ordinal);
+        var message = WarningRegex().Match(warning).Groups["text"].Value;
+        var emitted = 
+            warning.Contains(Path.Combine("DeepEquals.SourceGenerator", "DeepEquals.SourceGenerator.DeepEqualsGenerator"), StringComparison.Ordinal) ||
+            warning.Contains("DeepEquals.SourceGenerator/DeepEquals.SourceGenerator.DeepEqualsGenerator", StringComparison.Ordinal);
 
         return message.Contains("DeepEquals", StringComparison.Ordinal) || emitted;
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@": warning IL\d+: (?<text>.*?)(?: \[[^\[\]]*\])?$")]
+    private static partial System.Text.RegularExpressions.Regex WarningRegex();
 }

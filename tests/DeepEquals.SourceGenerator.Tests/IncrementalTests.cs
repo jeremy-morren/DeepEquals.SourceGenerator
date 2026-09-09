@@ -30,14 +30,15 @@ public sealed class IncrementalTests
 
     private static (GeneratorDriver Driver, CSharpCompilation Compilation) Create(string unrelated)
     {
-        CSharpParseOptions parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
-        CSharpCompilation compilation = CSharpCompilation.Create(
+        var parseOptions = new CSharpParseOptions(LanguageVersion.Latest);
+        var compilation = CSharpCompilation.Create(
             "Incremental",
-            new[] { CSharpSyntaxTree.ParseText(Models, parseOptions, path: "Models.cs"), CSharpSyntaxTree.ParseText(unrelated, parseOptions, path: "Helper.cs") },
+            [CSharpSyntaxTree.ParseText(Models, parseOptions, path: "Models.cs"), CSharpSyntaxTree.ParseText(unrelated, parseOptions, path: "Helper.cs")
+            ],
             GeneratorHost.References,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
         GeneratorDriver driver = CSharpGeneratorDriver.Create(
-            new[] { new DeepEqualsGenerator().AsSourceGenerator() },
+            [new DeepEqualsGenerator().AsSourceGenerator()],
             parseOptions: parseOptions,
             driverOptions: new GeneratorDriverOptions(IncrementalGeneratorOutputKind.None, trackIncrementalGeneratorSteps: true));
         return (driver, compilation);
@@ -46,17 +47,17 @@ public sealed class IncrementalTests
     [Fact]
     public void Editing_an_unrelated_method_body_leaves_the_output_cached()
     {
-        (GeneratorDriver driver, CSharpCompilation first) = Create(Unrelated);
+        var (driver, first) = Create(Unrelated);
         driver = driver.RunGenerators(first);
         driver.GetRunResult().Diagnostics.Should().BeEmpty();
 
-        CSharpCompilation second = first.ReplaceSyntaxTree(
+        var second = first.ReplaceSyntaxTree(
             first.SyntaxTrees.Single(t => t.FilePath == "Helper.cs"),
             CSharpSyntaxTree.ParseText(Unrelated.Replace("x * 2", "x + x"), (CSharpParseOptions)first.SyntaxTrees[0].Options, path: "Helper.cs"));
         driver = driver.RunGenerators(second);
 
-        GeneratorRunResult result = driver.GetRunResult().Results.Single();
-        ImmutableArray<IncrementalGeneratorRunStep> outputSteps = result.TrackedOutputSteps.SelectMany(kv => kv.Value).ToImmutableArray();
+        var result = driver.GetRunResult().Results.Single();
+        var outputSteps = result.TrackedOutputSteps.SelectMany(kv => kv.Value).ToImmutableArray();
         outputSteps.Should().NotBeEmpty();
         outputSteps.SelectMany(s => s.Outputs).Should().OnlyContain(o => o.Reason == IncrementalStepRunReason.Cached || o.Reason == IncrementalStepRunReason.Unchanged,
             "an unchanged model must not re-emit");
@@ -65,15 +66,15 @@ public sealed class IncrementalTests
     [Fact]
     public void Editing_a_reachable_member_reruns_the_output()
     {
-        (GeneratorDriver driver, CSharpCompilation first) = Create(Unrelated);
+        var (driver, first) = Create(Unrelated);
         driver = driver.RunGenerators(first);
 
-        CSharpCompilation second = first.ReplaceSyntaxTree(
+        var second = first.ReplaceSyntaxTree(
             first.SyntaxTrees.Single(t => t.FilePath == "Models.cs"),
             CSharpSyntaxTree.ParseText(Models.Replace("public int Age;", "public int Age; public double Score;"), (CSharpParseOptions)first.SyntaxTrees[0].Options, path: "Models.cs"));
         driver = driver.RunGenerators(second);
 
-        GeneratorRunResult result = driver.GetRunResult().Results.Single();
+        var result = driver.GetRunResult().Results.Single();
         result.TrackedOutputSteps.SelectMany(kv => kv.Value).SelectMany(s => s.Outputs)
             .Should().Contain(o => o.Reason == IncrementalStepRunReason.Modified || o.Reason == IncrementalStepRunReason.New);
         result.GeneratedSources.Single().SourceText.ToString().Should().Contain("Score");

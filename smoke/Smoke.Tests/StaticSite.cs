@@ -3,12 +3,11 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.StaticFiles;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace DeepEquals.Smoke.Tests;
@@ -33,19 +32,24 @@ public sealed class StaticSite : IAsyncDisposable
 
     public static async Task<StaticSite> StartAsync(string webRoot)
     {
-        WebApplicationBuilder builder = WebApplication.CreateBuilder(new WebApplicationOptions { WebRootPath = webRoot });
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { WebRootPath = webRoot });
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        WebApplication app = builder.Build();
+        var app = builder.Build();
 
-        // Blazor's payload includes extensions the default provider has never heard of, and the
-        // runtime refuses anything served as the wrong type.
-        FileExtensionContentTypeProvider types = new();
-        types.Mappings[".wasm"] = "application/wasm";
-        types.Mappings[".blat"] = "application/octet-stream";
-        types.Mappings[".dat"] = "application/octet-stream";
-        types.Mappings[".pdb"] = "application/octet-stream";
+        // Blazor's payload includes extensions the default provider has never heard of,
+        // and the runtime refuses anything served as the wrong type.
+        FileExtensionContentTypeProvider types = new()
+        {
+            Mappings =
+            {
+                [".wasm"] = "application/wasm",
+                [".blat"] = "application/octet-stream",
+                [".dat"] = "application/octet-stream",
+                [".pdb"] = "application/octet-stream"
+            }
+        };
 
         app.UseDefaultFiles();
         app.UseStaticFiles(new StaticFileOptions
@@ -57,8 +61,8 @@ public sealed class StaticSite : IAsyncDisposable
 
         await app.StartAsync();
 
-        string url = app.Urls.GetEnumerator() is var _ && app.Urls.Count > 0
-            ? System.Linq.Enumerable.First(app.Urls)
+        var url = app.Urls.Count > 0
+            ? app.Urls.First()
             : throw new InvalidOperationException("the static site did not report a URL");
 
         return new StaticSite(app, url.TrimEnd('/'));

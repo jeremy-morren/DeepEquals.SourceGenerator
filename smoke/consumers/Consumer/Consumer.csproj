@@ -1,34 +1,34 @@
 <!--
-  One clean consumer across every target the package claims. The netstandard legs are libraries,
-  because a netstandard assembly cannot run; building them proves the generated code compiles
-  against that reference surface. The rest are executables the smoke tests run.
+    One clean consumer across every target the package claims. The netstandard legs are libraries,
+    because a netstandard assembly cannot run; building them proves the generated code compiles
+    against that reference surface. The rest are executables the smoke tests run.
 -->
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFrameworks>netstandard2.0;netstandard2.1;net472;net6.0;net7.0;net8.0;net10.0</TargetFrameworks>
-    <OutputType Condition="!$(TargetFramework.StartsWith('netstandard'))">Exe</OutputType>
-    <RootNamespace>DeepEquals.Smoke</RootNamespace>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <PropertyGroup>
+        <TargetFrameworks>netstandard2.0;netstandard2.1;net472;net6.0;net7.0;net8.0;net10.0</TargetFrameworks>
+        <OutputType Condition="!$(TargetFramework.StartsWith('netstandard'))">Exe</OutputType>
+        <RootNamespace>DeepEquals.Smoke</RootNamespace>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-    <!-- The emitted code must be clean at the language version each tier can actually compile. -->
-    <LangVersion>latest</LangVersion>
-    <LangVersion Condition="'$(TargetFramework)' == 'net472' or '$(TargetFramework)' == 'netstandard2.0'">7.3</LangVersion>
-    <LangVersion Condition="'$(TargetFramework)' == 'netstandard2.1'">8</LangVersion>
-  </PropertyGroup>
+        <!-- The emitted code must be clean at the language version each tier can actually compile. -->
+        <LangVersion>latest</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'net472' or '$(TargetFramework)' == 'netstandard2.0'">7.3</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'netstandard2.1'">8</LangVersion>
+    </PropertyGroup>
 
-  <PropertyGroup Condition="'$(TargetFramework)' == 'net472'">
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
-    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
-  </PropertyGroup>
+    <PropertyGroup Condition="'$(TargetFramework)' == 'net472'">
+        <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+        <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+    </PropertyGroup>
 
-  <!-- The design's "spans without framework helpers" variant: netstandard2.0 with System.Memory. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
-    <PackageReference Include="System.Memory" Version="4.6.3" />
-  </ItemGroup>
+    <!-- The design's "spans without framework helpers" variant: netstandard2.0 with System.Memory. -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+        <PackageReference Include="System.Memory" Version="4.6.3" />
+    </ItemGroup>
 
-  <ItemGroup>
-    <Compile Include="../Shared/Checks.cs" Link="Checks.cs" />
-  </ItemGroup>
+    <ItemGroup>
+        <Compile Include="../Shared/Checks.cs" Link="Checks.cs" />
+    </ItemGroup>
 
 </Project>

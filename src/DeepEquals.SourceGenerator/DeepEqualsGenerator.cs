@@ -41,39 +41,42 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
         context.RegisterSourceOutput(optionsOnly, static (spc, model) => Output(spc, model));
     }
 
-    private static ContextModel? Transform(GeneratorAttributeSyntaxContext context, MarkerKind marker, CancellationToken cancellationToken)
+    private static ContextModel? Transform(GeneratorAttributeSyntaxContext context, MarkerKind marker, CancellationToken ct)
     {
         try
         {
-            return ContextAnalyzer.Analyze(context, marker, cancellationToken);
+            return ContextAnalyzer.Analyze(context, marker, ct);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception ex)
         {
-            string name = context.TargetSymbol.Name;
-            LocationInfo? location = LocationInfo.From(context.TargetNode);
+            var name = context.TargetSymbol.Name;
+            var location = LocationInfo.From(context.TargetNode);
             return ContextModel.Failed(
                 ContextAnalyzer.HintNameFor(context.TargetSymbol),
                 name,
                 location,
-                EquatableArray.Create(DiagnosticInfo.Create(Diagnostics.GeneratorFailed, location, "analysing", name, exception.GetType().FullName, exception.Message)));
+                EquatableArray.Create(
+                    DiagnosticInfo.Create(
+                        Diagnostics.GeneratorFailed,
+                        location, 
+                        "analysing",
+                        name, 
+                        ex.GetType().FullName,
+                        ex.Message)));
         }
     }
 
     private static void Output(SourceProductionContext context, ContextModel model)
     {
-        foreach (DiagnosticInfo diagnostic in model.Diagnostics)
-        {
+        foreach (var diagnostic in model.Diagnostics)
             context.ReportDiagnostic(diagnostic.ToDiagnostic(model.CanonicalLocation));
-        }
 
         if (model.HasErrors)
-        {
             return;
-        }
 
         string source;
         try
@@ -84,11 +87,11 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception ex)
         {
             // Location data was captured before emission began; nothing here re-enters the failing path.
             context.ReportDiagnostic(DiagnosticInfo
-                .Create(Diagnostics.GeneratorFailed, model.CanonicalLocation, "emitting", model.Name, exception.GetType().FullName, exception.Message)
+                .Create(Diagnostics.GeneratorFailed, model.CanonicalLocation, "emitting", model.Name, ex.GetType().FullName, ex.Message)
                 .ToDiagnostic(model.CanonicalLocation));
             return;
         }

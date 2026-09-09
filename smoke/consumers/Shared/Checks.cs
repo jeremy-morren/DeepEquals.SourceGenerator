@@ -6,6 +6,8 @@ using System;
 using System.Collections.Generic;
 using DeepEquals.SourceGeneration;
 
+// ReSharper disable All
+
 namespace DeepEquals.Smoke
 {
     /// <summary>
@@ -62,42 +64,39 @@ namespace DeepEquals.Smoke
             b.Next = b;
 
             // A cycle must terminate, and two structurally identical graphs must agree.
-            if (!SmokeContext.Node.Equals(a, b)) { failures.Add("equal"); }
-            if (SmokeContext.Node.GetHashCode(a) != SmokeContext.Node.GetHashCode(b)) { failures.Add("hash"); }
+            if (!SmokeContext.Node.Equals(a, b)) failures.Add("equal");
+            if (SmokeContext.Node.GetHashCode(a) != SmokeContext.Node.GetHashCode(b)) failures.Add("hash");
 
             // Instance storage is compared, so a difference in a private field is visible.
-            if (SmokeContext.Node.Equals(a, new Node("other"))) { failures.Add("private field"); }
+            if (SmokeContext.Node.Equals(a, new Node("other"))) failures.Add("private field");
 
             // Ordered collections compare element by element, strings by their UTF-16 code units.
             Node longer = Sample();
             longer.Tags = new List<string> { "x", "yy" };
-            if (SmokeContext.Node.Equals(a, longer)) { failures.Add("ordered collection"); }
+            if (SmokeContext.Node.Equals(a, longer)) failures.Add("ordered collection");
 
             Node otherKind = Sample();
             otherKind.Stamp = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Local);
-            if (SmokeContext.Node.Equals(a, otherKind)) { failures.Add("DateTime kind"); }
+            if (SmokeContext.Node.Equals(a, otherKind)) failures.Add("DateTime kind");
 
             Node otherScale = Sample();
             otherScale.Amount = 1.1m;
-            if (SmokeContext.Node.Equals(a, otherScale)) { failures.Add("decimal scale"); }
+            if (SmokeContext.Node.Equals(a, otherScale)) failures.Add("decimal scale");
 
             Node negativeZero = Sample();
             negativeZero.Rate = -0d;
             Node positiveZero = Sample();
             positiveZero.Rate = 0d;
-            if (SmokeContext.Node.Equals(negativeZero, positiveZero)) { failures.Add("negative zero"); }
+            if (SmokeContext.Node.Equals(negativeZero, positiveZero)) failures.Add("negative zero");
 
             // Dictionaries are sets of pairs; enumeration order must not reach the result.
             Node reordered = Sample();
             reordered.Counts = new Dictionary<string, int> { { "j", 2 }, { "k", 1 } };
             reordered.Next = reordered;
-            if (!SmokeContext.Node.Equals(a, reordered)) { failures.Add("unordered dictionary"); }
-            if (SmokeContext.Node.GetHashCode(a) != SmokeContext.Node.GetHashCode(reordered)) { failures.Add("unordered dictionary hash"); }
+            if (!SmokeContext.Node.Equals(a, reordered)) failures.Add("unordered dictionary");
+            if (SmokeContext.Node.GetHashCode(a) != SmokeContext.Node.GetHashCode(reordered)) failures.Add("unordered dictionary hash");
 
-            if (failures.Count > 0)
-            {
-                return "FAIL " + string.Join(", ", failures.ToArray());
-            }
+            if (failures.Count > 0) return "FAIL " + string.Join(", ", failures.ToArray());
 
             return "OK " + Describe();
         }

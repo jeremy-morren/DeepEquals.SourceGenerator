@@ -20,79 +20,63 @@ internal static class ContextAnalyzer
 {
     public static ContextModel? Analyze(GeneratorAttributeSyntaxContext context, MarkerKind marker, CancellationToken cancellationToken)
     {
-        if (context.TargetSymbol is not INamedTypeSymbol publicViewSymbol)
-        {
+        if (context.TargetSymbol is not INamedTypeSymbol publicViewSymbol) 
             return null;
-        }
 
         // Abstract contexts contribute attributes to their derived contexts and nothing else.
         if (publicViewSymbol.IsAbstract)
-        {
             return null;
-        }
 
         // One transform owns the symbol: the earliest marked declaration, and the registrations provider when that
         // declaration carries both marker kinds.
-        if (!IsCanonical(context, publicViewSymbol, marker))
-        {
+        if (!IsCanonical(context, publicViewSymbol, marker)) 
             return null;
-        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        Compilation compilation = AllImportView.Get(context.SemanticModel.Compilation);
-        INamedTypeSymbol symbol = compilation.GetSemanticModel(context.TargetNode.SyntaxTree).GetDeclaredSymbol(context.TargetNode, cancellationToken) as INamedTypeSymbol
-            ?? throw new InvalidOperationException("The context symbol could not be re-resolved in the All-import view.");
+        var compilation = AllImportView.Get(context.SemanticModel.Compilation);
+        var symbol = compilation.GetSemanticModel(context.TargetNode.SyntaxTree).GetDeclaredSymbol(context.TargetNode, cancellationToken) as INamedTypeSymbol
+                     ?? throw new InvalidOperationException("The context symbol could not be re-resolved in the All-import view.");
 
-        string hintName = HintNameFor(symbol);
-        LocationInfo? location = LocationInfo.From(context.TargetNode);
-        List<DiagnosticInfo> diagnostics = new List<DiagnosticInfo>();
+        var hintName = HintNameFor(symbol);
+        var location = LocationInfo.From(context.TargetNode);
+        var diagnostics = new List<DiagnosticInfo>();
 
         if (!ValidateDeclaration(symbol, (TypeDeclarationSyntax)context.TargetNode, compilation, location, diagnostics))
-        {
             return ContextModel.Failed(hintName, symbol.Name, location, EquatableArray.Create(diagnostics));
-        }
 
-        INamedTypeSymbol contextBase = CapabilityProbe.Find(compilation, KnownTypes.ContextBase)!;
-        List<INamedTypeSymbol> chain = ContextChain(symbol, contextBase);
-        ContextOptions options = OptionsReader.Read(chain, compilation, location, diagnostics);
-        LanguageVersion languageVersion = ((CSharpParseOptions)context.TargetNode.SyntaxTree.Options).LanguageVersion;
-        TargetCapabilities capabilities = CapabilityProbe.Probe(compilation, languageVersion);
+        var contextBase = CapabilityProbe.Find(compilation, KnownTypes.ContextBase)!;
+        var chain = ContextChain(symbol, contextBase);
+        var options = OptionsReader.Read(chain, location, diagnostics);
+        var languageVersion = ((CSharpParseOptions)context.TargetNode.SyntaxTree.Options).LanguageVersion;
+        var capabilities = CapabilityProbe.Probe(compilation, languageVersion);
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        Registrations registrations = Registrations.Collect(chain, compilation, location, diagnostics);
-        ClosureBuilder builder = new ClosureBuilder(compilation, symbol, options, capabilities, registrations, diagnostics, cancellationToken);
-        ClosureResult closure = builder.Build();
-        if (closure.Failed)
-        {
+        var registrations = Registrations.Collect(chain, compilation, location, diagnostics);
+        var builder = new ClosureBuilder(compilation, symbol, options, capabilities, registrations, diagnostics, cancellationToken);
+        var closure = builder.Build();
+        if (closure.Failed) 
             return ContextModel.Failed(hintName, symbol.Name, location, EquatableArray.Create(diagnostics));
-        }
 
-        ModelBuilder modelBuilder = new ModelBuilder(compilation, symbol, options, capabilities, closure, diagnostics, cancellationToken);
+        var modelBuilder = new ModelBuilder(symbol, options, capabilities, closure, diagnostics, cancellationToken);
         return modelBuilder.Build(hintName, location);
     }
 
     /// <summary>The context's namespace-qualified name plus a short hash of it; hint names must be unique per generator.</summary>
     public static string HintNameFor(ISymbol symbol)
     {
-        string full = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        var full = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         if (full.StartsWith("global::", StringComparison.Ordinal))
-        {
-            full = full.Substring("global::".Length);
-        }
+            full = full["global::".Length..];
 
-        using (SHA256 sha = SHA256.Create())
-        {
-            byte[] digest = sha.ComputeHash(Encoding.UTF8.GetBytes(full));
-            StringBuilder hex = new StringBuilder(8);
-            for (int i = 0; i < 4; i++)
-            {
-                hex.Append(digest[i].ToString("x2"));
-            }
+        using var sha = SHA256.Create();
+        var digest = sha.ComputeHash(Encoding.UTF8.GetBytes(full));
+        var hex = new StringBuilder(8);
+        for (var i = 0; i < 4; i++) 
+            hex.Append(digest[i].ToString("x2"));
 
-            return full.Replace('.', '_').Replace('+', '_') + "_" + hex + ".g.cs";
-        }
+        return $"{full.Replace('.', '_').Replace('+', '_')}_{hex}.g.cs";
     }
 
     private static bool IsCanonical(GeneratorAttributeSyntaxContext context, INamedTypeSymbol symbol, MarkerKind marker)
@@ -100,30 +84,26 @@ internal static class ContextAnalyzer
         // Order every declaration carrying either marker by (file path, span start) and find the earliest.
         SyntaxNode? earliest = null;
         string? earliestPath = null;
-        int earliestStart = int.MaxValue;
-        bool earliestHasRegistration = false;
-        bool earliestHasOptions = false;
+        var earliestStart = int.MaxValue;
+        var earliestHasRegistration = false;
+        var earliestHasOptions = false;
 
-        foreach (AttributeData attribute in symbol.GetAttributes())
+        foreach (var attribute in symbol.GetAttributes())
         {
-            string? name = attribute.AttributeClass?.ToDisplayString();
-            bool isRegistration = string.Equals(name, KnownTypes.GenerateDeepEqualsAttribute, StringComparison.Ordinal);
-            bool isOptions = string.Equals(name, KnownTypes.OptionsAttribute, StringComparison.Ordinal);
+            var name = attribute.AttributeClass?.ToDisplayString();
+            var isRegistration = string.Equals(name, KnownTypes.GenerateDeepEqualsAttribute, StringComparison.Ordinal);
+            var isOptions = string.Equals(name, KnownTypes.OptionsAttribute, StringComparison.Ordinal);
             if (!isRegistration && !isOptions)
-            {
                 continue;
-            }
 
-            SyntaxNode? attributeSyntax = attribute.ApplicationSyntaxReference?.GetSyntax();
-            TypeDeclarationSyntax? declaration = attributeSyntax?.FirstAncestorOrSelf<TypeDeclarationSyntax>();
-            if (declaration is null)
-            {
+            var attributeSyntax = attribute.ApplicationSyntaxReference?.GetSyntax();
+            var declaration = attributeSyntax?.FirstAncestorOrSelf<TypeDeclarationSyntax>();
+            if (declaration is null) 
                 continue;
-            }
 
-            string path = declaration.SyntaxTree.FilePath;
-            int start = declaration.SpanStart;
-            int order = earliestPath is null ? -1 : string.CompareOrdinal(path, earliestPath);
+            var path = declaration.SyntaxTree.FilePath;
+            var start = declaration.SpanStart;
+            var order = earliestPath is null ? -1 : string.CompareOrdinal(path, earliestPath);
             if (earliest is null || order < 0 || (order == 0 && start < earliestStart))
             {
                 earliest = declaration;
@@ -139,10 +119,8 @@ internal static class ContextAnalyzer
             }
         }
 
-        if (earliest is null || !ReferenceEquals(earliest, context.TargetNode))
-        {
+        if (earliest is null || !ReferenceEquals(earliest, context.TargetNode)) 
             return false;
-        }
 
         // The registrations provider owns a declaration that carries both kinds; the options provider owns one that
         // carries only options, even when a later partial adds registrations.
@@ -153,24 +131,15 @@ internal static class ContextAnalyzer
     {
         string? problem = null;
         if (node is not ClassDeclarationSyntax || symbol.IsRecord)
-        {
             problem = "a context must be an ordinary class";
-        }
-        else if (symbol.IsStatic)
-        {
+        else if (symbol.IsStatic) 
             problem = "a context cannot be static";
-        }
-        else if (symbol.IsGenericType)
-        {
+        else if (symbol.IsGenericType) 
             problem = "a context cannot be generic";
-        }
-        else if (IsFileLocal(symbol))
-        {
+        else if (IsFileLocal(symbol)) 
             problem = "a context cannot be file-local";
-        }
         else
-        {
-            for (INamedTypeSymbol? outer = symbol.ContainingType; outer is not null; outer = outer.ContainingType)
+            for (var outer = symbol.ContainingType; outer is not null; outer = outer.ContainingType)
             {
                 if (outer.IsGenericType)
                 {
@@ -190,15 +159,12 @@ internal static class ContextAnalyzer
                     break;
                 }
             }
-        }
 
         if (problem is null)
         {
-            INamedTypeSymbol? contextBase = CapabilityProbe.Find(compilation, KnownTypes.ContextBase);
+            var contextBase = CapabilityProbe.Find(compilation, KnownTypes.ContextBase);
             if (contextBase is null || !InheritsFrom(symbol, contextBase))
-            {
                 problem = "a context must derive from DeepEqualsContextBase";
-            }
         }
 
         if (problem is not null)
@@ -217,30 +183,29 @@ internal static class ContextAnalyzer
     }
 
     /// <summary>The Roslyn floor predates IsFileLocal; the modifier token is the same on every version.</summary>
-    private static bool IsFileLocal(INamedTypeSymbol symbol)
-        => symbol.DeclaringSyntaxReferences.Any(r => r.GetSyntax() is TypeDeclarationSyntax t && t.Modifiers.Any(m => m.Text == "file"));
+    private static bool IsFileLocal(INamedTypeSymbol symbol) =>
+        symbol.DeclaringSyntaxReferences
+            .Any(r => r.GetSyntax() is TypeDeclarationSyntax t && t.Modifiers.Any(m => m.Text == "file"));
 
     private static bool InheritsFrom(INamedTypeSymbol symbol, INamedTypeSymbol baseType)
     {
-        for (INamedTypeSymbol? current = symbol.BaseType; current is not null; current = current.BaseType)
-        {
-            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, baseType))
-            {
+        for (var current = symbol.BaseType; current is not null; current = current.BaseType)
+            if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, baseType)) 
                 return true;
-            }
-        }
 
         return false;
     }
 
-    /// <summary>The context chain base-first: from the class directly below DeepEqualsContextBase down to the concrete context.</summary>
+    /// <summary>
+    /// The context chain base-first: from the class directly below DeepEqualsContextBase down to the concrete context.
+    /// </summary>
     private static List<INamedTypeSymbol> ContextChain(INamedTypeSymbol symbol, INamedTypeSymbol contextBase)
     {
-        List<INamedTypeSymbol> chain = new List<INamedTypeSymbol>();
-        for (INamedTypeSymbol? current = symbol; current is not null && !SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, contextBase); current = current.BaseType)
-        {
+        var chain = new List<INamedTypeSymbol>();
+        for (var current = symbol; 
+             current is not null && !SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, contextBase); 
+             current = current.BaseType) 
             chain.Add(current);
-        }
 
         chain.Reverse();
         return chain;

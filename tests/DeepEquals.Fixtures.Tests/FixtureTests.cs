@@ -7,6 +7,9 @@ using System.Collections.Generic;
 using DeepEquals.SourceGeneration.Framework;
 using FluentAssertions;
 using Xunit;
+// ReSharper disable ReturnValueOfPureMethodIsNotUsed
+
+// ReSharper disable UseObjectOrCollectionInitializer
 
 namespace DeepEquals.Fixtures
 {
@@ -14,7 +17,7 @@ namespace DeepEquals.Fixtures
     {
         private static Person MakePerson(string secret)
         {
-            Person p = new Person(secret);
+            var p = new Person(secret);
             p.Name = "Ada";
             p.Age = 36;
             p.Score = 1.5;
@@ -28,25 +31,25 @@ namespace DeepEquals.Fixtures
         [Fact]
         public void Person_compares_private_state_and_exact_representations()
         {
-            Person a = MakePerson("s");
-            Person b = MakePerson("s");
+            var a = MakePerson("s");
+            var b = MakePerson("s");
             FixtureContext.Person.Equals(a, b).Should().BeTrue();
             FixtureContext.Person.GetHashCode(a).Should().Be(FixtureContext.Person.GetHashCode(b));
 
-            Person c = MakePerson("other");
+            var c = MakePerson("other");
             FixtureContext.Person.Equals(a, c).Should().BeFalse("private fields are compared");
 
-            Person d = MakePerson("s");
+            var d = MakePerson("s");
             d.Balance = 1.1m;
             FixtureContext.Person.Equals(a, d).Should().BeFalse("decimal scale participates");
 
-            Person e = MakePerson("s");
+            var e = MakePerson("s");
             e.Born = new DateTime(a.Born.Ticks, DateTimeKind.Local);
             FixtureContext.Person.Equals(a, e).Should().BeFalse("DateTime kind participates");
 
-            Person f = MakePerson("s");
+            var f = MakePerson("s");
             f.Score = -0.0;
-            Person g = MakePerson("s");
+            var g = MakePerson("s");
             g.Score = 0.0;
             FixtureContext.Person.Equals(f, g).Should().BeFalse("floating point is bitwise");
 
@@ -58,18 +61,18 @@ namespace DeepEquals.Fixtures
         [Fact]
         public void Cycles_terminate_and_unrolled_cycles_are_equal()
         {
-            Node a = new Node { Value = 1 };
+            var a = new Node { Value = 1 };
             a.Next = a;
-            Node b1 = new Node { Value = 1 };
-            Node b2 = new Node { Value = 1 };
+            var b1 = new Node { Value = 1 };
+            var b2 = new Node { Value = 1 };
             b1.Next = b2;
             b2.Next = b1;
             FixtureContext.Node.Equals(a, b1).Should().BeTrue();
             FixtureContext.Node.GetHashCode(a).Should().Be(FixtureContext.Node.GetHashCode(b1));
 
-            Node c = new Node { Value = 1, Children = new List<Node>() };
+            var c = new Node { Value = 1, Children = new List<Node>(1) };
             c.Children.Add(c);
-            Node d = new Node { Value = 1, Children = new List<Node>() };
+            var d = new Node { Value = 1, Children = new List<Node>(1) };
             d.Children.Add(d);
             FixtureContext.Node.Equals(c, d).Should().BeTrue("cycles through collections terminate");
             FixtureContext.Node.GetHashCode(c).Should().Be(FixtureContext.Node.GetHashCode(d));
@@ -78,8 +81,8 @@ namespace DeepEquals.Fixtures
         [Fact]
         public void Long_chains_use_one_stack_frame()
         {
-            Node head1 = Chain(200_000);
-            Node head2 = Chain(200_000);
+            var head1 = Chain(200_000);
+            var head2 = Chain(200_000);
             FixtureContext.Node.Equals(head1, head2).Should().BeTrue();
             head2.Next.Next.Value = -1;
             FixtureContext.Node.Equals(head1, head2).Should().BeFalse();
@@ -87,11 +90,11 @@ namespace DeepEquals.Fixtures
 
         private static Node Chain(int length)
         {
-            Node head = new Node { Value = 0 };
-            Node current = head;
-            for (int i = 1; i < length; i++)
+            var head = new Node { Value = 0 };
+            var current = head;
+            for (var i = 1; i < length; i++)
             {
-                Node next = new Node { Value = i };
+                var next = new Node { Value = i };
                 current.Next = next;
                 current = next;
             }
@@ -102,11 +105,11 @@ namespace DeepEquals.Fixtures
         [Fact]
         public void Dispatch_uses_the_runtime_type()
         {
-            Circle c1 = new Circle { Radius = 2, Name = "c" };
-            Circle c2 = new Circle { Radius = 2, Name = "c" };
-            Square s1 = new Square { Side = 2, Name = "c" };
-            Cube k1 = new Cube { Side = 2, Depth = 3, Name = "c" };
-            Cube k2 = new Cube { Side = 2, Depth = 3, Name = "c" };
+            var c1 = new Circle { Radius = 2, Name = "c" };
+            var c2 = new Circle { Radius = 2, Name = "c" };
+            var s1 = new Square { Side = 2, Name = "c" };
+            var k1 = new Cube { Side = 2, Depth = 3, Name = "c" };
+            var k2 = new Cube { Side = 2, Depth = 3, Name = "c" };
 
             FixtureContext.Shape.Equals(c1, c2).Should().BeTrue();
             FixtureContext.Shape.Equals(c1, s1).Should().BeFalse();
@@ -129,8 +132,8 @@ namespace DeepEquals.Fixtures
         [Fact]
         public void Holder_covers_structs_nullables_enums_collections_and_products()
         {
-            Holder a = MakeHolder();
-            Holder b = MakeHolder();
+            var a = MakeHolder();
+            var b = MakeHolder();
             FixtureContext.Holder.Equals(a, b).Should().BeTrue();
             FixtureContext.Holder.GetHashCode(a).Should().Be(FixtureContext.Holder.GetHashCode(b));
 
@@ -162,8 +165,8 @@ namespace DeepEquals.Fixtures
 
         private static Holder MakeHolder()
         {
-            Node n1 = new Node { Value = 1 };
-            Node n2 = new Node { Value = 2 };
+            var n1 = new Node { Value = 1 };
+            var n2 = new Node { Value = 2 };
             return new Holder
             {
                 P = new Point { X = 1, Y = 2 },
@@ -188,8 +191,8 @@ namespace DeepEquals.Fixtures
         [Fact]
         public void Generic_declaring_types_read_private_fields()
         {
-            Boxes a = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };
-            Boxes b = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };
+            var a = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };
+            var b = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };
             FixtureContext.Boxes.Equals(a, b).Should().BeTrue();
             FixtureContext.Boxes.GetHashCode(a).Should().Be(FixtureContext.Boxes.GetHashCode(b));
             b.Text = new Box<string>("u");

@@ -68,40 +68,38 @@ internal sealed class ContextIgnore
 /// <summary>Every strategy attribute along the context chain, validated and resolved at the symbol level.</summary>
 internal sealed class Registrations
 {
-    public List<(INamedTypeSymbol Type, LocationInfo? Location)> Roots { get; } = new List<(INamedTypeSymbol, LocationInfo?)>();
+    public List<(INamedTypeSymbol Type, LocationInfo? Location)> Roots { get; } = [];
 
-    public List<(ITypeSymbol Type, LocationInfo? Location)> SimpleTypes { get; } = new List<(ITypeSymbol, LocationInfo?)>();
+    public List<(ITypeSymbol Type, LocationInfo? Location)> SimpleTypes { get; } = [];
 
-    public List<CustomRegistration> Custom { get; } = new List<CustomRegistration>();
+    public List<CustomRegistration> Custom { get; } = [];
 
-    public List<ContextIgnore> ContextIgnores { get; } = new List<ContextIgnore>();
+    public List<ContextIgnore> ContextIgnores { get; } = [];
 
     public static Registrations Collect(List<INamedTypeSymbol> chain, Compilation compilation, LocationInfo? contextLocation, List<DiagnosticInfo> diagnostics)
     {
-        Registrations result = new Registrations();
-        int order = 0;
-        foreach (INamedTypeSymbol type in chain)
+        var result = new Registrations();
+        var order = 0;
+        foreach (var type in chain)
         {
-            foreach (AttributeData attribute in type.GetAttributes())
+            foreach (var attribute in type.GetAttributes())
             {
-                string? name = attribute.AttributeClass?.ToDisplayString();
-                LocationInfo? location = LocationInfo.From(attribute) ?? contextLocation;
+                var name = attribute.AttributeClass?.ToDisplayString();
+                var location = LocationInfo.From(attribute) ?? contextLocation;
                 switch (name)
                 {
                     case KnownTypes.GenerateDeepEqualsAttribute:
-                        result.AddRoot(attribute, compilation, location, diagnostics);
+                        result.AddRoot(attribute, location, diagnostics);
                         break;
                     case KnownTypes.SimpleTypeAttribute:
-                        result.AddSimple(attribute, compilation, location, diagnostics);
+                        result.AddSimple(attribute, location, diagnostics);
                         break;
                     case KnownTypes.CustomEqualityComparerAttribute:
                         result.AddCustom(attribute, compilation, location, diagnostics, order++);
                         break;
                     case KnownTypes.IgnoreAttribute:
-                        if (attribute.ConstructorArguments.Length == 2 && attribute.ConstructorArguments[0].Value is INamedTypeSymbol declaring && attribute.ConstructorArguments[1].Value is string member)
-                        {
+                        if (attribute.ConstructorArguments is [{ Value: INamedTypeSymbol declaring }, { Value: string member }])
                             result.ContextIgnores.Add(new ContextIgnore(declaring, member, location));
-                        }
 
                         break;
                 }
@@ -116,69 +114,66 @@ internal sealed class Registrations
     /// <summary>A [SimpleType] covered by a broader [SimpleType] is ignored (DEQ025); the result equals the broader rule alone.</summary>
     private void NormalizeSimple(Compilation compilation, List<DiagnosticInfo> diagnostics)
     {
-        for (int i = SimpleTypes.Count - 1; i >= 0; i--)
+        for (var i = SimpleTypes.Count - 1; i >= 0; i--)
         {
-            (ITypeSymbol narrow, LocationInfo? location) = SimpleTypes[i];
-            if (narrow.IsValueType && narrow.TypeKind != TypeKind.Interface)
-            {
+            var (narrow, location) = SimpleTypes[i];
+            if (narrow.IsValueType && narrow.TypeKind != TypeKind.Interface) 
                 continue;
-            }
 
-            for (int j = 0; j < SimpleTypes.Count; j++)
+            for (var j = 0; j < SimpleTypes.Count; j++)
             {
-                if (i == j)
-                {
+                if (i == j) 
                     continue;
-                }
 
-                ITypeSymbol broad = SimpleTypes[j].Type;
-                if (!SymbolEqualityComparer.Default.Equals(broad, narrow) && compilation.IsAssignable(narrow, broad) && !compilation.IsAssignable(broad, narrow))
-                {
-                    diagnostics.Add(DiagnosticInfo.Create(Diagnostics.SimpleTypeOverlap, location, narrow.ToDisplayString(), broad.ToDisplayString()));
-                    SimpleTypes.RemoveAt(i);
-                    break;
-                }
+                var broad = SimpleTypes[j].Type;
+                if (SymbolEqualityComparer.Default.Equals(broad, narrow) ||
+                    !compilation.IsAssignable(narrow, broad) ||
+                    compilation.IsAssignable(broad, narrow))
+                    continue;
+                
+                diagnostics.Add(DiagnosticInfo.Create(Diagnostics.SimpleTypeOverlap, location, narrow.ToDisplayString(), broad.ToDisplayString()));
+                SimpleTypes.RemoveAt(i);
+                break;
             }
         }
     }
 
-    private void AddRoot(AttributeData attribute, Compilation compilation, LocationInfo? location, List<DiagnosticInfo> diagnostics)
+    private void AddRoot(AttributeData attribute, LocationInfo? location, List<DiagnosticInfo> diagnostics)
     {
         if (attribute.ConstructorArguments.Length != 1)
-        {
             return;
-        }
 
-        ITypeSymbol? type = attribute.ConstructorArguments[0].Value as ITypeSymbol;
-        string? problem = RegistrationProblem(type);
+        var type = attribute.ConstructorArguments[0].Value as ITypeSymbol;
+        var problem = RegistrationProblem(type);
         if (problem is not null)
         {
             diagnostics.Add(DiagnosticInfo.Create(Diagnostics.InvalidRegisteredType, location, type?.ToDisplayString() ?? "?", problem));
             return;
         }
 
-        if (type is INamedTypeSymbol named)
+        switch (type)
         {
-            if (!Roots.Any(r => SymbolEqualityComparer.Default.Equals(r.Type, named)))
+            case INamedTypeSymbol named:
             {
-                Roots.Add((named, location));
+                if (!Roots.Any(r => SymbolEqualityComparer.Default.Equals(r.Type, named))) 
+                    Roots.Add((named, location));
+                break;
             }
-        }
-        else if (type is IArrayTypeSymbol)
-        {
-            // Arrays are valid roots; they are carried as their element's collection shape by the closure builder.
-            diagnostics.Add(DiagnosticInfo.Create(Diagnostics.InvalidRegisteredType, location, type.ToDisplayString(), "array roots are not supported yet; register the element type or a containing type"));
+            case IArrayTypeSymbol:
+                // Arrays are valid roots; they are carried as their element's collection shape by the closure builder.
+                diagnostics.Add(
+                    DiagnosticInfo.Create(Diagnostics.InvalidRegisteredType, location, type.ToDisplayString(), "array roots are not supported yet; register the element type or a containing type"));
+                break;
         }
     }
 
-    private void AddSimple(AttributeData attribute, Compilation compilation, LocationInfo? location, List<DiagnosticInfo> diagnostics)
+    private void AddSimple(AttributeData attribute, LocationInfo? location, List<DiagnosticInfo> diagnostics)
     {
-        if (attribute.ConstructorArguments.Length != 1 || attribute.ConstructorArguments[0].Value is not ITypeSymbol type)
-        {
+        if (attribute.ConstructorArguments.Length != 1 || 
+            attribute.ConstructorArguments[0].Value is not ITypeSymbol type) 
             return;
-        }
 
-        string? problem = RegistrationProblem(type);
+        var problem = RegistrationProblem(type);
         if (problem is not null)
         {
             diagnostics.Add(DiagnosticInfo.Create(Diagnostics.InvalidRegisteredType, location, type.ToDisplayString(), problem));
@@ -192,24 +187,21 @@ internal sealed class Registrations
             type = nullable.TypeArguments[0];
         }
 
-        if (!SimpleTypes.Any(s => SymbolEqualityComparer.Default.Equals(s.Type, type)))
-        {
+        if (!SimpleTypes.Any(s => SymbolEqualityComparer.Default.Equals(s.Type, type))) 
             SimpleTypes.Add((type, location));
-        }
     }
 
     private void AddCustom(AttributeData attribute, Compilation compilation, LocationInfo? location, List<DiagnosticInfo> diagnostics, int order)
     {
-        if (attribute.ConstructorArguments.Length == 0 || attribute.ConstructorArguments[0].Value is not INamedTypeSymbol comparerType)
-        {
+        if (attribute.ConstructorArguments.Length == 0 || 
+            attribute.ConstructorArguments[0].Value is not INamedTypeSymbol comparerType) 
             return;
-        }
 
-        string? memberName = attribute.ConstructorArguments.Length == 3 ? attribute.ConstructorArguments[1].Value as string : null;
-        bool handleNulls = attribute.ConstructorArguments[attribute.ConstructorArguments.Length - 1].Value is bool b && b;
+        var memberName = attribute.ConstructorArguments.Length == 3 ? attribute.ConstructorArguments[1].Value as string : null;
+        var handleNulls = attribute.ConstructorArguments[^1].Value is true;
 
         // T is the type argument of the one IEqualityComparer<T> the comparer implements.
-        List<INamedTypeSymbol> comparerInterfaces = comparerType.AllInterfaces
+        var comparerInterfaces = comparerType.AllInterfaces
             .Where(i => i.IsGenericType && BuiltInLeaves.FullMetadataName(i.OriginalDefinition) == "System.Collections.Generic.IEqualityComparer`1")
             .ToList();
         if (comparerInterfaces.Count != 1)
@@ -223,34 +215,34 @@ internal sealed class Registrations
             return;
         }
 
-        ITypeSymbol target = comparerInterfaces[0].TypeArguments[0].WithNullableAnnotation(NullableAnnotation.None);
+        var target = comparerInterfaces[0].TypeArguments[0].WithNullableAnnotation(NullableAnnotation.None);
         if (target.SpecialType == SpecialType.System_Object)
         {
             diagnostics.Add(DiagnosticInfo.Create(Diagnostics.ObjectCustomComparer, location));
             return;
         }
 
-        if (target.IsValueType && target is INamedTypeSymbol { OriginalDefinition.SpecialType: not SpecialType.System_Nullable_T } && handleNulls)
+        if (handleNulls &&
+            target.IsValueType && 
+            target is INamedTypeSymbol { OriginalDefinition.SpecialType: not SpecialType.System_Nullable_T })
         {
             diagnostics.Add(DiagnosticInfo.Create(Diagnostics.HandleNullsOnValueType, location, target.ToDisplayString()));
             handleNulls = false;
         }
 
-        if (target is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullableTarget && !handleNulls)
-        {
+        if (!handleNulls && target is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullableTarget)
             diagnostics.Add(DiagnosticInfo.Create(Diagnostics.NullableCustomComparerWithoutNulls, location, nullableTarget.TypeArguments[0].ToDisplayString()));
-        }
 
-        string comparerGlobal = comparerType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        var comparerGlobal = comparerType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         string? acquisition = null;
-        bool typedAsComparer = false;
+        var typedAsComparer = false;
         string? problem = null;
 
         if (memberName is not null)
         {
-            List<ISymbol> candidates = comparerType.GetMembers(memberName)
+            var candidates = comparerType.GetMembers(memberName)
                 .Where(m => m.IsStatic && m.DeclaredAccessibility == Accessibility.Public)
-                .Where(m => m is IFieldSymbol || m is IPropertySymbol { GetMethod: not null } || m is IMethodSymbol { Parameters.Length: 0, ReturnsVoid: false })
+                .Where(m => m is IFieldSymbol or IPropertySymbol { GetMethod: not null } or IMethodSymbol { Parameters.Length: 0, ReturnsVoid: false })
                 .Where(m => compilation.IsAssignable(MemberType(m), comparerInterfaces[0]))
                 .ToList();
             if (candidates.Count != 1)
@@ -261,20 +253,18 @@ internal sealed class Registrations
             }
             else
             {
-                ISymbol member = candidates[0];
+                var member = candidates[0];
                 acquisition = member is IMethodSymbol ? $"{comparerGlobal}.{memberName}()" : $"{comparerGlobal}.{memberName}";
                 typedAsComparer = SymbolEqualityComparer.Default.Equals(MemberType(member), comparerType);
             }
         }
         else
         {
-            if (comparerType.TypeKind != TypeKind.Class)
-            {
-                problem = "the comparer must be a class";
-            }
+            if (comparerType.TypeKind != TypeKind.Class) problem = "the comparer must be a class";
             else
             {
-                ISymbol? conventional = FindConventional(comparerType, comparerInterfaces[0], compilation, "Instance") ?? FindConventional(comparerType, comparerInterfaces[0], compilation, "Default");
+                var conventional = FindConventional(comparerType, comparerInterfaces[0], compilation, "Instance") 
+                                   ?? FindConventional(comparerType, comparerInterfaces[0], compilation, "Default");
                 if (conventional is not null)
                 {
                     acquisition = $"{comparerGlobal}.{conventional.Name}";
@@ -301,10 +291,9 @@ internal sealed class Registrations
         }
 
         // The holder is typed as the concrete class only when both interface members bind to public methods on it.
-        if (typedAsComparer && !(BindsPublic(comparerType, "Equals", target, 2) && BindsPublic(comparerType, "GetHashCode", target, 1)))
-        {
+        if (typedAsComparer && 
+            !(BindsPublic(comparerType, "Equals", target, 2) && BindsPublic(comparerType, "GetHashCode", target, 1))) 
             typedAsComparer = false;
-        }
 
         Custom.Add(new CustomRegistration(comparerType, target, handleNulls, acquisition!, typedAsComparer, location, order));
     }
@@ -312,7 +301,7 @@ internal sealed class Registrations
     private static ISymbol? FindConventional(INamedTypeSymbol comparerType, INamedTypeSymbol comparerInterface, Compilation compilation, string name)
         => comparerType.GetMembers(name)
             .FirstOrDefault(m => m.IsStatic && m.DeclaredAccessibility == Accessibility.Public
-                && (m is IFieldSymbol || m is IPropertySymbol { GetMethod: not null })
+                && m is IFieldSymbol or IPropertySymbol { GetMethod: not null }
                 && compilation.IsAssignable(MemberType(m), comparerInterface));
 
     private static ITypeSymbol MemberType(ISymbol member) => member switch
@@ -325,19 +314,18 @@ internal sealed class Registrations
 
     private static bool BindsPublic(INamedTypeSymbol comparerType, string name, ITypeSymbol target, int arity)
     {
-        for (INamedTypeSymbol? current = comparerType; current is not null; current = current.BaseType)
+        for (var current = comparerType; current is not null; current = current.BaseType)
         {
-            foreach (IMethodSymbol method in current.GetMembers(name).OfType<IMethodSymbol>())
+            foreach (var method in current.GetMembers(name).OfType<IMethodSymbol>())
             {
-                if (method.IsStatic || method.DeclaredAccessibility != Accessibility.Public || method.Parameters.Length != arity || method.ExplicitInterfaceImplementations.Length > 0)
-                {
+                if (method.IsStatic || 
+                    method.DeclaredAccessibility != Accessibility.Public || 
+                    method.Parameters.Length != arity || 
+                    method.ExplicitInterfaceImplementations.Length > 0) 
                     continue;
-                }
 
-                if (method.Parameters.All(p => SymbolEqualityComparer.Default.Equals(p.Type, target)))
-                {
+                if (method.Parameters.All(p => SymbolEqualityComparer.Default.Equals(p.Type, target))) 
                     return true;
-                }
             }
         }
 
@@ -347,21 +335,17 @@ internal sealed class Registrations
     /// <summary>Duplicates keep the first declaration (DEQ008); a broader reference registration hides a narrower one (DEQ030).</summary>
     private void NormalizeCustom(Compilation compilation, List<DiagnosticInfo> diagnostics)
     {
-        for (int i = 0; i < Custom.Count; i++)
+        for (var i = 0; i < Custom.Count; i++)
         {
-            CustomRegistration a = Custom[i];
-            if (a.Ignored)
-            {
+            var a = Custom[i];
+            if (a.Ignored) 
                 continue;
-            }
 
-            for (int j = i + 1; j < Custom.Count; j++)
+            for (var j = i + 1; j < Custom.Count; j++)
             {
-                CustomRegistration b = Custom[j];
-                if (b.Ignored)
-                {
+                var b = Custom[j];
+                if (b.Ignored) 
                     continue;
-                }
 
                 if (SymbolEqualityComparer.Default.Equals(a.Target, b.Target))
                 {
@@ -371,9 +355,7 @@ internal sealed class Registrations
                 }
 
                 if (a.Target.IsValueType || b.Target.IsValueType)
-                {
                     continue;   // value-type targets are exact; nullable pairs stay independent
-                }
 
                 if (compilation.IsAssignable(b.Target, a.Target))
                 {
@@ -391,60 +373,40 @@ internal sealed class Registrations
     }
 
     /// <summary>Why a type cannot be registered, or null.</summary>
-    public static string? RegistrationProblem(ITypeSymbol? type)
+    private static string? RegistrationProblem(ITypeSymbol? type)
     {
         if (type is null || type.TypeKind == TypeKind.Error)
-        {
             return "the type could not be resolved";
-        }
 
-        if (type.SpecialType == SpecialType.System_Void)
-        {
+        if (type.SpecialType == SpecialType.System_Void) 
             return "void cannot be compared";
-        }
 
-        if (type is IPointerTypeSymbol || type is IFunctionPointerTypeSymbol)
-        {
+        if (type is IPointerTypeSymbol or IFunctionPointerTypeSymbol) 
             return "pointers cannot be compared";
-        }
 
-        if (type.IsRefLikeType)
-        {
+        if (type.IsRefLikeType) 
             return "ref structs cannot be IEqualityComparer<T> arguments";
-        }
 
         if (type is INamedTypeSymbol named)
         {
             if (named.IsUnboundGenericType || named.TypeArguments.Any(a => a.TypeKind == TypeKind.TypeParameter))
-            {
                 return "open generic types cannot be registered; register a constructed type";
-            }
 
-            if (named.IsStatic)
-            {
+            if (named.IsStatic) 
                 return "static classes have no instances";
-            }
 
-            if (named.TypeKind == TypeKind.Delegate)
-            {
+            if (named.TypeKind == TypeKind.Delegate) 
                 return "delegates are not compared";
-            }
         }
 
         if (type is IArrayTypeSymbol { Rank: > 1 })
-        {
             return "multi-dimensional arrays are not supported";
-        }
 
-        if (TypeArgumentRules.FindConstraintOnlyInterface(type) is INamedTypeSymbol constraintOnly)
-        {
+        if (TypeArgumentRules.FindConstraintOnlyInterface(type) is { } constraintOnly)
             return $"'{constraintOnly.ToDisplayString()}' has a static abstract member without an implementation and cannot be an IEqualityComparer<T> type argument";
-        }
-
-        if (type is ITypeParameterSymbol)
-        {
+        
+        if (type is ITypeParameterSymbol) 
             return "type parameters cannot be registered";
-        }
 
         return null;
     }

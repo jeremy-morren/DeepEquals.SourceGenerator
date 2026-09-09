@@ -50,21 +50,23 @@ internal sealed class GeneratorRun
         => Context(contextName).GetProperty(propertyName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
 
     public bool Equals(object comparer, object? x, object? y)
-        => (bool)comparer.GetType().GetMethod("Equals", BindingFlags.Public | BindingFlags.Instance, null, comparer.GetType().GetInterfaces().First(i => i.IsGenericType).GetGenericArguments().Select(a => a).Concat(comparer.GetType().GetInterfaces().First(i => i.IsGenericType).GetGenericArguments()).ToArray(), null)!.Invoke(comparer, new[] { x, y })!;
+        => (bool)comparer.GetType().GetMethod("Equals", BindingFlags.Public | BindingFlags.Instance, null, comparer.GetType().GetInterfaces().First(i => i.IsGenericType).GetGenericArguments().Select(a => a).Concat(comparer.GetType().GetInterfaces().First(i => i.IsGenericType).GetGenericArguments()).ToArray(), null)!.Invoke(comparer,
+            [x, y])!;
 
     public int Hash(object comparer, object? value)
-        => (int)comparer.GetType().GetMethod("GetHashCode", BindingFlags.Public | BindingFlags.Instance, null, comparer.GetType().GetInterfaces().First(i => i.IsGenericType).GetGenericArguments(), null)!.Invoke(comparer, new[] { value })!;
+        => (int)comparer.GetType().GetMethod("GetHashCode", BindingFlags.Public | BindingFlags.Instance, null, comparer.GetType().GetInterfaces().First(i => i.IsGenericType).GetGenericArguments(), null)!.Invoke(comparer,
+            [value])!;
 
     public object New(string typeName, params object?[] args)
     {
-        Type type = Assembly!.GetTypes().Single(t => t.Name == typeName);
+        var type = Assembly!.GetTypes().Single(t => t.Name == typeName);
         return Activator.CreateInstance(type, args)!;
     }
 }
 
 internal static class GeneratorHost
 {
-    private static readonly Lazy<ImmutableArray<MetadataReference>> s_references = new Lazy<ImmutableArray<MetadataReference>>(LoadReferences);
+    private static readonly Lazy<ImmutableArray<MetadataReference>> s_references = new(LoadReferences);
 
     /// <summary>The executing runtime's managed references plus the framework assembly.</summary>
     public static ImmutableArray<MetadataReference> References => s_references.Value;
@@ -72,11 +74,12 @@ internal static class GeneratorHost
     private static ImmutableArray<MetadataReference> LoadReferences()
     {
         // The trusted platform assembly list holds managed assemblies only, unlike the runtime directory.
-        string list = (string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!;
-        List<MetadataReference> references = new List<MetadataReference>();
-        foreach (string file in list.Split(Path.PathSeparator))
+        var list = (string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!;
+        var files = list.Split(Path.PathSeparator);
+        var references = new List<MetadataReference>(files.Length + 1);
+        foreach (var file in files)
         {
-            string name = Path.GetFileName(file);
+            var name = Path.GetFileName(file);
             if (name.StartsWith("System.", StringComparison.Ordinal) || name == "mscorlib.dll" || name == "netstandard.dll" || name == "Microsoft.CSharp.dll")
             {
                 references.Add(MetadataReference.CreateFromFile(file));
@@ -84,37 +87,31 @@ internal static class GeneratorHost
         }
 
         references.Add(MetadataReference.CreateFromFile(typeof(DeepEqualsContextBase).Assembly.Location));
-        return references.ToImmutableArray();
+        return [..references];
     }
 
     public static GeneratorRun Run(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool load = true, string assemblyName = "GeneratedTests")
     {
-        CSharpParseOptions parseOptions = new CSharpParseOptions(languageVersion);
-        SyntaxTree tree = CSharpSyntaxTree.ParseText(source, parseOptions, path: "Input.cs");
-        CSharpCompilation compilation = CSharpCompilation.Create(
-            assemblyName + "_" + Guid.NewGuid().ToString("N"),
-            new[] { tree },
+        var parseOptions = new CSharpParseOptions(languageVersion);
+        var tree = CSharpSyntaxTree.ParseText(source, parseOptions, path: "Input.cs");
+        var compilation = CSharpCompilation.Create(
+            $"{assemblyName}_{Guid.NewGuid():N}",
+            [tree],
             s_references.Value,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable, allowUnsafe: true));
 
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(new[] { new DeepEqualsGenerator().AsSourceGenerator() }, parseOptions: parseOptions);
-        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out Compilation output, out _);
-        GeneratorDriverRunResult result = driver.GetRunResult();
+        GeneratorDriver driver = CSharpGeneratorDriver.Create([new DeepEqualsGenerator().AsSourceGenerator()], parseOptions: parseOptions);
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
+        var result = driver.GetRunResult();
 
-        ImmutableArray<Diagnostic> compileDiagnostics = output.GetDiagnostics();
+        var compileDiagnostics = output.GetDiagnostics();
         Assembly? assembly = null;
         if (load && !compileDiagnostics.Any(d => d.Severity == DiagnosticSeverity.Error) && !result.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
         {
-            using MemoryStream stream = new MemoryStream();
-            Microsoft.CodeAnalysis.Emit.EmitResult emit = output.Emit(stream);
-            if (emit.Success)
-            {
-                assembly = Assembly.Load(stream.ToArray());
-            }
-            else
-            {
-                compileDiagnostics = emit.Diagnostics;
-            }
+            using var stream = new MemoryStream();
+            var emit = output.Emit(stream);
+            if (emit.Success) assembly = Assembly.Load(stream.ToArray());
+            else compileDiagnostics = emit.Diagnostics;
         }
 
         return new GeneratorRun(result, output, compileDiagnostics, assembly);

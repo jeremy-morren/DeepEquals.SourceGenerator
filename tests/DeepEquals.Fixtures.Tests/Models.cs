@@ -2,7 +2,10 @@
 // Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
+// ReSharper disable All
+
 // Fixture models, written in C# 7.3 so the lowest tier compiles them verbatim.
+
 using System;
 using System.Collections.Generic;
 using DeepEquals.SourceGeneration;

@@ -1,18 +1,18 @@
 <Solution>
-  <Folder Name="/Solution Items/">
-    <File Path="Directory.Build.props" />
-    <File Path="global.json" />
-    <File Path="README.md" />
-    <File Path="docs/Diagnostics.md" />
-    <File Path="docs/Implementation.md" />
-  </Folder>
-  <Folder Name="/src/">
-    <Project Path="src/DeepEquals.SourceGeneration.Framework/DeepEquals.SourceGeneration.Framework.csproj" />
-    <Project Path="src/DeepEquals.SourceGenerator/DeepEquals.SourceGenerator.csproj" />
-  </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/DeepEquals.SourceGeneration.Framework.Tests/DeepEquals.SourceGeneration.Framework.Tests.csproj" />
-    <Project Path="tests/DeepEquals.SourceGenerator.Tests/DeepEquals.SourceGenerator.Tests.csproj" />
-    <Project Path="tests/DeepEquals.Fixtures.Tests/DeepEquals.Fixtures.Tests.csproj" />
-  </Folder>
+    <Folder Name="/Solution Items/">
+        <File Path="Directory.Build.props" />
+        <File Path="global.json" />
+        <File Path="README.md" />
+        <File Path="docs/Diagnostics.md" />
+        <File Path="docs/Implementation.md" />
+    </Folder>
+    <Folder Name="/src/">
+        <Project Path="src/DeepEquals.SourceGeneration.Framework/DeepEquals.SourceGeneration.Framework.csproj" />
+        <Project Path="src/DeepEquals.SourceGenerator/DeepEquals.SourceGenerator.csproj" />
+    </Folder>
+    <Folder Name="/tests/">
+        <Project Path="tests/DeepEquals.SourceGeneration.Framework.Tests/DeepEquals.SourceGeneration.Framework.Tests.csproj" />
+        <Project Path="tests/DeepEquals.SourceGenerator.Tests/DeepEquals.SourceGenerator.Tests.csproj" />
+        <Project Path="tests/DeepEquals.Fixtures.Tests/DeepEquals.Fixtures.Tests.csproj" />
+    </Folder>
 </Solution>

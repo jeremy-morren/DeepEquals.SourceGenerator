@@ -26,4 +26,6 @@ internal sealed record TargetCapabilities(
 {
     /// <summary>Nullable annotations are emitted from C# 8 on; every generated file is otherwise C# 7.3-clean.</summary>
     public bool NullableAnnotations => LanguageVersion >= 800;
+
+    public static readonly TargetCapabilities Empty = new(-1, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false);
 }

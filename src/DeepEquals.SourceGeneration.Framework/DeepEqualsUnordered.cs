@@ -7,6 +7,8 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
+// ReSharper disable UnusedMember.Global
+
 namespace DeepEquals.SourceGeneration.Framework;
 
 /// <summary>
@@ -48,14 +50,14 @@ public static class DeepEqualsUnordered
 
     // ----- ops adapters -----------------------------------------------------------------------------------------------
 
-    internal interface IUnorderedOps<T>
+    private interface IUnorderedOps<in T>
     {
         bool IsStateful { get; }
         bool Equals(T x, T y, ref DeepEqualsState state);
         int GetHashCode(T x);
     }
 
-    internal readonly struct StatefulOps<T, TOps> : IUnorderedOps<T>
+    private readonly struct StatefulOps<T, TOps> : IUnorderedOps<T>
         where TOps : struct, IDeepEqualsElementOps<T>
     {
         public bool IsStateful => true;
@@ -67,7 +69,7 @@ public static class DeepEqualsUnordered
         public int GetHashCode(T x) => default(TOps).GetHashCode(x);
     }
 
-    internal readonly struct StatelessOps<T, TOps> : IUnorderedOps<T>
+    private readonly struct StatelessOps<T, TOps> : IUnorderedOps<T>
         where TOps : struct, IDeepEqualsStatelessElementOps<T>
     {
         public bool IsStateful => false;
@@ -87,13 +89,10 @@ public static class DeepEqualsUnordered
         if (x is null) throw new ArgumentNullException(nameof(x));
         if (y is null) throw new ArgumentNullException(nameof(y));
         ValidateArguments(count, maxCollisionRun);
-        if (count == 0)
-        {
-            return true;
-        }
+        if (count == 0) return true;
 
-        ArrayPool<T> entryPool = DeepEqualsPools<T>.Shared;
-        ArrayPool<long> keyPool = DeepEqualsPools<long>.Shared;
+        var entryPool = DeepEqualsPools<T>.Shared;
+        var keyPool = DeepEqualsPools<long>.Shared;
         T[]? xs = null;
         long[]? xk = null;
         T[]? ys = null;
@@ -104,12 +103,9 @@ public static class DeepEqualsUnordered
             xk = keyPool.Rent(count);
             ys = entryPool.Rent(count);
             yk = keyPool.Rent(count);
-            int xSum = FillSet<T, TW>(x, xs, xk, count);
-            int ySum = FillSet<T, TW>(y, ys, yk, count);
-            if (xSum != ySum)
-            {
-                return false;
-            }
+            var xSum = FillSet<T, TW>(x, xs, xk, count);
+            var ySum = FillSet<T, TW>(y, ys, yk, count);
+            if (xSum != ySum) return false;
 
             return Match<T, TW>(xs, xk, ys, yk, count, maxCollisionRun, x.GetType(), ref state);
         }
@@ -129,13 +125,10 @@ public static class DeepEqualsUnordered
         if (x is null) throw new ArgumentNullException(nameof(x));
         if (y is null) throw new ArgumentNullException(nameof(y));
         ValidateArguments(count, maxCollisionRun);
-        if (count == 0)
-        {
-            return true;
-        }
+        if (count == 0) return true;
 
-        ArrayPool<KeyValuePair<TKey, TValue>> entryPool = DeepEqualsPools<KeyValuePair<TKey, TValue>>.Shared;
-        ArrayPool<long> keyPool = DeepEqualsPools<long>.Shared;
+        var entryPool = DeepEqualsPools<KeyValuePair<TKey, TValue>>.Shared;
+        var keyPool = DeepEqualsPools<long>.Shared;
         KeyValuePair<TKey, TValue>[]? xs = null;
         long[]? xk = null;
         KeyValuePair<TKey, TValue>[]? ys = null;
@@ -146,12 +139,9 @@ public static class DeepEqualsUnordered
             xk = keyPool.Rent(count);
             ys = entryPool.Rent(count);
             yk = keyPool.Rent(count);
-            int xSum = FillDictionary<TKey, TValue, TW>(x, xs, xk, count);
-            int ySum = FillDictionary<TKey, TValue, TW>(y, ys, yk, count);
-            if (xSum != ySum)
-            {
-                return false;
-            }
+            var xSum = FillDictionary<TKey, TValue, TW>(x, xs, xk, count);
+            var ySum = FillDictionary<TKey, TValue, TW>(y, ys, yk, count);
+            if (xSum != ySum) return false;
 
             return Match<KeyValuePair<TKey, TValue>, TW>(xs, xk, ys, yk, count, maxCollisionRun, x.GetType(), ref state);
         }
@@ -166,29 +156,23 @@ public static class DeepEqualsUnordered
 
     private static void ValidateArguments(int count, int maxCollisionRun)
     {
-        if (count < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(count), count, "The advertised count cannot be negative.");
-        }
+        if (count < 0) throw new ArgumentOutOfRangeException(nameof(count), count, "The advertised count cannot be negative.");
 
-        if (maxCollisionRun < 1)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxCollisionRun), maxCollisionRun, "The collision run cap must be at least 1.");
-        }
+        if (maxCollisionRun < 1) throw new ArgumentOutOfRangeException(nameof(maxCollisionRun), maxCollisionRun, "The collision run cap must be at least 1.");
     }
 
     /// <summary>Materializes a set side: entries, packed <c>(hash, index)</c> keys, and the unchecked hash sum.</summary>
     private static int FillSet<T, TW>(IEnumerable<T> source, T[] entries, long[] keys, int count)
         where TW : struct, IUnorderedOps<T>
     {
-        int n = 0;
-        int sum = 0;
+        var n = 0;
+        var sum = 0;
         if (source is HashSet<T> set)
         {
-            foreach (T element in set)
+            foreach (var element in set)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                int hash = default(TW).GetHashCode(element);
+                var hash = default(TW).GetHashCode(element);
                 entries[n] = element;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -197,10 +181,10 @@ public static class DeepEqualsUnordered
         }
         else
         {
-            foreach (T element in source)
+            foreach (var element in source)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                int hash = default(TW).GetHashCode(element);
+                var hash = default(TW).GetHashCode(element);
                 entries[n] = element;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -217,14 +201,14 @@ public static class DeepEqualsUnordered
         where TKey : notnull
         where TW : struct, IUnorderedOps<KeyValuePair<TKey, TValue>>
     {
-        int n = 0;
-        int sum = 0;
+        var n = 0;
+        var sum = 0;
         if (source is Dictionary<TKey, TValue> dictionary)
         {
-            foreach (KeyValuePair<TKey, TValue> entry in dictionary)
+            foreach (var entry in dictionary)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                int hash = default(TW).GetHashCode(entry);
+                var hash = default(TW).GetHashCode(entry);
                 entries[n] = entry;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -233,10 +217,10 @@ public static class DeepEqualsUnordered
         }
         else
         {
-            foreach (KeyValuePair<TKey, TValue> entry in source)
+            foreach (var entry in source)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                int hash = default(TW).GetHashCode(entry);
+                var hash = default(TW).GetHashCode(entry);
                 entries[n] = entry;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -281,44 +265,29 @@ public static class DeepEqualsUnordered
         Array.Sort(xk, 0, count);
         Array.Sort(yk, 0, count);
 
-        int i = 0;
+        var i = 0;
         while (i < count)
         {
-            int hash = HashOf(xk[i]);
-            if (HashOf(yk[i]) != hash)
-            {
-                return false;
-            }
+            var hash = HashOf(xk[i]);
+            if (HashOf(yk[i]) != hash) return false;
 
-            int xEnd = i + 1;
+            var xEnd = i + 1;
             while (xEnd < count && HashOf(xk[xEnd]) == hash) xEnd++;
-            int yEnd = i + 1;
+            var yEnd = i + 1;
             while (yEnd < count && HashOf(yk[yEnd]) == hash) yEnd++;
-            int k = xEnd - i;
-            if (k != yEnd - i)
-            {
-                return false;
-            }
+            var k = xEnd - i;
+            if (k != yEnd - i) return false;
 
             if (k == 1)
             {
                 // The common case: one direct comparison decides. True keeps whatever pairs it entered; false is terminal.
-                if (!default(TW).Equals(xs[IndexOf(xk[i])], ys[IndexOf(yk[i])], ref state))
-                {
-                    return false;
-                }
+                if (!default(TW).Equals(xs[IndexOf(xk[i])], ys[IndexOf(yk[i])], ref state)) return false;
             }
             else
             {
-                if (k > maxCollisionRun)
-                {
-                    throw new DeepEqualsComplexityException(collectionType, k, maxCollisionRun);
-                }
+                if (k > maxCollisionRun) throw new DeepEqualsComplexityException(collectionType, k, maxCollisionRun);
 
-                if (!MatchRun<T, TW>(xs, xk, ys, yk, i, k, ref state))
-                {
-                    return false;
-                }
+                if (!MatchRun<T, TW>(xs, xk, ys, yk, i, k, ref state)) return false;
             }
 
             i = xEnd;
@@ -331,39 +300,36 @@ public static class DeepEqualsUnordered
     private static bool MatchRun<T, TW>(T[] xs, long[] xk, T[] ys, long[] yk, int start, int k, ref DeepEqualsState state)
         where TW : struct, IUnorderedOps<T>
     {
-        ArrayPool<ulong> bitPool = DeepEqualsPools<ulong>.Shared;
-        ArrayPool<int> intPool = DeepEqualsPools<int>.Shared;
+        var bitPool = DeepEqualsPools<ulong>.Shared;
+        var intPool = DeepEqualsPools<int>.Shared;
         ulong[]? matrix = null;
         int[]? workspace = null;
         try
         {
-            int words = (k * k + 63) >> 6;
+            var words = (k * k + 63) >> 6;
             matrix = bitPool.Rent(words);
             Array.Clear(matrix, 0, words);
 
-            bool stateful = default(TW).IsStateful;
-            for (int a = 0; a < k; a++)
+            var stateful = default(TW).IsStateful;
+            for (var a = 0; a < k; a++)
             {
-                T xa = xs[IndexOf(xk[start + a])];
-                for (int b = 0; b < k; b++)
+                var xa = xs[IndexOf(xk[start + a])];
+                for (var b = 0; b < k; b++)
                 {
-                    T yb = ys[IndexOf(yk[start + b])];
+                    var yb = ys[IndexOf(yk[start + b])];
                     bool equal;
                     if (stateful)
                     {
                         // Every trial rolls back, whether it returned true or false, so no trial's assumptions leak into another.
-                        int mark = state.Mark();
+                        var mark = state.Mark();
                         equal = default(TW).Equals(xa, yb, ref state);
                         state.Rollback(mark);
                     }
-                    else
-                    {
-                        equal = default(TW).Equals(xa, yb, ref state);
-                    }
+                    else equal = default(TW).Equals(xa, yb, ref state);
 
                     if (equal)
                     {
-                        int bit = a * k + b;
+                        var bit = a * k + b;
                         matrix[bit >> 6] |= 1UL << (bit & 63);
                     }
                 }
@@ -371,26 +337,23 @@ public static class DeepEqualsUnordered
 
             // Workspace layout: matchR [0, k), visited stamps [k, 2k), stack left [2k, 3k), stack next [3k, 4k), stack chosen [4k, 5k).
             workspace = intPool.Rent(5 * k);
-            for (int r = 0; r < k; r++)
+            for (var r = 0; r < k; r++)
             {
                 workspace[r] = -1;
                 workspace[k + r] = 0;
             }
 
-            for (int u = 0; u < k; u++)
+            for (var u = 0; u < k; u++)
             {
-                if (!Augment(matrix, workspace, k, u, u + 1))
-                {
-                    return false;
-                }
+                if (!Augment(matrix, workspace, k, u, u + 1)) return false;
             }
 
             if (stateful)
             {
                 // Commit: run each matched pair once more without rollback so its pairs land in the state.
-                for (int r = 0; r < k; r++)
+                for (var r = 0; r < k; r++)
                 {
-                    int l = workspace[r];
+                    var l = workspace[r];
                     if (!default(TW).Equals(xs[IndexOf(xk[start + l])], ys[IndexOf(yk[start + r])], ref state))
                     {
                         return false;   // defensive: an unstable comparer changed its answer on commit
@@ -410,23 +373,20 @@ public static class DeepEqualsUnordered
     /// <summary>Kuhn's augmenting-path search from left vertex <paramref name="root"/>, iterative over the rented stack.</summary>
     private static bool Augment(ulong[] matrix, int[] ws, int k, int root, int stamp)
     {
-        int visited = k;
-        int stackLeft = 2 * k;
-        int stackNext = 3 * k;
-        int stackChosen = 4 * k;
+        var visited = k;
+        var stackLeft = 2 * k;
+        var stackNext = 3 * k;
+        var stackChosen = 4 * k;
 
-        int depth = 0;
+        var depth = 0;
         ws[stackLeft] = root;
         ws[stackNext] = 0;
         while (depth >= 0)
         {
-            int v = ws[stackLeft + depth];
-            int r = ws[stackNext + depth];
-            int row = v * k;
-            while (r < k && (!IsSet(matrix, row + r) || ws[visited + r] == stamp))
-            {
-                r++;
-            }
+            var v = ws[stackLeft + depth];
+            var r = ws[stackNext + depth];
+            var row = v * k;
+            while (r < k && (!IsSet(matrix, row + r) || ws[visited + r] == stamp)) r++;
 
             if (r == k)
             {
@@ -437,13 +397,10 @@ public static class DeepEqualsUnordered
             ws[visited + r] = stamp;
             ws[stackNext + depth] = r + 1;
             ws[stackChosen + depth] = r;
-            int owner = ws[r];
+            var owner = ws[r];
             if (owner < 0)
             {
-                for (int d = depth; d >= 0; d--)
-                {
-                    ws[ws[stackChosen + d]] = ws[stackLeft + d];
-                }
+                for (var d = depth; d >= 0; d--) ws[ws[stackChosen + d]] = ws[stackLeft + d];
 
                 return true;
             }

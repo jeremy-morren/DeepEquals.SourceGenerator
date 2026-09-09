@@ -10,30 +10,31 @@ using Microsoft.CodeAnalysis;
 
 namespace DeepEquals.SourceGenerator.Analysis;
 
-/// <summary>Reads [DeepEqualsSourceGenerationOptions] along the context chain, base first, so derived values win per property.</summary>
+/// <summary>
+/// Reads [DeepEqualsSourceGenerationOptions] along the context chain,
+/// base first, so derived values win per property.
+/// </summary>
 internal static class OptionsReader
 {
-    public static ContextOptions Read(List<INamedTypeSymbol> chain, Compilation compilation, LocationInfo? contextLocation, List<DiagnosticInfo> diagnostics)
+    public static ContextOptions Read(List<INamedTypeSymbol> chain, LocationInfo? contextLocation, List<DiagnosticInfo> diagnostics)
     {
-        int maxSwitchCases = ContextOptions.DefaultMaxSwitchCases;
-        int maxCollisionRun = ContextOptions.DefaultMaxUnorderedCollisionRun;
-        int maxPairs = ContextOptions.DefaultMaxComparisonPairs;
-        int maxArity = ContextOptions.DefaultMaxBinaryExpressionArity;
-        int structBytes = ContextOptions.DefaultStructPassByValueMaxByteSize;
-        string[] prefixes = Array.Empty<string>();
+        var maxSwitchCases = ContextOptions.DefaultMaxSwitchCases;
+        var maxCollisionRun = ContextOptions.DefaultMaxUnorderedCollisionRun;
+        var maxPairs = ContextOptions.DefaultMaxComparisonPairs;
+        var maxArity = ContextOptions.DefaultMaxBinaryExpressionArity;
+        var structBytes = ContextOptions.DefaultStructPassByValueMaxByteSize;
+        var prefixes = Array.Empty<string>();
 
-        foreach (INamedTypeSymbol type in chain)
+        foreach (var type in chain)
         {
-            foreach (AttributeData attribute in type.GetAttributes())
+            foreach (var attribute in type.GetAttributes())
             {
-                if (!string.Equals(attribute.AttributeClass?.ToDisplayString(), KnownTypes.OptionsAttribute, StringComparison.Ordinal))
-                {
+                if (!string.Equals(attribute.AttributeClass?.ToDisplayString(), KnownTypes.OptionsAttribute, StringComparison.Ordinal)) 
                     continue;
-                }
 
                 // Only explicitly written named arguments participate, so "unset" differs from "set to the default".
-                LocationInfo? location = LocationInfo.From(attribute) ?? contextLocation;
-                foreach (KeyValuePair<string, TypedConstant> argument in attribute.NamedArguments)
+                var location = LocationInfo.From(attribute) ?? contextLocation;
+                foreach (var argument in attribute.NamedArguments)
                 {
                     switch (argument.Key)
                     {
@@ -65,10 +66,8 @@ internal static class OptionsReader
 
     private static int ReadInt(KeyValuePair<string, TypedConstant> argument, int min, int max, int fallback, LocationInfo? location, List<DiagnosticInfo> diagnostics)
     {
-        if (argument.Value.Value is int value && value >= min && value <= max)
-        {
+        if (argument.Value.Value is int value && value >= min && value <= max) 
             return value;
-        }
 
         diagnostics.Add(DiagnosticInfo.Create(
             Diagnostics.InvalidOption,
@@ -79,24 +78,21 @@ internal static class OptionsReader
 
     private static string[] ReadPrefixes(KeyValuePair<string, TypedConstant> argument, LocationInfo? location, List<DiagnosticInfo> diagnostics)
     {
-        if (argument.Value.Kind != TypedConstantKind.Array)
-        {
-            return Array.Empty<string>();
-        }
+        if (argument.Value.Kind != TypedConstantKind.Array) 
+            return [];
 
-        List<string> result = new List<string>();
-        foreach (TypedConstant element in argument.Value.Values)
+        var result = new List<string>(argument.Value.Values.Length);
+        foreach (var element in argument.Value.Values)
         {
-            if (element.Value is string prefix && prefix.Length > 0)
-            {
+            if (element.Value is string { Length: > 0 } prefix)
                 result.Add(prefix);
-            }
-            else
-            {
+            else 
                 diagnostics.Add(DiagnosticInfo.Create(Diagnostics.InvalidOption, location, "ExcludeInterfacesByPrefix contains a null or empty prefix, which is ignored"));
-            }
         }
 
-        return result.Distinct(StringComparer.Ordinal).OrderBy(p => p, StringComparer.Ordinal).ToArray();
+        return result
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToArray();
     }
 }

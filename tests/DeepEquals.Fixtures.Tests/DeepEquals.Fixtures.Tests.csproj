@@ -1,53 +1,59 @@
 <Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <!-- Target everything from .NET Framework 4.7.2 to .NET 10.0 -->
+        <TargetFrameworks>net472;netcoreapp3.1;net6.0;net8.0;net10.0</TargetFrameworks>
+        
+        <ImplicitUsings>disable</ImplicitUsings>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+        <RootNamespace>DeepEquals.Fixtures</RootNamespace>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        
+        <!-- The language-version matrix from the design: the emitted code must be C# 7.3-clean on the lowest tier. -->
+        <LangVersion Condition="'$(TargetFramework)' == 'net472'">7.3</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'netcoreapp3.1'">8</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'net6.0'">10</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'net8.0'">12</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'net10.0'">14</LangVersion>
+        
+        <!-- Models are written once in C# 7.3 style; the generated files carry their own nullable directive. -->
+        <Nullable>disable</Nullable>
+        <SuppressTfmSupportBuildErrors>true</SuppressTfmSupportBuildErrors>
+        <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+        
+        <!-- DEQ004 is deliberate: Holder.Words is an IEnumerable member to exercise the ordered interface path. -->
+        <NoWarn>$(NoWarn);NU1701;CS8632;DEQ004</NoWarn>
+        <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+    </PropertyGroup>
 
-  <PropertyGroup>
-    <TargetFrameworks>net472;netcoreapp3.1;net6.0;net8.0;net10.0</TargetFrameworks>
-    <ImplicitUsings>disable</ImplicitUsings>
-    <IsPackable>false</IsPackable>
-    <IsTestProject>true</IsTestProject>
-    <RootNamespace>DeepEquals.Fixtures</RootNamespace>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <!-- The language-version matrix from the design: the emitted code must be C# 7.3-clean on the lowest tier. -->
-    <LangVersion Condition="'$(TargetFramework)' == 'net472'">7.3</LangVersion>
-    <LangVersion Condition="'$(TargetFramework)' == 'netcoreapp3.1'">8</LangVersion>
-    <LangVersion Condition="'$(TargetFramework)' == 'net6.0'">10</LangVersion>
-    <LangVersion Condition="'$(TargetFramework)' == 'net8.0'">12</LangVersion>
-    <LangVersion Condition="'$(TargetFramework)' == 'net10.0'">14</LangVersion>
-    <!-- Models are written once in C# 7.3 style; the generated files carry their own nullable directive. -->
-    <Nullable>disable</Nullable>
-    <SuppressTfmSupportBuildErrors>true</SuppressTfmSupportBuildErrors>
-    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
-    <!-- DEQ004 is deliberate: Holder.Words is an IEnumerable member to exercise the ordered interface path. -->
-    <NoWarn>$(NoWarn);NU1701;CS8632;DEQ004</NoWarn>
-    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
-  </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="xunit" Version="2.9.3" />
+        <PackageReference Include="FluentAssertions" Version="7.2.0" />
+    </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="xunit" Version="2.9.3" />
-    <PackageReference Include="FluentAssertions" Version="7.2.0" />
-  </ItemGroup>
+    <!-- 17.14 ships no test host below net8.0, so the netcoreapp3.1 and net6.0 legs take the last one that does. -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1' or '$(TargetFramework)' == 'net6.0'">
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    </ItemGroup>
 
-  <!-- 17.14 ships no test host below net8.0, so the netcoreapp3.1 and net6.0 legs take the last one that does. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1' or '$(TargetFramework)' == 'net6.0'">
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
-  </ItemGroup>
+    <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp3.1' and '$(TargetFramework)' != 'net6.0'">
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    </ItemGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp3.1' and '$(TargetFramework)' != 'net6.0'">
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-  </ItemGroup>
+    <!-- The last runner with a netcoreapp3.1 adapter; every other leg takes the current one. -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1'">
+        <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5" PrivateAssets="all" />
+    </ItemGroup>
 
-  <!-- The last runner with a netcoreapp3.1 adapter; every other leg takes the current one. -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1'">
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5" PrivateAssets="all" />
-  </ItemGroup>
+    <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp3.1'">
+        <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+    </ItemGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp3.1'">
-    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj" />
-    <ProjectReference Include="..\..\src\DeepEquals.SourceGenerator\DeepEquals.SourceGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
-  </ItemGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj" />
+        <ProjectReference Include="..\..\src\DeepEquals.SourceGenerator\DeepEquals.SourceGenerator.csproj" 
+                          OutputItemType="Analyzer" 
+                          ReferenceOutputAssembly="false" />
+    </ItemGroup>
 
 </Project>

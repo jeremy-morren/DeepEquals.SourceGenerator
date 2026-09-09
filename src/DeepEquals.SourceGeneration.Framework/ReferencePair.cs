@@ -25,7 +25,7 @@ public readonly struct ReferencePair(int kind, object x, object y) : IEquatable<
     {
         unchecked
         {
-            int h = RuntimeHelpers.GetHashCode(X) * (int)0x9E3779B1;
+            var h = RuntimeHelpers.GetHashCode(X) * (int)0x9E3779B1;
             h ^= RuntimeHelpers.GetHashCode(Y) * 0x7FEB352D;
             return h ^ (Kind * 0x2545F491);
         }

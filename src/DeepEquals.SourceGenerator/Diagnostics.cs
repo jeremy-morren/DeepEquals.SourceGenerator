@@ -12,10 +12,10 @@ internal static class Diagnostics
     private const string Category = "DeepEquals";
 
     private static DiagnosticDescriptor Error(string id, string title, string message)
-        => new DiagnosticDescriptor(id, title, message, Category, DiagnosticSeverity.Error, isEnabledByDefault: true);
+        => new(id, title, message, Category, DiagnosticSeverity.Error, isEnabledByDefault: true);
 
     private static DiagnosticDescriptor Warning(string id, string title, string message)
-        => new DiagnosticDescriptor(id, title, message, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true);
+        => new(id, title, message, Category, DiagnosticSeverity.Warning, isEnabledByDefault: true);
 
     public static readonly DiagnosticDescriptor ContextNotPartial = Error(
         "DEQ001", "Context must be partial",

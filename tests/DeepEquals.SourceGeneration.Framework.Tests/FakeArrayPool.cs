@@ -6,6 +6,8 @@ using System;
 using System.Buffers;
 using System.Collections.Generic;
 
+// ReSharper disable MemberCanBePrivate.Global
+
 namespace DeepEquals.SourceGeneration.Framework.Tests;
 
 /// <summary>
@@ -15,7 +17,7 @@ namespace DeepEquals.SourceGeneration.Framework.Tests;
 internal sealed class FakeArrayPool<T> : ArrayPool<T>
 {
     private readonly Func<T> _garbage;
-    private readonly HashSet<T[]> _outstanding = new HashSet<T[]>(ReferenceEqualityComparer<T[]>.Instance);
+    private readonly HashSet<T[]> _outstanding = new(ReferenceEqualityComparer<T[]>.Instance);
 
     public FakeArrayPool(Func<T> garbage, int extraCapacity = 5)
     {
@@ -34,21 +36,17 @@ internal sealed class FakeArrayPool<T> : ArrayPool<T>
     /// <summary>When positive, the rent with this 1-based ordinal throws.</summary>
     public int FailOnRent { get; set; }
 
-    public List<T[]> Returned { get; } = new List<T[]>();
+    public List<T[]> Returned { get; } = [];
 
     public override T[] Rent(int minimumLength)
     {
         Rents++;
         if (Rents == FailOnRent)
-        {
             throw new OutOfMemoryException("Simulated pool failure.");
-        }
 
-        T[] array = new T[minimumLength + ExtraCapacity];
-        for (int i = 0; i < array.Length; i++)
-        {
+        var array = new T[minimumLength + ExtraCapacity];
+        for (var i = 0; i < array.Length; i++)
             array[i] = _garbage();
-        }
 
         _outstanding.Add(array);
         return array;
@@ -57,15 +55,11 @@ internal sealed class FakeArrayPool<T> : ArrayPool<T>
     public override void Return(T[] array, bool clearArray = false)
     {
         if (!_outstanding.Remove(array))
-        {
             throw new InvalidOperationException("Returned an array this pool did not rent, or returned it twice.");
-        }
 
         Returns++;
         if (clearArray)
-        {
             Array.Clear(array, 0, array.Length);
-        }
 
         Returned.Add(array);
     }
@@ -73,7 +67,7 @@ internal sealed class FakeArrayPool<T> : ArrayPool<T>
     private sealed class ReferenceEqualityComparer<TArray> : IEqualityComparer<TArray>
         where TArray : class
     {
-        public static readonly ReferenceEqualityComparer<TArray> Instance = new ReferenceEqualityComparer<TArray>();
+        public static readonly ReferenceEqualityComparer<TArray> Instance = new();
 
         public bool Equals(TArray? x, TArray? y) => ReferenceEquals(x, y);
 

@@ -33,7 +33,7 @@ public sealed class ConsumerTests
     [Fact]
     public void The_feed_holds_exactly_one_package()
     {
-        string version = SmokePaths.PackageVersion();
+        var version = SmokePaths.PackageVersion();
         _output.WriteLine($"package version {version}");
         version.Should().NotBeNullOrWhiteSpace();
     }
@@ -44,7 +44,7 @@ public sealed class ConsumerTests
     {
         // A netstandard assembly cannot run; building proves the emitted code compiles against that
         // reference surface, which is the whole claim for these two tiers.
-        CommandResult build = ConsumerProject.Build(_output, framework);
+        var build = ConsumerProject.Build(_output, framework);
 
         build.ExitCode.Should().Be(0, "the {0} library consumer must build against the package", framework);
     }
@@ -53,10 +53,10 @@ public sealed class ConsumerTests
     [MemberData(nameof(Runnable))]
     public void A_consumer_application_runs_the_generated_comparers(string framework)
     {
-        CommandResult build = ConsumerProject.Build(_output, framework);
+        var build = ConsumerProject.Build(_output, framework);
         build.ExitCode.Should().Be(0, "the {0} consumer must build against the package", framework);
 
-        CommandResult run = Dotnet.RunExecutable(_output, ConsumerProject.Executable(framework), RollForward);
+        var run = Dotnet.RunExecutable(_output, ConsumerProject.Executable(framework), RollForward);
 
         run.Output.Should().Contain("OK ", "the assertions must pass on {0}", framework);
         run.ExitCode.Should().Be(0, "the {0} consumer must exit cleanly", framework);
@@ -72,10 +72,10 @@ public sealed class ConsumerTests
             return;
         }
 
-        CommandResult build = ConsumerProject.Build(_output, "net472");
+        var build = ConsumerProject.Build(_output, "net472");
         build.ExitCode.Should().Be(0, "the net472 consumer must build against the package");
 
-        CommandResult run = Dotnet.RunExecutable(_output, ConsumerProject.Executable("net472"));
+        var run = Dotnet.RunExecutable(_output, ConsumerProject.Executable("net472"));
 
         run.Output.Should().Contain("OK ");
         run.ExitCode.Should().Be(0);
@@ -93,7 +93,7 @@ internal static class ConsumerProject
     public static string Executable(string framework)
     {
         // net472 always produces an .exe; a .NET application gets an apphost named for the platform.
-        bool exe = framework == "net472" || RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        var exe = framework == "net472" || RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         return Path.Combine(Directory, "bin", SmokePaths.Configuration, framework, "Consumer" + (exe ? ".exe" : string.Empty));
     }
 }

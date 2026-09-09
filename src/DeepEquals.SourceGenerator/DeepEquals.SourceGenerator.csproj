@@ -1,74 +1,71 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
-    <!-- Pinned so an SDK upgrade cannot change how the shipped analyzer compiles without a deliberate edit. -->
-    <LangVersion>13</LangVersion>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-    <RootNamespace>DeepEquals.SourceGenerator</RootNamespace>
-    <AssemblyName>DeepEquals.SourceGenerator</AssemblyName>
-    <IsRoslynComponent>true</IsRoslynComponent>
-    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
-  </PropertyGroup>
+    <PropertyGroup>
+        <TargetFramework>netstandard2.0</TargetFramework>
+        <LangVersion>13</LangVersion>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>disable</ImplicitUsings>
+        <IsRoslynComponent>true</IsRoslynComponent>
+        <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+        <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    </PropertyGroup>
 
-  <!--
-    The analyzer ships on its own so a consumer can keep it out of everything downstream with
-    PrivateAssets="all" and still let the runtime library flow. Its assembly belongs in
-    analyzers/dotnet/cs and nowhere else, hence IncludeBuildOutput=false.
-  -->
-  <PropertyGroup>
-    <IsPackable>true</IsPackable>
-    <PackageId>DeepEquals.SourceGenerator</PackageId>
-    <Description>A Roslyn source generator that emits deep, by-value IEqualityComparer&lt;T&gt; implementations for a closed set of types: cycle-safe, allocation-conscious, exact-representation leaves, and unordered set/dictionary semantics. The generated code runs against DeepEquals.SourceGeneration.Framework.</Description>
-    <PackageTags>equality;comparer;source-generator;roslyn;deep-equals;analyzer</PackageTags>
-    <IncludeBuildOutput>false</IncludeBuildOutput>
-    <DevelopmentDependency>true</DevelopmentDependency>
-    <!-- NU5128 wants a lib/ folder beside the dependency group. An analyzer package has neither a lib
-         nor a reason to grow one, and the dependency on the runtime library is deliberate. -->
-    <NoWarn>$(NoWarn);NU5128</NoWarn>
-    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);PackAnalyzerAssembly</TargetsForTfmSpecificContentInPackage>
-  </PropertyGroup>
+    <!--
+        The analyzer ships on its own so a consumer can keep it out of everything downstream with
+        PrivateAssets="all" and still let the runtime library flow. 
+        Its assembly belongs in analyzers/dotnet/cs and nowhere else, hence IncludeBuildOutput=false.
+    -->
+    <PropertyGroup>
+        <IsPackable>true</IsPackable>
+        <PackageId>DeepEquals.SourceGenerator</PackageId>
+        <IncludeBuildOutput>false</IncludeBuildOutput>
+        <DevelopmentDependency>true</DevelopmentDependency>
+        <!-- 
+            NU5128 wants a lib/ folder beside the dependency group. An analyzer package has neither a lib
+            nor a reason to grow one, and the dependency on the runtime library is deliberate. 
+        -->
+        <NoWarn>$(NoWarn);NU5128</NoWarn>
+        <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);PackAnalyzerAssembly</TargetsForTfmSpecificContentInPackage>
+    </PropertyGroup>
 
-  <Target Name="PackAnalyzerAssembly">
+    <Target Name="PackAnalyzerAssembly">
+        <ItemGroup>
+            <TfmSpecificPackageFile Include="$(TargetPath)" PackagePath="analyzers/dotnet/cs" />
+        </ItemGroup>
+    </Target>
+
+    <!--
+        The generated code calls into the runtime library, so the analyzer package depends on it and a
+        consumer who references only this one still compiles. A consumer who adds PrivateAssets="all"
+        suppresses this dependency along with the analyzer, which is why the documented setup names both
+        packages.
+    -->
     <ItemGroup>
-      <TfmSpecificPackageFile Include="$(TargetPath)" PackagePath="analyzers/dotnet/cs" />
+        <ProjectReference Include="..\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj" />
     </ItemGroup>
-  </Target>
 
-  <!--
-    The generated code calls into the runtime library, so the analyzer package depends on it and a
-    consumer who references only this one still compiles. A consumer who adds PrivateAssets="all"
-    suppresses this dependency along with the analyzer, which is why the documented setup names both
-    packages.
-  -->
-  <ItemGroup>
-    <ProjectReference Include="..\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj" />
-  </ItemGroup>
+    <ItemGroup>
+        <!-- 4.3.1 is the supported floor: ForAttributeWithMetadataName and GetTypesByMetadataName both exist there. -->
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.1" PrivateAssets="all" />
+        <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" PrivateAssets="all" />
+        <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    </ItemGroup>
 
-  <ItemGroup>
-    <!-- 4.3.1 is the supported floor: ForAttributeWithMetadataName and GetTypesByMetadataName both exist there. -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.3.1" PrivateAssets="all" />
-    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" PrivateAssets="all" />
-    <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
-  </ItemGroup>
+    <ItemGroup>
+        <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+        <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+    </ItemGroup>
 
-  <ItemGroup>
-    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
-    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
-  </ItemGroup>
+    <!-- The header of every generated file is a template with {{placeholders}}, kept as a .cs file for editor support but never compiled. -->
+    <ItemGroup>
+        <Compile Remove="Templates\AutoGeneratedHeader.cs" />
+        <EmbeddedResource Include="Templates\AutoGeneratedHeader.cs" 
+                          LogicalName="DeepEquals.SourceGenerator.Templates.AutoGeneratedHeader.cs" />
+    </ItemGroup>
 
-  <!-- The header of every generated file is a template with {{placeholders}}, kept as a .cs file for editor support but never compiled. -->
-  <ItemGroup>
-    <Compile Remove="Templates\AutoGeneratedHeader.cs" />
-    <EmbeddedResource Include="Templates\AutoGeneratedHeader.cs" 
-                      LogicalName="DeepEquals.SourceGenerator.Templates.AutoGeneratedHeader.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <InternalsVisibleTo Include="DeepEquals.SourceGenerator.Tests" Key="$(DeepEqualsPublicKey)" />
-  </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="DeepEquals.SourceGenerator.Tests" 
+                            Key="$(DeepEqualsPublicKey)" />
+    </ItemGroup>
 
 </Project>

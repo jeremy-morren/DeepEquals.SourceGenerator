@@ -5,6 +5,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace DeepEquals.SourceGenerator.Model;
 
@@ -29,59 +30,38 @@ internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IRea
 
     public T this[int index] => _items![index];
 
-    public bool IsEmpty => _items is null;
-
-    public T[] ToArray() => _items is null ? Array.Empty<T>() : (T[])_items.Clone();
+    public T[] ToArray() => _items is null ? [] : (T[])_items.Clone();
 
     public bool Equals(EquatableArray<T> other)
     {
-        T[]? a = _items;
-        T[]? b = other._items;
-        if (ReferenceEquals(a, b))
-        {
+        var a = _items;
+        var b = other._items;
+        if (ReferenceEquals(a, b)) 
             return true;
-        }
 
-        if (a is null || b is null || a.Length != b.Length)
-        {
+        if (a is null || b is null || a.Length != b.Length) 
             return false;
-        }
 
-        EqualityComparer<T> comparer = EqualityComparer<T>.Default;
-        for (int i = 0; i < a.Length; i++)
-        {
-            if (!comparer.Equals(a[i], b[i]))
-            {
-                return false;
-            }
-        }
-
-        return true;
+        var comparer = EqualityComparer<T>.Default;
+        return Enumerable.Range(0, a.Length).All(i => comparer.Equals(a[i], b[i]));
     }
 
     public override bool Equals(object? obj) => obj is EquatableArray<T> other && Equals(other);
 
     public override int GetHashCode()
     {
-        if (_items is null)
-        {
+        if (_items is null) 
             return 0;
-        }
 
         unchecked
         {
-            int hash = 17;
-            EqualityComparer<T> comparer = EqualityComparer<T>.Default;
-            foreach (T item in _items)
-            {
-                hash = hash * 31 + (item is null ? 0 : comparer.GetHashCode(item));
-            }
-
-            return hash;
+            var comparer = EqualityComparer<T>.Default;
+            return _items.Aggregate(17, 
+                (current, item) => current * 31 + (item is null ? 0 : comparer.GetHashCode(item)));
         }
     }
 
-    public IEnumerator<T> GetEnumerator() => ((IEnumerable<T>)(_items ?? Array.Empty<T>())).GetEnumerator();
+    public IEnumerator<T> GetEnumerator() => ((IEnumerable<T>)(_items ?? [])).GetEnumerator();
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
@@ -92,7 +72,7 @@ internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IRea
 
 internal static class EquatableArray
 {
-    public static EquatableArray<T> Create<T>(List<T> items) => new EquatableArray<T>(items);
+    public static EquatableArray<T> Create<T>(List<T> items) => new(items);
 
-    public static EquatableArray<T> Create<T>(params T[] items) => new EquatableArray<T>(items);
+    public static EquatableArray<T> Create<T>(params T[] items) => new(items);
 }

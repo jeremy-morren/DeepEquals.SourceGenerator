@@ -9,12 +9,14 @@ using System.Security.Cryptography;
 using System.Numerics;
 #endif
 
+// ReSharper disable InconsistentNaming
+
 namespace DeepEquals.SourceGeneration.Framework;
 
 /// <summary>
-/// Stateless value hashing for generated comparers: the xxHash32 stream that <c>System.HashCode</c> uses, with a
-/// random per-process seed, fixed-arity <c>Combine</c> overloads over already computed hashes, seeded leaf hashes for
-/// values wider than 32 bits, and two streaming forms for collections.
+/// Stateless value hashing for generated comparers: the xxHash32 stream that <c>System.HashCode</c> uses,
+/// with a random per-process seed, fixed-arity <c>Combine</c> overloads over already computed hashes,
+/// seeded leaf hashes for values wider than 32 bits, and two streaming forms for collections.
 /// </summary>
 public static partial class DeepEqualsHashCode
 {
@@ -40,11 +42,8 @@ public static partial class DeepEqualsHashCode
         RandomNumberGenerator.Fill(bytes);
         return BitConverter.ToUInt32(bytes);
 #else
-        byte[] bytes = new byte[4];
-        using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
-        {
-            rng.GetBytes(bytes);
-        }
+        var bytes = new byte[4];
+        using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(bytes);
         return BitConverter.ToUInt32(bytes, 0);
 #endif
     }
@@ -97,7 +96,7 @@ public static partial class DeepEqualsHashCode
     /// <summary>Seeded hash over all sixteen bytes; <see cref="Guid.GetHashCode"/> ignores six of them.</summary>
     public static int Hash(Guid value)
     {
-        ref int words = ref Unsafe.As<Guid, int>(ref value);
+        ref var words = ref Unsafe.As<Guid, int>(ref value);
         return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
     }
 
@@ -105,14 +104,14 @@ public static partial class DeepEqualsHashCode
     /// <summary>Seeded hash over all four 32-bit words.</summary>
     public static int Hash(Int128 value)
     {
-        ref int words = ref Unsafe.As<Int128, int>(ref value);
+        ref var words = ref Unsafe.As<Int128, int>(ref value);
         return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
     }
 
     /// <summary>Seeded hash over all four 32-bit words.</summary>
     public static int Hash(UInt128 value)
     {
-        ref int words = ref Unsafe.As<UInt128, int>(ref value);
+        ref var words = ref Unsafe.As<UInt128, int>(ref value);
         return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
     }
 #endif
@@ -124,10 +123,7 @@ public static partial class DeepEqualsHashCode
     /// </summary>
     public static int Hash(string? value)
     {
-        if (value is null)
-        {
-            return 0;
-        }
+        if (value is null) return 0;
 #if NETSTANDARD2_0
         return Marvin(value);
 #else
@@ -147,16 +143,16 @@ public static partial class DeepEqualsHashCode
     {
         unchecked
         {
-            uint seed = s_seed;
-            int length = items.Length;
+            var seed = s_seed;
+            var length = items.Length;
             uint hash;
-            int i = 0;
+            var i = 0;
             if (length >= 4)
             {
-                uint v1 = seed + Prime1 + Prime2;
-                uint v2 = seed + Prime2;
-                uint v3 = seed;
-                uint v4 = seed - Prime1;
+                var v1 = seed + Prime1 + Prime2;
+                var v2 = seed + Prime2;
+                var v3 = seed;
+                var v4 = seed - Prime1;
                 for (; i + 4 <= length; i += 4)
                 {
                     v1 = Round(v1, (uint)default(TOps).GetHashCode(items[i]));
@@ -166,16 +162,10 @@ public static partial class DeepEqualsHashCode
                 }
                 hash = MixState(v1, v2, v3, v4);
             }
-            else
-            {
-                hash = seed + Prime5;
-            }
+            else hash = seed + Prime5;
 
             hash += (uint)length * 4;
-            for (; i < length; i++)
-            {
-                hash = QueueRound(hash, (uint)default(TOps).GetHashCode(items[i]));
-            }
+            for (; i < length; i++) hash = QueueRound(hash, (uint)default(TOps).GetHashCode(items[i]));
 
             return FinalizeEmptyZero(MixFinal(hash), length);
         }
@@ -202,26 +192,17 @@ public static partial class DeepEqualsHashCode
         {
             unchecked
             {
-                uint value = (uint)hash;
-                uint previousLength = _length++;
-                uint position = previousLength % 4;
-                if (position == 0)
-                {
-                    _queue1 = value;
-                }
-                else if (position == 1)
-                {
-                    _queue2 = value;
-                }
-                else if (position == 2)
-                {
-                    _queue3 = value;
-                }
+                var value = (uint)hash;
+                var previousLength = _length++;
+                var position = previousLength % 4;
+                if (position == 0) _queue1 = value;
+                else if (position == 1) _queue2 = value;
+                else if (position == 2) _queue3 = value;
                 else
                 {
                     if (previousLength == 3)
                     {
-                        uint seed = s_seed;
+                        var seed = s_seed;
                         _v1 = seed + Prime1 + Prime2;
                         _v2 = seed + Prime2;
                         _v3 = seed;
@@ -241,9 +222,9 @@ public static partial class DeepEqualsHashCode
         {
             unchecked
             {
-                uint length = _length;
-                uint position = length % 4;
-                uint hash = length < 4 ? s_seed + Prime5 : MixState(_v1, _v2, _v3, _v4);
+                var length = _length;
+                var position = length % 4;
+                var hash = length < 4 ? s_seed + Prime5 : MixState(_v1, _v2, _v3, _v4);
                 hash += length * 4;
                 if (position > 0)
                 {
@@ -251,10 +232,7 @@ public static partial class DeepEqualsHashCode
                     if (position > 1)
                     {
                         hash = QueueRound(hash, _queue2);
-                        if (position > 2)
-                        {
-                            hash = QueueRound(hash, _queue3);
-                        }
+                        if (position > 2) hash = QueueRound(hash, _queue3);
                     }
                 }
 

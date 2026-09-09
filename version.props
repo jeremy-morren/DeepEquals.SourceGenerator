@@ -2,14 +2,7 @@
   <PropertyGroup>
     <VersionPrefix>1.0.0</VersionPrefix>
 
-    <!--
-      Pre-release builds get the default suffix. A stable build passes /p:StableRelease=true, which is a
-      separate switch because MSBuild cannot tell "VersionSuffix was set to empty" from "VersionSuffix was
-      never set", so clearing the suffix alone could never reach the stable branch.
-    -->
-    <DefaultVersionSuffix>beta01</DefaultVersionSuffix>
-    <VersionSuffix Condition="'$(VersionSuffix)' == '' and '$(StableRelease)' != 'true'">$(DefaultVersionSuffix)</VersionSuffix>
-    <VersionSuffix Condition="'$(StableRelease)' == 'true'"></VersionSuffix>
+    <VersionSuffix Condition="'$(VersionSuffix)' == ''">beta02</VersionSuffix>
 
     <PackageVersion Condition="'$(VersionSuffix)' == ''">$(VersionPrefix)</PackageVersion>
     <PackageVersion Condition="'$(VersionSuffix)' != ''">$(VersionPrefix)-$(VersionSuffix)</PackageVersion>

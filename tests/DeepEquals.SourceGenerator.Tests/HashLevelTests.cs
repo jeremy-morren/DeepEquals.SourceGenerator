@@ -23,7 +23,7 @@ public sealed class HashLevelTests
 
     private static GeneratorRun Clean(string source)
     {
-        GeneratorRun run = GeneratorHost.Run(Prelude + source);
+        var run = GeneratorHost.Run(Prelude + source);
         run.GeneratorDiagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty();
         run.CompileErrors.Should().BeEmpty(run.GeneratedSource);
         return run;
@@ -34,34 +34,34 @@ public sealed class HashLevelTests
     [Fact]
     public void Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently()
     {
-        GeneratorRun run = Clean("""
-            public sealed class N
-            {
-                public int V;
-                public List<List<N>>? Grid;
-                public (int, N?) Pair;
-                public (string, List<N>?) Bag;
-                public Dictionary<string, N>? Map;
-                public object? Any;
-            }
+        var run = Clean("""
+                        public sealed class N
+                        {
+                            public int V;
+                            public List<List<N>>? Grid;
+                            public (int, N?) Pair;
+                            public (string, List<N>?) Bag;
+                            public Dictionary<string, N>? Map;
+                            public object? Any;
+                        }
 
-            [GenerateDeepEquals(typeof(N))]
-            public partial class Ctx : DeepEqualsContextBase { }
-            """);
+                        [GenerateDeepEquals(typeof(N))]
+                        public partial class Ctx : DeepEqualsContextBase { }
+                        """);
 
         run.GeneratedSource.Should().Contain("ShallowHashCode_N", "N is cyclic and needs a level-0 hash");
-        object comparer = run.Comparer("Ctx", "N");
-        Type n = run.Assembly!.GetTypes().Single(t => t.Name == "N");
-        Type pairType = typeof(ValueTuple<,>).MakeGenericType(typeof(int), n);
-        Type bagType = typeof(ValueTuple<,>).MakeGenericType(typeof(string), typeof(List<>).MakeGenericType(n));
-        Type listOfN = typeof(List<>).MakeGenericType(n);
-        Type listOfListOfN = typeof(List<>).MakeGenericType(listOfN);
-        Type mapType = typeof(Dictionary<,>).MakeGenericType(typeof(string), n);
+        var comparer = run.Comparer("Ctx", "N");
+        var n = run.Assembly!.GetTypes().Single(t => t.Name == "N");
+        var pairType = typeof(ValueTuple<,>).MakeGenericType(typeof(int), n);
+        var bagType = typeof(ValueTuple<,>).MakeGenericType(typeof(string), typeof(List<>).MakeGenericType(n));
+        var listOfN = typeof(List<>).MakeGenericType(n);
+        var listOfListOfN = typeof(List<>).MakeGenericType(listOfN);
+        var mapType = typeof(Dictionary<,>).MakeGenericType(typeof(string), n);
 
         // A self-referential node: it sits in its own grid, its own pair, its own bag, its own map and its own object member.
         object Rolled(int v)
         {
-            object node = Activator.CreateInstance(n)!;
+            var node = Activator.CreateInstance(n)!;
             Set(node, "V", v);
             var inner = (System.Collections.IList)Activator.CreateInstance(listOfN)!;
             inner.Add(node);
@@ -80,10 +80,10 @@ public sealed class HashLevelTests
         // The same shape unrolled twice: a and b point at each other everywhere.
         object[] Unrolled(int v)
         {
-            object a = Activator.CreateInstance(n)!;
-            object b = Activator.CreateInstance(n)!;
+            var a = Activator.CreateInstance(n)!;
+            var b = Activator.CreateInstance(n)!;
             Set(a, "V", v); Set(b, "V", v);
-            foreach ((object self, object other) in new[] { (a, b), (b, a) })
+            foreach (var (self, other) in new[] { (a, b), (b, a) })
             {
                 var inner = (System.Collections.IList)Activator.CreateInstance(listOfN)!;
                 inner.Add(other);
@@ -98,22 +98,22 @@ public sealed class HashLevelTests
                 Set(self, "Any", other);
             }
 
-            return new[] { a, b };
+            return [a, b];
         }
 
-        object r1 = Rolled(7);
-        object r2 = Rolled(7);
-        object[] u = Unrolled(7);
+        var r1 = Rolled(7);
+        var r2 = Rolled(7);
+        var u = Unrolled(7);
         run.Equals(comparer, r1, r2).Should().BeTrue();
         run.Equals(comparer, r1, u[0]).Should().BeTrue("a rolled cycle equals its unrolled form");
         run.Hash(comparer, r1).Should().Be(run.Hash(comparer, r2));
         run.Hash(comparer, r1).Should().Be(run.Hash(comparer, u[0]), "equal graphs hash alike whatever their unrolling");
         run.Hash(comparer, u[0]).Should().Be(run.Hash(comparer, u[1]));
 
-        object r3 = Rolled(8);
+        var r3 = Rolled(8);
         run.Equals(comparer, r1, r3).Should().BeFalse();
 
-        object objects = run.Comparer("Ctx", "Object");
+        var objects = run.Comparer("Ctx", "Object");
         run.Equals(objects, r1, u[1]).Should().BeTrue("the same graphs behind object");
         run.Hash(objects, r1).Should().Be(run.Hash(objects, u[1]));
     }

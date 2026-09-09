@@ -21,7 +21,7 @@ internal sealed record ContextOptions(
     public const int DefaultMaxBinaryExpressionArity = 64;
     public const int DefaultStructPassByValueMaxByteSize = 8;
 
-    public static ContextOptions Default { get; } = new ContextOptions(
+    public static ContextOptions Default { get; } = new(
         DefaultMaxSwitchCases,
         DefaultMaxUnorderedCollisionRun,
         DefaultMaxComparisonPairs,

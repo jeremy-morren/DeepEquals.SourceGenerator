@@ -1,22 +1,22 @@
 <!--
-  Separate from DeepEquals.SourceGenerator.slnx on purpose. Every project here restores
-  DeepEquals.SourceGenerator from artifacts/package/release, so this solution only builds after
-  `dotnet pack src/DeepEquals.SourceGeneration.Framework -c Release`.
+    Separate from DeepEquals.SourceGenerator.slnx on purpose. Every project here restores
+    DeepEquals.SourceGenerator from artifacts/package/release, so this solution only builds after
+    `dotnet pack src/DeepEquals.SourceGeneration.Framework -c Release`.
 -->
 <Solution>
-  <Folder Name="/Solution Items/">
-    <File Path="NuGet.config" />
-    <File Path="Directory.Build.props" />
-    <File Path="Directory.Build.targets" />
-  </Folder>
-  <Folder Name="/consumers/">
-    <File Path="consumers/Directory.Build.props" />
-    <File Path="consumers/Shared/Checks.cs" />
-    <File Path="consumers/Shared/TrimmingModels.cs" />
-    <Project Path="consumers/BlazorWasm/BlazorWasm.csproj" />
-    <Project Path="consumers/Consumer/Consumer.csproj" />
-    <Project Path="consumers/Trimming.Safe/Trimming.Safe.csproj" />
-    <Project Path="consumers/Trimming.Unsafe/Trimming.Unsafe.csproj" />
-  </Folder>
-  <Project Path="Smoke.Tests/Smoke.Tests.csproj" />
+    <Folder Name="/Solution Items/">
+        <File Path="NuGet.config" />
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Build.targets" />
+    </Folder>
+    <Folder Name="/consumers/">
+        <File Path="consumers/Directory.Build.props" />
+        <File Path="consumers/Shared/Checks.cs" />
+        <File Path="consumers/Shared/TrimmingModels.cs" />
+        <Project Path="consumers/BlazorWasm/BlazorWasm.csproj" />
+        <Project Path="consumers/Consumer/Consumer.csproj" />
+        <Project Path="consumers/Trimming.Safe/Trimming.Safe.csproj" />
+        <Project Path="consumers/Trimming.Unsafe/Trimming.Unsafe.csproj" />
+    </Folder>
+    <Project Path="Smoke.Tests/Smoke.Tests.csproj" />
 </Solution>

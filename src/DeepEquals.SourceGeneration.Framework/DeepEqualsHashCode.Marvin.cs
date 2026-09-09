@@ -7,6 +7,8 @@ using System;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
+// ReSharper disable InconsistentNaming
+
 namespace DeepEquals.SourceGeneration.Framework;
 
 public static partial class DeepEqualsHashCode
@@ -22,11 +24,9 @@ public static partial class DeepEqualsHashCode
 
     private static ulong GenerateMarvinSeed()
     {
-        byte[] bytes = new byte[8];
-        using (RandomNumberGenerator rng = RandomNumberGenerator.Create())
-        {
+        var bytes = new byte[8];
+        using (var rng = RandomNumberGenerator.Create())
             rng.GetBytes(bytes);
-        }
         return BitConverter.ToUInt64(bytes, 0);
     }
 
@@ -41,11 +41,11 @@ public static partial class DeepEqualsHashCode
     {
         unchecked
         {
-            ulong seed = s_marvinSeed;
-            uint p0 = (uint)seed;
-            uint p1 = (uint)(seed >> 32);
-            int length = value.Length;
-            int i = 0;
+            var seed = s_marvinSeed;
+            var p0 = (uint)seed;
+            var p1 = (uint)(seed >> 32);
+            var length = value.Length;
+            var i = 0;
 
             // Eight bytes, four code units, per iteration.
             while (length - i >= 4)
@@ -89,8 +89,8 @@ public static partial class DeepEqualsHashCode
     {
         unchecked
         {
-            uint p0 = rp0;
-            uint p1 = rp1;
+            var p0 = rp0;
+            var p1 = rp1;
 
             p1 ^= p0;
             p0 = RotateLeft(p0, 20);

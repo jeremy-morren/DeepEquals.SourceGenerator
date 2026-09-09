@@ -6,6 +6,8 @@ using System;
 using System.Buffers;
 using System.Runtime.CompilerServices;
 
+// ReSharper disable InvertIf
+
 namespace DeepEquals.SourceGeneration.Framework;
 
 /// <summary>
@@ -52,10 +54,7 @@ public ref struct DeepEqualsState
     /// <summary>Creates a state whose retained-triple budget is <paramref name="pairBudget"/>, 1 through 2^29.</summary>
     public DeepEqualsState(int pairBudget)
     {
-        if (pairBudget < 1 || pairBudget > MaxPairBudget)
-        {
-            throw new ArgumentOutOfRangeException(nameof(pairBudget), pairBudget, "The pair budget must be between 1 and 2^29.");
-        }
+        if (pairBudget < 1 || pairBudget > MaxPairBudget) throw new ArgumentOutOfRangeException(nameof(pairBudget), pairBudget, "The pair budget must be between 1 and 2^29.");
 
         _pairPool = DeepEqualsPools<ReferencePair>.Shared;
         _indexPool = DeepEqualsPools<int>.Shared;
@@ -80,15 +79,11 @@ public ref struct DeepEqualsState
         if (_pairs is null)
         {
             if (ScanInline(kind, x, y))
-            {
                 return false;
-            }
 
             // The budget applies only to a novel insertion. A memo hit at the boundary must still succeed.
-            if (_count == _pairBudget)
-            {
+            if (_count == _pairBudget) 
                 ThrowBudgetExceeded();
-            }
 
             if (_count < InlineCapacity)
             {
@@ -103,22 +98,16 @@ public ref struct DeepEqualsState
     [MethodImpl(MethodImplOptions.NoInlining)]
     private bool TryEnterSlow(int kind, object x, object y)
     {
-        if (_pairs is null)
-        {
+        if (_pairs is null) 
             Spill();
-        }
 
-        ReferencePair pair = new ReferencePair(kind, x, y);
-        int slot = Probe(pair, out bool found);
+        var pair = new ReferencePair(kind, x, y);
+        var slot = Probe(pair, out var found);
         if (found)
-        {
             return false;
-        }
 
-        if (_count == _pairBudget)
-        {
+        if (_count == _pairBudget) 
             ThrowBudgetExceeded();
-        }
 
         if (_count == _pairsCapacity)
         {
@@ -141,19 +130,17 @@ public ref struct DeepEqualsState
     public void Rollback(int mark)
     {
         if (mark < 0 || mark > _count)
-        {
             throw new ArgumentOutOfRangeException(nameof(mark));
-        }
 
         if (_pairs is null)
         {
-            _count = mark;                        // inline slots beyond _count are never read
+            _count = mark; // inline slots beyond _count are never read
             return;
         }
 
         // Pairs are removed in reverse insertion order, so clearing each one's index slot restores exactly the table
         // that existed before it was inserted. No tombstones are needed.
-        for (int i = _count - 1; i >= mark; i--)
+        for (var i = _count - 1; i >= mark; i--)
         {
             _index![SlotOf(i)] = 0;
             _pairs[i] = default;
@@ -167,14 +154,14 @@ public ref struct DeepEqualsState
     {
         if (_pairs is not null)
         {
-            ReferencePair[] pairs = _pairs;
-            int[] index = _index!;
+            var pairs = _pairs;
+            var index = _index!;
             _pairs = null;
             _index = null;
             _pairsCapacity = 0;
             _indexCapacity = 0;
-            _pairPool.Return(pairs, clearArray: true);   // holds object references
-            _indexPool.Return(index);                    // not cleared here: every rent clears before use
+            _pairPool.Return(pairs, clearArray: true); // holds object references
+            _indexPool.Return(index);                  // not cleared here: every rent clears before use
         }
     }
 
@@ -183,18 +170,14 @@ public ref struct DeepEqualsState
     private bool ScanInline(int kind, object x, object y)
     {
 #if NET8_0_OR_GREATER
-        ReadOnlySpan<ReferencePair> seen = ((ReadOnlySpan<ReferencePair>)_inline).Slice(0, _count);
-        foreach (ref readonly ReferencePair p in seen)
-        {
+        ReadOnlySpan<ReferencePair> seen = _inline[.._count];
+        foreach (ref readonly var p in seen)
             if (p.Kind == kind && ReferenceEquals(p.X, x) && ReferenceEquals(p.Y, y))
-            {
                 return true;
-            }
-        }
 
         return false;
 #else
-        int count = _count;
+        var count = _count;
         return (count > 0 && Matches(in _i0, kind, x, y))
             || (count > 1 && Matches(in _i1, kind, x, y))
             || (count > 2 && Matches(in _i2, kind, x, y))
@@ -217,17 +200,18 @@ public ref struct DeepEqualsState
 #if NET8_0_OR_GREATER
         return _inline[i];
 #else
-        switch (i)
+        return i switch
         {
-            case 0: return _i0;
-            case 1: return _i1;
-            case 2: return _i2;
-            case 3: return _i3;
-            case 4: return _i4;
-            case 5: return _i5;
-            case 6: return _i6;
-            default: return _i7;
-        }
+            0 => _i0,
+            1 => _i1,
+            2 => _i2,
+            3 => _i3,
+            4 => _i4,
+            5 => _i5,
+            6 => _i6,
+            7 => _i7,
+            _ => throw new ArgumentOutOfRangeException(nameof(i), i, "Inline index must be between 0 and 7.")
+        };
 #endif
     }
 
@@ -255,20 +239,20 @@ public ref struct DeepEqualsState
     /// <summary>Rents the journal and index for the first time and copies the inline pairs in order.</summary>
     private void Spill()
     {
-        int capacity = Math.Min(InitialSpillCapacity, _pairBudget);
-        int indexCapacity = IndexCapacityFor(capacity);
+        var capacity = Math.Min(InitialSpillCapacity, _pairBudget);
+        var indexCapacity = IndexCapacityFor(capacity);
         ReferencePair[]? pairs = null;
         int[]? index = null;
-        bool published = false;
+        var published = false;
         try
         {
             pairs = _pairPool.Rent(capacity);
             index = _indexPool.Rent(indexCapacity);
             Array.Clear(index, 0, indexCapacity);
-            int count = _count;
-            for (int i = 0; i < count; i++)
+            var count = _count;
+            for (var i = 0; i < count; i++)
             {
-                ReferencePair p = GetInline(i);
+                var p = GetInline(i);
                 pairs[i] = p;
                 index[FindEmptySlot(index, indexCapacity, p)] = i + 1;
             }
@@ -284,14 +268,10 @@ public ref struct DeepEqualsState
             if (!published)
             {
                 if (pairs is not null)
-                {
                     _pairPool.Return(pairs, clearArray: true);
-                }
 
                 if (index is not null)
-                {
                     _indexPool.Return(index);
-                }
             }
         }
     }
@@ -299,24 +279,22 @@ public ref struct DeepEqualsState
     /// <summary>Doubles the logical capacity up to the budget, re-indexing the journal in insertion order.</summary>
     private void Grow()
     {
-        int newCapacity = (int)Math.Min(checked(2L * _pairsCapacity), _pairBudget);
-        int newIndexCapacity = IndexCapacityFor(newCapacity);
-        ReferencePair[] oldPairs = _pairs!;
-        int[] oldIndex = _index!;
+        var newCapacity = (int)Math.Min(checked(2L * _pairsCapacity), _pairBudget);
+        var newIndexCapacity = IndexCapacityFor(newCapacity);
+        var oldPairs = _pairs!;
+        var oldIndex = _index!;
         ReferencePair[]? pairs = null;
         int[]? index = null;
-        bool published = false;
+        var published = false;
         try
         {
             pairs = _pairPool.Rent(newCapacity);
             index = _indexPool.Rent(newIndexCapacity);
             Array.Clear(index, 0, newIndexCapacity);
-            int count = _count;
+            var count = _count;
             Array.Copy(oldPairs, pairs, count);
-            for (int i = 0; i < count; i++)
-            {
+            for (var i = 0; i < count; i++)
                 index[FindEmptySlot(index, newIndexCapacity, pairs[i])] = i + 1;
-            }
 
             _pairs = pairs;
             _index = index;
@@ -334,54 +312,54 @@ public ref struct DeepEqualsState
             else
             {
                 if (pairs is not null)
-                {
                     _pairPool.Return(pairs, clearArray: true);
-                }
 
                 if (index is not null)
-                {
                     _indexPool.Return(index);
-                }
             }
         }
     }
 
-    /// <summary>The smallest power of two at or above twice <paramref name="pairCapacity"/>, computed with checked arithmetic.</summary>
+    /// <summary>
+    /// The smallest power of two at or above twice <paramref name="pairCapacity"/>, computed with checked arithmetic.
+    /// </summary>
     private static int IndexCapacityFor(int pairCapacity)
     {
-        long wanted = checked(2L * pairCapacity);
+        var wanted = checked(2L * pairCapacity);
         long capacity = 1;
         while (capacity < wanted)
-        {
             capacity = checked(capacity * 2);
-        }
 
         return checked((int)capacity);
     }
 
-    /// <summary>Linear probe from the pair's identity hash to the first empty slot. Used only while rebuilding a table from distinct pairs.</summary>
+    /// <summary>
+    /// Linear probe from the pair's identity hash to the first empty slot.
+    /// Used only while rebuilding a table from distinct pairs.
+    /// </summary>
     private static int FindEmptySlot(int[] index, int indexCapacity, ReferencePair pair)
     {
-        int mask = indexCapacity - 1;
-        int slot = pair.GetHashCode() & mask;
+        var mask = indexCapacity - 1;
+        var slot = pair.GetHashCode() & mask;
         while (index[slot] != 0)
-        {
             slot = (slot + 1) & mask;
-        }
 
         return slot;
     }
 
-    /// <summary>Linear probe for <paramref name="pair"/>: returns its slot if found, otherwise the empty slot where it would go.</summary>
+    /// <summary>
+    /// Linear probe for <paramref name="pair"/>:
+    /// returns its slot if found, otherwise the empty slot where it would go.
+    /// </summary>
     private int Probe(ReferencePair pair, out bool found)
     {
-        int[] index = _index!;
-        ReferencePair[] pairs = _pairs!;
-        int mask = _indexCapacity - 1;
-        int slot = pair.GetHashCode() & mask;
+        var index = _index!;
+        var pairs = _pairs!;
+        var mask = _indexCapacity - 1;
+        var slot = pair.GetHashCode() & mask;
         while (true)
         {
-            int value = index[slot];
+            var value = index[slot];
             if (value == 0)
             {
                 found = false;
@@ -401,14 +379,12 @@ public ref struct DeepEqualsState
     /// <summary>The index slot holding journal entry <paramref name="i"/>.</summary>
     private int SlotOf(int i)
     {
-        int[] index = _index!;
-        int mask = _indexCapacity - 1;
-        int slot = _pairs![i].GetHashCode() & mask;
-        int wanted = i + 1;
+        var index = _index!;
+        var mask = _indexCapacity - 1;
+        var slot = _pairs![i].GetHashCode() & mask;
+        var wanted = i + 1;
         while (index[slot] != wanted)
-        {
             slot = (slot + 1) & mask;
-        }
 
         return slot;
     }
