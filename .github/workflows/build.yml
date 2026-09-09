@@ -55,9 +55,9 @@ jobs:
           --logger trx
           --results-directory "${{ env.results }}"
 
-      # The smoke consumers restore the package from artifacts/package/release, so pack first.
-      - name: Pack
-        run: dotnet pack src/DeepEquals.SourceGeneration.Framework -c Release
+      # The smoke consumers restore both packages from artifacts/package/release, so pack first.
+      - name: Pack (the analyzer and the runtime library)
+        run: dotnet pack DeepEquals.SourceGenerator.slnx -c Release
 
       - name: Build the smoke tests
         run: dotnet build smoke/Smoke.Tests -c Release
@@ -147,8 +147,8 @@ jobs:
           fi
           mono --version | head -1
 
-      - name: Pack
-        run: dotnet pack src/DeepEquals.SourceGeneration.Framework -c Release
+      - name: Pack (the analyzer and the runtime library)
+        run: dotnet pack DeepEquals.SourceGenerator.slnx -c Release
 
       - name: Build the smoke tests
         run: dotnet build smoke/Smoke.Tests -c Release
@@ -182,20 +182,36 @@ jobs:
           name: package
           path: package
 
-      # The package is the only thing that knows the version: version.props feeds it through MSBuild,
-      # and a stable build clears the suffix, so the file name is the one authority worth trusting.
-      - name: Read the version from the package
+      # The packages are the only thing that knows the version: version.props feeds it through MSBuild,
+      # and a stable build clears the suffix, so the file names are the one authority worth trusting.
+      # Both must agree, or the release would carry an analyzer and a runtime library from different builds.
+      - name: Read the version from the packages
         run: |
           set -euo pipefail
-          nupkg=$(ls package/DeepEquals.SourceGenerator.*.nupkg)
-          count=$(echo "$nupkg" | wc -l)
-          if [ "$count" -ne 1 ]; then
-            echo "Expected exactly one package, found $count:" >&2
-            echo "$nupkg" >&2
-            exit 1
-          fi
-          version=$(basename "$nupkg" .nupkg)
-          version=v${version#DeepEquals.SourceGenerator.}
+          shopt -s nullglob
+          version=
+          for id in DeepEquals.SourceGenerator DeepEquals.SourceGeneration.Framework; do
+            matches=()
+            for nupkg in package/"$id".*.nupkg; do
+              # The framework id is not a prefix of the analyzer's, but be explicit: what follows the
+              # id must be the version separator and a digit.
+              rest=$(basename "$nupkg" .nupkg)
+              rest=${rest#"$id".}
+              case "$rest" in [0-9]*) matches+=("$nupkg") ;; esac
+            done
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "Expected exactly one $id package, found ${#matches[@]}:" >&2
+              for match in "${matches[@]}"; do echo "  $match" >&2; done
+              exit 1
+            fi
+            found=$(basename "${matches[0]}" .nupkg)
+            found=v${found#"$id".}
+            if [ -n "$version" ] && [ "$version" != "$found" ]; then
+              echo "Packages disagree on the version: $version and $found" >&2
+              exit 1
+            fi
+            version=$found
+          done
           echo "Package version: $version"
           echo "VERSION=$version" >> "$GITHUB_ENV"
 

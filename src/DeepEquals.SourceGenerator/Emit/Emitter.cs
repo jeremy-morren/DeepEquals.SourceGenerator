@@ -394,19 +394,41 @@ internal sealed class Emitter
 
         if (predicates.Count <= arity && terminalReturnTrue)
         {
-            _w.Line("return " + string.Join(" && ", predicates) + ";");
+            EmitConjunction("return ", predicates, ";");
             return;
         }
 
         for (int i = 0; i < predicates.Count; i += arity)
         {
             List<string> chunk = predicates.GetRange(i, Math.Min(arity, predicates.Count - i));
-            _w.Line($"if (!({string.Join(" && ", chunk)})) return false;");
+            EmitConjunction("if (!(", chunk, ")) return false;");
         }
 
         if (terminalReturnTrue)
         {
             _w.Line("return true;");
+        }
+    }
+
+    /// <summary>
+    /// Writes one predicate per line, with <c>&amp;&amp;</c> ending every line but the last and the continuations
+    /// padded to sit under the first predicate. A member comparison is the unit a reader scans for, so a chain of
+    /// them reads as a column rather than as one line that wraps wherever the editor happens to be wide.
+    /// A single predicate stays on the line it started on.
+    /// </summary>
+    private void EmitConjunction(string prefix, List<string> predicates, string suffix)
+    {
+        if (predicates.Count == 1)
+        {
+            _w.Line(prefix + predicates[0] + suffix);
+            return;
+        }
+
+        string continuation = new string(' ', prefix.Length);
+        for (int i = 0; i < predicates.Count; i++)
+        {
+            bool last = i == predicates.Count - 1;
+            _w.Line((i == 0 ? prefix : continuation) + predicates[i] + (last ? suffix : " &&"));
         }
     }
 

@@ -11,8 +11,13 @@
     <DeepEqualsVersion Condition="'$(DeepEqualsVersion)' == ''">*-*</DeepEqualsVersion>
   </PropertyGroup>
 
+  <!--
+    The documented setup: the analyzer private to this project, the runtime library flowing normally.
+    A smoke consumer references the packages the way the README tells a real consumer to.
+  -->
   <ItemGroup>
-    <PackageReference Include="DeepEquals.SourceGenerator" Version="$(DeepEqualsVersion)" />
+    <PackageReference Include="DeepEquals.SourceGenerator" Version="$(DeepEqualsVersion)" PrivateAssets="all" />
+    <PackageReference Include="DeepEquals.SourceGeneration.Framework" Version="$(DeepEqualsVersion)" />
   </ItemGroup>
 
   <!-- Building net472 away from Windows needs the reference assemblies from NuGet. -->

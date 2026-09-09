@@ -21,28 +21,42 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.event.release.tag_name }}
     steps:
-      - name: Download the package from the release
+      - name: Download the packages from the release
         run: gh release download "$TAG" --pattern '*.nupkg' --dir package
 
-      # The draft carried the package built from that commit; a tag that disagrees with it means the
-      # release was assembled by hand, and pushing the wrong version to NuGet cannot be undone.
-      - name: Check the package matches the tag
+      # The draft carried the packages built from that commit; a tag that disagrees with either means
+      # the release was assembled by hand, and pushing a wrong version to NuGet cannot be undone.
+      - name: Check the packages match the tag
+        id: packages
         run: |
           set -euo pipefail
-          nupkg=$(ls package/DeepEquals.SourceGenerator.*.nupkg)
-          count=$(echo "$nupkg" | wc -l)
-          if [ "$count" -ne 1 ]; then
-            echo "Expected exactly one package on release $TAG, found $count:" >&2
-            echo "$nupkg" >&2
-            exit 1
-          fi
-          version=$(basename "$nupkg" .nupkg)
-          version=v${version#DeepEquals.SourceGenerator.}
-          if [ "$version" != "$TAG" ]; then
-            echo "Package is $version but the release is tagged $TAG" >&2
-            exit 1
-          fi
-          echo "Publishing $version"
+          shopt -s nullglob
+          for id in DeepEquals.SourceGeneration.Framework DeepEquals.SourceGenerator; do
+            matches=()
+            for nupkg in package/"$id".*.nupkg; do
+              # The framework id is not a prefix of the analyzer's, but be explicit: what follows the
+              # id must be the version separator and a digit.
+              rest=$(basename "$nupkg" .nupkg)
+              rest=${rest#"$id".}
+              case "$rest" in [0-9]*) matches+=("$nupkg") ;; esac
+            done
+            if [ "${#matches[@]}" -ne 1 ]; then
+              echo "Expected exactly one $id package on release $TAG, found ${#matches[@]}:" >&2
+              for match in "${matches[@]}"; do echo "  $match" >&2; done
+              exit 1
+            fi
+            version=$(basename "${matches[0]}" .nupkg)
+            version=v${version#"$id".}
+            if [ "$version" != "$TAG" ]; then
+              echo "$id is $version but the release is tagged $TAG" >&2
+              exit 1
+            fi
+            case "$id" in
+              *.Framework) echo "framework=${matches[0]}" >> "$GITHUB_OUTPUT" ;;
+              *) echo "analyzer=${matches[0]}" >> "$GITHUB_OUTPUT" ;;
+            esac
+            echo "Publishing $id $version"
+          done
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v6
@@ -56,10 +70,18 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
+      # The runtime library goes first: the analyzer package depends on it, and a consumer restoring in
+      # the window between the two pushes should not find an analyzer whose dependency is missing.
       - name: Push to NuGet
-        run: >-
-          dotnet nuget push package/*.nupkg
-          --source https://api.nuget.org/v3/index.json
-          --api-key "${{steps.login.outputs.NUGET_API_KEY}}"
-          --source "https://api.nuget.org/v3/index.json"
-          --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+          FRAMEWORK: ${{ steps.packages.outputs.framework }}
+          ANALYZER: ${{ steps.packages.outputs.analyzer }}
+        run: |
+          set -euo pipefail
+          for package in "$FRAMEWORK" "$ANALYZER"; do
+            dotnet nuget push "$package" \
+              --source https://api.nuget.org/v3/index.json \
+              --api-key "$NUGET_API_KEY" \
+              --skip-duplicate
+          done

@@ -23,33 +23,56 @@ public static class SmokePaths
 
     public static string Consumer(string name) => Path.Combine(Consumers, name);
 
+    /// <summary>The two packages a consumer references, analyzer first.</summary>
+    public static readonly string[] PackageIds = ["DeepEquals.SourceGenerator", "DeepEquals.SourceGeneration.Framework"];
+
     /// <summary>
-    /// The version in the local feed. Reading it keeps the failure legible when nothing was packed,
-    /// which is the one setup mistake every one of these tests would otherwise fail on obscurely.
+    /// The version both packages are at in the local feed. Reading it keeps the failure legible when
+    /// nothing was packed, which is the one setup mistake every one of these tests would otherwise fail
+    /// on obscurely, and catches a feed holding two versions of a package, where the floating reference
+    /// would silently pick the newer.
     /// </summary>
     public static string PackageVersion()
     {
         if (!Directory.Exists(PackageFeed))
         {
             throw new InvalidOperationException(
-                $"No package feed at {PackageFeed}. Run: dotnet pack src/DeepEquals.SourceGeneration.Framework -c {Configuration}");
+                $"No package feed at {PackageFeed}. Run: dotnet pack DeepEquals.SourceGenerator.slnx -c {Configuration}");
         }
 
-        string[] packages = Directory.GetFiles(PackageFeed, "DeepEquals.SourceGenerator.*.nupkg");
-        if (packages.Length == 0)
+        string? agreed = null;
+        foreach (string id in PackageIds)
         {
-            throw new InvalidOperationException(
-                $"No DeepEquals.SourceGenerator package in {PackageFeed}. Run: dotnet pack src/DeepEquals.SourceGeneration.Framework -c {Configuration}");
+            // The analyzer id is a prefix of nothing else, but the framework id is not a prefix of the
+            // analyzer's, so each pattern is anchored by the version separator that follows the id.
+            string[] packages = Directory.GetFiles(PackageFeed, id + ".*.nupkg")
+                .Where(p => char.IsDigit(Path.GetFileNameWithoutExtension(p)[(id.Length + 1)..][0]))
+                .ToArray();
+
+            if (packages.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    $"No {id} package in {PackageFeed}. Run: dotnet pack DeepEquals.SourceGenerator.slnx -c {Configuration}");
+            }
+
+            if (packages.Length > 1)
+            {
+                throw new InvalidOperationException(
+                    $"{packages.Length} versions of {id} in {PackageFeed}; the floating version cannot pick between them. Delete the stale ones:{Environment.NewLine}" +
+                    string.Join(Environment.NewLine, packages.Select(Path.GetFileName)));
+            }
+
+            string version = Path.GetFileNameWithoutExtension(packages[0])[(id.Length + 1)..];
+            if (agreed is not null && agreed != version)
+            {
+                throw new InvalidOperationException(
+                    $"The feed holds {PackageIds[0]} and {id} at different versions ({agreed} and {version}); pack them together.");
+            }
+
+            agreed = version;
         }
 
-        if (packages.Length > 1)
-        {
-            throw new InvalidOperationException(
-                $"{packages.Length} packages in {PackageFeed}; the floating version cannot pick between them. Delete the stale ones:{Environment.NewLine}" +
-                string.Join(Environment.NewLine, packages.Select(Path.GetFileName)));
-        }
-
-        return Path.GetFileNameWithoutExtension(packages[0])["DeepEquals.SourceGenerator.".Length..];
+        return agreed!;
     }
 
     private static string FindSmokeRoot()

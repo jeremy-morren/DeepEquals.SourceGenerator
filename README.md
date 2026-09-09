@@ -16,10 +16,19 @@ A Roslyn source generator that emits deep, by-value `IEqualityComparer<T>` imple
 ## Installation
 
 ```xml
-<PackageReference Include="DeepEquals.SourceGenerator" Version="1.0.0-beta01" />
+<PackageReference Include="DeepEquals.SourceGenerator" Version="1.0.0-beta01" PrivateAssets="all" />
+<PackageReference Include="DeepEquals.SourceGeneration.Framework" Version="1.0.0-beta01" />
 ```
 
-One package carries the generator (as an analyzer) and the runtime library `DeepEquals.SourceGeneration.Framework` for `netstandard2.0`, `netstandard2.1`, `net6.0`, `net8.0` and `net10.0`. The consuming project must be C# and compile with Roslyn 4.3.1 or later (.NET SDK 6.0.400, Visual Studio 17.3). Generated source is C# 7.3-compatible; nullable annotations appear from C# 8.
+Two packages, in every project that declares a context. `DeepEquals.SourceGenerator` is the generator, an analyzer with no runtime surface of its own. `DeepEquals.SourceGeneration.Framework` is the library the generated code compiles and runs against, for `netstandard2.0`, `netstandard2.1`, `net6.0`, `net8.0` and `net10.0`. The consuming project must be C# and compile with Roslyn 4.3.1 or later (.NET SDK 6.0.400, Visual Studio 17.3). Generated source is C# 7.3-compatible; nullable annotations appear from C# 8.
+
+**`PrivateAssets="all"` on the generator is what keeps it to this project.** Analyzers otherwise propagate across a `ProjectReference` and out of a package built from it, and no narrower setting prevents that — neither `PrivateAssets="analyzers"` on the reference nor `ExcludeAssets="analyzers"` on the consuming `ProjectReference` has any effect. The runtime library is referenced separately and without that flag, so it still flows to everything downstream, which is what a project consuming your generated comparers needs at run time.
+
+Leaving the flag off is not an error; it means every project downstream of yours also loads the generator. It emits nothing where no context is declared, so the cost is analyzer load time, and a downstream project that does declare a context gets it generated without naming the package — which works, but leaves the dependency invisible in that project file.
+
+Referencing only `DeepEquals.SourceGenerator`, with or without the flag, also works: it depends on the runtime library at the same version. The two-line form above is the one to prefer, because `PrivateAssets="all"` suppresses that dependency along with the analyzer.
+
+Everything under [Project setup](#project-setup) applies to the project that **declares the context**, not to projects that merely reference it.
 
 | Consumer target | Runtime asset | Notes |
 |---|---|---|

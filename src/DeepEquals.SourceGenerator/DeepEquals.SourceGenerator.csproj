@@ -11,9 +11,42 @@
     <IsRoslynComponent>true</IsRoslynComponent>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
+
+  <!--
+    The analyzer ships on its own so a consumer can keep it out of everything downstream with
+    PrivateAssets="all" and still let the runtime library flow. Its assembly belongs in
+    analyzers/dotnet/cs and nowhere else, hence IncludeBuildOutput=false.
+  -->
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>DeepEquals.SourceGenerator</PackageId>
+    <Description>A Roslyn source generator that emits deep, by-value IEqualityComparer&lt;T&gt; implementations for a closed set of types: cycle-safe, allocation-conscious, exact-representation leaves, and unordered set/dictionary semantics. The generated code runs against DeepEquals.SourceGeneration.Framework.</Description>
+    <PackageTags>equality;comparer;source-generator;roslyn;deep-equals;analyzer</PackageTags>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <!-- NU5128 wants a lib/ folder beside the dependency group. An analyzer package has neither a lib
+         nor a reason to grow one, and the dependency on the runtime library is deliberate. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+    <TargetsForTfmSpecificContentInPackage>$(TargetsForTfmSpecificContentInPackage);PackAnalyzerAssembly</TargetsForTfmSpecificContentInPackage>
+  </PropertyGroup>
+
+  <Target Name="PackAnalyzerAssembly">
+    <ItemGroup>
+      <TfmSpecificPackageFile Include="$(TargetPath)" PackagePath="analyzers/dotnet/cs" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    The generated code calls into the runtime library, so the analyzer package depends on it and a
+    consumer who references only this one still compiles. A consumer who adds PrivateAssets="all"
+    suppresses this dependency along with the analyzer, which is why the documented setup names both
+    packages.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- 4.3.1 is the supported floor: ForAttributeWithMetadataName and GetTypesByMetadataName both exist there. -->
