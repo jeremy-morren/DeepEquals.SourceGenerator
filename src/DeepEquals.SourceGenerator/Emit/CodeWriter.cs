@@ -21,10 +21,27 @@ internal sealed class CodeWriter
         _atLineStart = true;
     }
 
+    /// <summary>
+    /// Writes <paramref name="text"/>, which may span several lines. An expression builder returns a string, so a
+    /// wide one can only be broken up by putting newlines in that string; every line it contains is written at the
+    /// block's indentation, and whatever relative indentation the expression carries is added on top of it.
+    /// </summary>
     public void Line(string text)
     {
-        Write(text);
-        Line();
+        int start = 0;
+        while (true)
+        {
+            int newline = text.IndexOf('\n', start);
+            Write(newline < 0 ? text.Substring(start) : text.Substring(start, newline - start));
+            Line();
+
+            if (newline < 0)
+            {
+                return;
+            }
+
+            start = newline + 1;
+        }
     }
 
     public void Write(string text)
@@ -37,6 +54,11 @@ internal sealed class CodeWriter
 
         _builder.Append(text);
     }
+
+    /// <summary>Indents without opening a brace, for the continuation lines of one statement.</summary>
+    public void Indent() => _indent++;
+
+    public void Unindent() => _indent--;
 
     public void Open(string header)
     {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using DeepEquals.SourceGenerator.Model;
 
@@ -359,23 +360,24 @@ internal sealed class Emitter
             return "1";
         }
 
-        if (inputs.Count == 1)
-        {
-            return $"{KnownTypes.GlobalHashCode}.Combine({inputs[0]})";
-        }
-
         if (inputs.Count <= MaxCombineArity)
         {
-            return $"{KnownTypes.GlobalHashCode}.Combine({string.Join(", ", inputs)})";
+            return ItemList($"{KnownTypes.GlobalHashCode}.Combine(", inputs, ",", ")");
         }
 
+        return Combine(Chunk(inputs));
+    }
+
+    /// <summary>One round of grouping for <see cref="Combine"/>: each group of at most MaxCombineArity inputs becomes a nested call.</summary>
+    private static List<string> Chunk(List<string> inputs)
+    {
         List<string> nested = new List<string>();
         for (int i = 0; i < inputs.Count; i += MaxCombineArity)
         {
             nested.Add(Combine(inputs.GetRange(i, Math.Min(MaxCombineArity, inputs.Count - i))));
         }
 
-        return Combine(nested);
+        return nested;
     }
 
     /// <summary>Emits a predicate chain as chunks of at most MaxBinaryExpressionArity, returning false on the first failed chunk.</summary>
@@ -394,14 +396,15 @@ internal sealed class Emitter
 
         if (predicates.Count <= arity && terminalReturnTrue)
         {
-            EmitConjunction("return ", predicates, ";");
+            // "return" alone on the first line, since a single predicate is the only case that fits beside it.
+            _w.Line(ItemList(predicates.Count == 1 ? "return " : "return", predicates, " &&", ";"));
             return;
         }
 
         for (int i = 0; i < predicates.Count; i += arity)
         {
             List<string> chunk = predicates.GetRange(i, Math.Min(arity, predicates.Count - i));
-            EmitConjunction("if (!(", chunk, ")) return false;");
+            _w.Line(ItemList("if (!(", chunk, " &&", ")) return false;"));
         }
 
         if (terminalReturnTrue)
@@ -410,26 +413,34 @@ internal sealed class Emitter
         }
     }
 
+    /// <summary>Four spaces on every line, so a nested list sits one level in from the list containing it.</summary>
+    private static string IndentLines(string text) => "    " + text.Replace("\n", "\n    ");
+
     /// <summary>
-    /// Writes one predicate per line, with <c>&amp;&amp;</c> ending every line but the last and the continuations
-    /// padded to sit under the first predicate. A member comparison is the unit a reader scans for, so a chain of
-    /// them reads as a column rather than as one line that wraps wherever the editor happens to be wide.
-    /// A single predicate stays on the line it started on.
+    /// <paramref name="open"/>, then one item per line indented a further level, each but the last followed by
+    /// <paramref name="separator"/> and the last by <paramref name="close"/>. A member is the unit a reader scans
+    /// for, so a list of them reads as a column rather than as one line that wraps wherever the editor happens to
+    /// be wide, and a business object with thirty properties is the case that matters. Indenting rather than
+    /// padding to the opening text keeps the column in the same place whatever opened it, and keeps a long prefix
+    /// from pushing every item to the right. A single item stays on the line it started on.
+    ///
+    /// The result carries relative indentation only. It is equally usable as a whole statement and as one item of
+    /// an enclosing list, because <see cref="CodeWriter"/> adds the block indentation to every line it is given.
     /// </summary>
-    private void EmitConjunction(string prefix, List<string> predicates, string suffix)
+    private static string ItemList(string open, List<string> items, string separator, string close)
     {
-        if (predicates.Count == 1)
+        if (items.Count == 1)
         {
-            _w.Line(prefix + predicates[0] + suffix);
-            return;
+            return open + items[0] + close;
         }
 
-        string continuation = new string(' ', prefix.Length);
-        for (int i = 0; i < predicates.Count; i++)
+        StringBuilder text = new StringBuilder(open);
+        for (int i = 0; i < items.Count; i++)
         {
-            bool last = i == predicates.Count - 1;
-            _w.Line((i == 0 ? prefix : continuation) + predicates[i] + (last ? suffix : " &&"));
+            text.Append('\n').Append(IndentLines(items[i])).Append(i == items.Count - 1 ? close : separator);
         }
+
+        return text.ToString();
     }
 
     // ----- member reads ---------------------------------------------------------------------------------------------------
@@ -472,7 +483,7 @@ internal sealed class Emitter
                 if (type.InlineAsSmallStruct)
                 {
                     List<string> predicates = type.Members.Select(m => Eq(T(m.TypeId), Read(m, x, false), Read(m, y, false))).ToList();
-                    return predicates.Count == 0 ? "true" : "(" + string.Join(" && ", predicates) + ")";
+                    return predicates.Count == 0 ? "true" : ItemList("(", predicates, " &&", ")");
                 }
 
                 // An `in` parameter binds by reference without the keyword at the call site; writing `in` would require a
@@ -508,9 +519,10 @@ internal sealed class Emitter
             case LeafRule.DateTimeOffset:
                 return $"({x}.Ticks == {y}.Ticks && {x}.Offset == {y}.Offset)";
             case LeafRule.FloatAggregate:
-                return "(" + string.Join(" && ", type.AggregateComponents.Select(c => c.IsDouble
+                // Matrix4x4 is sixteen of these; a component is as much a member as a property is.
+                return ItemList("(", type.AggregateComponents.Select(c => c.IsDouble
                     ? $"{KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({x}.{c.Expression}) == {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({y}.{c.Expression})"
-                    : $"{SingleBits(x + "." + c.Expression)} == {SingleBits(y + "." + c.Expression)}")) + ")";
+                    : $"{SingleBits(x + "." + c.Expression)} == {SingleBits(y + "." + c.Expression)}").ToList(), " &&", ")");
             case LeafRule.Uri:
                 return RefLeaf(x, y, $"(string.Equals({x}.OriginalString, {y}.OriginalString, {KnownTypes.GlobalStringComparison}.Ordinal) && {x}.IsAbsoluteUri == {y}.IsAbsoluteUri)");
             case LeafRule.Regex:

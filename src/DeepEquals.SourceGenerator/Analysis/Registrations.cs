@@ -128,7 +128,7 @@ internal sealed class Registrations
                 }
 
                 ITypeSymbol broad = SimpleTypes[j].Type;
-                if (!SymbolEqualityComparer.Default.Equals(broad, narrow) && compilation.HasImplicitConversion(narrow, broad) && !compilation.HasImplicitConversion(broad, narrow))
+                if (!SymbolEqualityComparer.Default.Equals(broad, narrow) && compilation.IsAssignable(narrow, broad) && !compilation.IsAssignable(broad, narrow))
                 {
                     diagnostics.Add(DiagnosticInfo.Create(Diagnostics.SimpleTypeOverlap, location, narrow.ToDisplayString(), broad.ToDisplayString()));
                     SimpleTypes.RemoveAt(i);
@@ -247,7 +247,7 @@ internal sealed class Registrations
             List<ISymbol> candidates = comparerType.GetMembers(memberName)
                 .Where(m => m.IsStatic && m.DeclaredAccessibility == Accessibility.Public)
                 .Where(m => m is IFieldSymbol || m is IPropertySymbol { GetMethod: not null } || m is IMethodSymbol { Parameters.Length: 0, ReturnsVoid: false })
-                .Where(m => compilation.HasImplicitConversion(MemberType(m), comparerInterfaces[0]))
+                .Where(m => compilation.IsAssignable(MemberType(m), comparerInterfaces[0]))
                 .ToList();
             if (candidates.Count != 1)
             {
@@ -309,7 +309,7 @@ internal sealed class Registrations
         => comparerType.GetMembers(name)
             .FirstOrDefault(m => m.IsStatic && m.DeclaredAccessibility == Accessibility.Public
                 && (m is IFieldSymbol || m is IPropertySymbol { GetMethod: not null })
-                && compilation.HasImplicitConversion(MemberType(m), comparerInterface));
+                && compilation.IsAssignable(MemberType(m), comparerInterface));
 
     private static ITypeSymbol MemberType(ISymbol member) => member switch
     {
@@ -371,12 +371,12 @@ internal sealed class Registrations
                     continue;   // value-type targets are exact; nullable pairs stay independent
                 }
 
-                if (compilation.HasImplicitConversion(b.Target, a.Target))
+                if (compilation.IsAssignable(b.Target, a.Target))
                 {
                     b.Ignored = true;
                     diagnostics.Add(DiagnosticInfo.Create(Diagnostics.CustomComparerOverlap, b.Location, b.Target.ToDisplayString(), a.Target.ToDisplayString()));
                 }
-                else if (compilation.HasImplicitConversion(a.Target, b.Target))
+                else if (compilation.IsAssignable(a.Target, b.Target))
                 {
                     a.Ignored = true;
                     diagnostics.Add(DiagnosticInfo.Create(Diagnostics.CustomComparerOverlap, a.Location, a.Target.ToDisplayString(), b.Target.ToDisplayString()));

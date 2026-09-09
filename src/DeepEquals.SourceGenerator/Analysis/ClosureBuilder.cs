@@ -448,17 +448,17 @@ internal sealed class ClosureBuilder
                 continue;
             }
 
-            if (_compilation.HasImplicitConversion(symbol, registration.Target) && !(symbol.IsValueType && registration.Target.SpecialType == SpecialType.System_Object))
+            if (_compilation.IsAssignable(symbol, registration.Target) && !(symbol.IsValueType && registration.Target.SpecialType == SpecialType.System_Object))
             {
                 if (covering is null)
                 {
                     covering = registration;
                 }
-                else if (_compilation.HasImplicitConversion(covering.Target, registration.Target))
+                else if (_compilation.IsAssignable(covering.Target, registration.Target))
                 {
                     // covering is narrower; keep it
                 }
-                else if (_compilation.HasImplicitConversion(registration.Target, covering.Target))
+                else if (_compilation.IsAssignable(registration.Target, covering.Target))
                 {
                     covering = registration;
                 }
@@ -492,7 +492,7 @@ internal sealed class ClosureBuilder
     {
         foreach ((ITypeSymbol simple, LocationInfo? _) in _registrations.SimpleTypes)
         {
-            if (SymbolEqualityComparer.Default.Equals(simple, symbol) || (!symbol.IsValueType || simple.TypeKind == RoslynTypeKind.Interface || simple.TypeKind == RoslynTypeKind.Class) && _compilation.HasImplicitConversion(symbol, simple) && simple.SpecialType != SpecialType.System_Object)
+            if (SymbolEqualityComparer.Default.Equals(simple, symbol) || (!symbol.IsValueType || simple.TypeKind == RoslynTypeKind.Interface || simple.TypeKind == RoslynTypeKind.Class) && _compilation.IsAssignable(symbol, simple) && simple.SpecialType != SpecialType.System_Object)
             {
                 return true;
             }
@@ -1241,7 +1241,7 @@ internal sealed class ClosureBuilder
                     continue;
                 }
 
-                if (!_compilation.HasImplicitConversion(candidate.Symbol, dispatch.Symbol))
+                if (!_compilation.IsAssignable(candidate.Symbol, dispatch.Symbol))
                 {
                     continue;
                 }
@@ -1318,7 +1318,7 @@ internal sealed class ClosureBuilder
     }
 
     private bool ImplementsAnyCanonical(ClosureType candidate)
-        => _ordered.Any(t => t.IsCanonicalCase && _compilation.HasImplicitConversion(candidate.Symbol, t.Symbol));
+        => _ordered.Any(t => t.IsCanonicalCase && _compilation.IsAssignable(candidate.Symbol, t.Symbol));
 
     private static int CompareAssignable(ClosureType a, ClosureType b)
     {
@@ -1363,7 +1363,7 @@ internal sealed class ClosureBuilder
             int insertAt = result.Count;
             for (int i = 0; i < result.Count; i++)
             {
-                if (_compilation.HasImplicitConversion(candidate.Symbol, result[i].Symbol) && !SymbolEqualityComparer.Default.Equals(candidate.Symbol, result[i].Symbol))
+                if (_compilation.IsAssignable(candidate.Symbol, result[i].Symbol) && !SymbolEqualityComparer.Default.Equals(candidate.Symbol, result[i].Symbol))
                 {
                     insertAt = i;
                     break;

@@ -154,6 +154,131 @@ public sealed class StrategyAndDiagnosticTests
     }
 
     [Fact]
+    public void Custom_comparer_coverage_ignores_user_defined_implicit_conversions()
+    {
+        // JsonNode declares implicit operators from every primitive; a comparer registered for it must not capture them.
+        GeneratorRun run = Clean("""
+            public sealed class JsonLike
+            {
+                public string? Text;
+                public static implicit operator JsonLike(uint value) => new JsonLike { Text = value.ToString() };
+                public static implicit operator JsonLike(string? value) => new JsonLike { Text = value };
+                public static implicit operator JsonLike?(decimal? value) => value is null ? null : new JsonLike { Text = value.Value.ToString() };
+            }
+            public sealed class JsonLikeComparer : IEqualityComparer<JsonLike>
+            {
+                public static int Calls;
+                public bool Equals(JsonLike? a, JsonLike? b) { Calls++; return string.Equals(a?.Text, b?.Text, StringComparison.OrdinalIgnoreCase); }
+                public int GetHashCode(JsonLike o) => StringComparer.OrdinalIgnoreCase.GetHashCode(o.Text ?? "");
+            }
+            public sealed class Holder { public uint Position; public string? Name; public decimal? Amount; public JsonLike? Node; }
+
+            [GenerateDeepEquals(typeof(Holder))]
+            [CustomEqualityComparer(typeof(JsonLikeComparer))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        string source = run.GeneratedSource;
+        source.Should().Contain("uint  (leaf, built-in)");
+        source.Should().Contain("string  (leaf, built-in)");
+        source.Should().Contain("decimal?  (nullable wrapper)");
+        source.Should().Contain("Tests.JsonLike  (leaf, custom comparer)");
+        source.Should().NotContain("decimal?  (leaf, custom comparer)");
+
+        object comparer = run.Comparer("Ctx", "Holder");
+        object a = run.New("Holder"); object b = run.New("Holder");
+        Set(a, "Position", 1u); Set(b, "Position", 1u);
+        Set(a, "Name", "abc"); Set(b, "Name", "ABC");
+        run.Equals(comparer, a, b).Should().BeFalse("strings stay ordinal instead of going through the JSON comparer");
+        Set(b, "Name", "abc");
+        Set(a, "Amount", 1.0m); Set(b, "Amount", 1.00m);
+        run.Equals(comparer, a, b).Should().BeFalse("decimal keeps its exact-representation rule");
+        Set(b, "Amount", 1.0m);
+        object n1 = run.New("JsonLike"); Set(n1, "Text", "x"); object n2 = run.New("JsonLike"); Set(n2, "Text", "X");
+        Set(a, "Node", n1); Set(b, "Node", n2);
+        run.Equals(comparer, a, b).Should().BeTrue("only the JsonLike member uses the custom comparer");
+        run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
+        Set(b, "Position", 2u);
+        run.Equals(comparer, a, b).Should().BeFalse();
+        int calls = (int)run.Assembly!.GetTypes().Single(t => t.Name == "JsonLikeComparer").GetField("Calls")!.GetValue(null)!;
+        calls.Should().Be(1, "the comparer runs once per comparison that reaches the JsonLike member, never for primitives");
+    }
+
+    [Fact]
+    public void Custom_comparer_coverage_ignores_implicit_numeric_conversions()
+    {
+        GeneratorRun run = Clean("""
+            public sealed class LongComparer : IEqualityComparer<long>
+            {
+                public bool Equals(long a, long b) => a / 10 == b / 10;
+                public int GetHashCode(long o) => (o / 10).GetHashCode();
+            }
+            public sealed class IntComparer : IEqualityComparer<int>
+            {
+                public bool Equals(int a, int b) => a == b;
+                public int GetHashCode(int o) => o;
+            }
+            public sealed class Holder { public int I; public long L; public short S; public double D; }
+
+            [GenerateDeepEquals(typeof(Holder))]
+            [CustomEqualityComparer(typeof(LongComparer))]
+            [CustomEqualityComparer(typeof(IntComparer))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        run.GeneratorDiagnosticIds.Should().NotContain("DEQ030", "int and long are unrelated types, not an overlap");
+        run.GeneratorDiagnosticIds.Should().NotContain("DEQ031");
+        string source = run.GeneratedSource;
+        source.Should().Contain("short  (leaf, built-in)");
+        source.Should().Contain("double  (leaf, built-in)");
+        source.Should().Contain("long  (leaf, custom comparer)");
+        source.Should().Contain("int  (leaf, custom comparer)");
+
+        object comparer = run.Comparer("Ctx", "Holder");
+        object a = run.New("Holder"); object b = run.New("Holder");
+        Set(a, "L", 21L); Set(b, "L", 29L);
+        run.Equals(comparer, a, b).Should().BeTrue("the long comparer buckets by tens");
+        Set(a, "S", (short)21); Set(b, "S", (short)29);
+        run.Equals(comparer, a, b).Should().BeFalse("short is not covered by the long comparer");
+        Set(b, "S", (short)21); Set(a, "I", 21); Set(b, "I", 29);
+        run.Equals(comparer, a, b).Should().BeFalse("int has its own exact comparer, not the long one");
+    }
+
+    [Fact]
+    public void Simple_type_coverage_ignores_user_defined_implicit_conversions()
+    {
+        GeneratorRun run = Clean("""
+            public sealed class Wrapper
+            {
+                public decimal V;
+                public override bool Equals(object? o) => o is Wrapper w && w.V == V;
+                public override int GetHashCode() => V.GetHashCode();
+            }
+            public struct Money
+            {
+                public decimal Amount; public string? Currency;
+                public static implicit operator Wrapper(Money m) => new Wrapper { V = m.Amount };
+            }
+            public sealed class Holder { public Money M; public Wrapper? W; }
+
+            [GenerateDeepEquals(typeof(Holder))]
+            [SimpleType(typeof(Wrapper))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        string source = run.GeneratedSource;
+        source.Should().Contain("Tests.Money  (struct, compared by members)");
+        source.Should().Contain("Tests.Wrapper  (leaf, [SimpleType])");
+
+        object comparer = run.Comparer("Ctx", "Holder");
+        object a = run.New("Holder"); object b = run.New("Holder");
+        object m1 = run.New("Money"); Set(m1, "Amount", 1m); Set(m1, "Currency", "GBP");
+        object m2 = run.New("Money"); Set(m2, "Amount", 1m); Set(m2, "Currency", "USD");
+        Set(a, "M", m1); Set(b, "M", m2);
+        run.Equals(comparer, a, b).Should().BeFalse("Money is walked by members, so Currency counts; the Wrapper conversion is not coverage");
+    }
+
+    [Fact]
     public void Simple_types_implementing_IEquatable_of_self_bypass_the_default_comparer()
     {
         GeneratorRun run = Clean("""
