@@ -1,0 +1,240 @@
+name: Build
+
+on:
+  # 'actions' is the branch for trying workflow changes end to end, draft release included.
+  push:
+    branches: [main, actions]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    # Windows: the fixture matrix includes net472 and the classic reference assemblies.
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      # publish-unit-test-result-action writes a check run and, on a pull request, a comment.
+      checks: write
+      pull-requests: write
+    env:
+      # Relative on purpose: the glob reaches actions that do not cope with Windows separators.
+      results: artifacts/test-results
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install .NET SDKs
+        uses: actions/setup-dotnet@v6
+        with:
+          # 3.1 and 6.0 are here for their runtimes: the framework ships assets for both and the
+          # test matrix runs on them. global.json pins the SDK that builds.
+          dotnet-version: |
+            3.1.x
+            6.0.x
+            7.0.x
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore DeepEquals.SourceGenerator.slnx
+
+      - name: Build
+        run: dotnet build DeepEquals.SourceGenerator.slnx --no-restore -c Release
+
+      - name: Test (framework, generator and fixtures on net472, netcoreapp3.1, net6.0, net8.0 and net10.0)
+        run: >-
+          dotnet test DeepEquals.SourceGenerator.slnx --no-build -c Release
+          --settings eng/coverage.runsettings
+          --collect "Code Coverage"
+          --logger trx
+          --results-directory "${{ env.results }}"
+
+      # The smoke consumers restore the package from artifacts/package/release, so pack first.
+      - name: Pack
+        run: dotnet pack src/DeepEquals.SourceGeneration.Framework -c Release
+
+      - name: Build the smoke tests
+        run: dotnet build smoke/Smoke.Tests -c Release
+
+      - name: Install the headless browser
+        run: ./smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install chromium
+        shell: pwsh
+
+      # Mono is Linux's job; everything else runs here, where net472 runs on .NET Framework.
+      - name: Smoke (clean consumers, trimming boundary and Blazor WebAssembly)
+        run: >-
+          dotnet test smoke/Smoke.Tests -c Release --no-build
+          --filter "Category!=Mono"
+          --logger trx
+          --results-directory "${{ env.results }}"
+
+      - name: Coverage summary
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          ./eng/Coverage-Summary.ps1 `
+            -ResultsDirectory "${{ env.results }}" `
+            -OutputFile "${{ env.results }}/coverage-summary.md" |
+            Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Publish test results
+        uses: EnricoMi/publish-unit-test-result-action/windows@v2
+        if: ${{ !cancelled() }}
+        with:
+          check_name: Test results
+          files: ${{ env.results }}/**/*.trx
+
+      - name: Comment coverage on the pull request
+        uses: marocchino/sticky-pull-request-comment@v3
+        # A pull request from a fork gets a read-only token, so there is nothing to comment with.
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        with:
+          header: coverage
+          path: ${{ env.results }}/coverage-summary.md
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: test-results
+          path: ${{ env.results }}/**/*.trx
+
+      - name: Upload code coverage
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage
+          path: |
+            ${{ env.results }}/**/*.cobertura.xml
+            ${{ env.results }}/coverage-summary.md
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: package
+          path: artifacts/package/release/*.nupkg
+
+  # The netstandard2.0 asset under Mono, and Blazor WebAssembly under a headless browser. Linux,
+  # because that is where anyone runs Mono, and because a second platform is worth having for the
+  # rest of the smoke suite too.
+  smoke-linux:
+    name: Smoke on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install .NET SDKs
+        uses: actions/setup-dotnet@v6
+        with:
+          # The consumer matrix builds and runs on every target the package claims.
+          dotnet-version: |
+            6.0.x
+            7.0.x
+            8.0.x
+            10.0.x
+
+      - name: Install Mono
+        run: |
+          if ! command -v mono >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends mono-devel
+          fi
+          mono --version | head -1
+
+      - name: Pack
+        run: dotnet pack src/DeepEquals.SourceGeneration.Framework -c Release
+
+      - name: Build the smoke tests
+        run: dotnet build smoke/Smoke.Tests -c Release
+
+      - name: Install the headless browser
+        run: ./smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+        shell: pwsh
+
+      - name: Smoke (clean consumers, trimming boundary, Mono and Blazor WebAssembly)
+        # The Mono test skips when mono is absent; here its absence is a failure, not a skip.
+        env:
+          SMOKE_REQUIRE_MONO: '1'
+        run: dotnet test smoke/Smoke.Tests -c Release --no-build
+
+  # A draft release is prepared for every green push, and replaced until someone publishes it.
+  # Publishing one triggers publish.yml, which pushes the package to NuGet.
+  release-draft:
+    name: Release draft
+    needs: [build, smoke-linux]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download the package
+        uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: package
+
+      # The package is the only thing that knows the version: version.props feeds it through MSBuild,
+      # and a stable build clears the suffix, so the file name is the one authority worth trusting.
+      - name: Read the version from the package
+        run: |
+          set -euo pipefail
+          nupkg=$(ls package/DeepEquals.SourceGenerator.*.nupkg)
+          count=$(echo "$nupkg" | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "Expected exactly one package, found $count:" >&2
+            echo "$nupkg" >&2
+            exit 1
+          fi
+          version=$(basename "$nupkg" .nupkg)
+          version=v${version#DeepEquals.SourceGenerator.}
+          echo "Package version: $version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Look for an existing release
+        id: existing
+        run: |
+          set -euo pipefail
+          if draft=$(gh release view "$VERSION" --json isDraft --jq .isDraft 2>/dev/null); then
+            echo "Release $VERSION exists (draft: $draft)"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "draft=$draft" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release $VERSION yet"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip a published version
+        if: steps.existing.outputs.exists == 'true' && steps.existing.outputs.draft == 'false'
+        run: |
+          echo "### Release draft skipped" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$VERSION\` is already published. Bump \`VersionPrefix\` in \`version.props\` to draft the next one." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Replace the existing draft
+        if: steps.existing.outputs.draft == 'true'
+        run: gh release delete "$VERSION" --yes
+
+      - name: Create the draft release
+        if: steps.existing.outputs.draft == 'true' || steps.existing.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            --draft \
+            --title "$VERSION" \
+            --generate-notes \
+            --target "${{ github.sha }}" \
+            package/*.nupkg
+          url=$(gh release view "$VERSION" --json url --jq .url)
+          echo "### Release draft ready" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "[$VERSION]($url) is drafted from \`${{ github.sha }}\`. Publishing it pushes the package to NuGet." >> "$GITHUB_STEP_SUMMARY"

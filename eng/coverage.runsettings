@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Coverage settings for `dotnet test`, passed with the settings switch. The collector is the one that ships
+  with Microsoft.NET.Test.Sdk, so no test project needs an extra package reference, and it runs on the
+  net472 and netcoreapp3.1 legs as well as the modern ones.
+
+  Only the two shipping assemblies are instrumented: the test assemblies and everything from NuGet
+  would otherwise dominate the totals.
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="Code Coverage">
+        <Configuration>
+          <Format>Cobertura</Format>
+          <CodeCoverage>
+            <ModulePaths>
+              <Include>
+                <ModulePath>.*\DeepEquals\.SourceGenerator\.dll$</ModulePath>
+                <ModulePath>.*\DeepEquals\.SourceGeneration\.Framework\.dll$</ModulePath>
+              </Include>
+            </ModulePaths>
+            <!-- Compiler-generated and attribute-marked members are noise in a source generator's numbers. -->
+            <Attributes>
+              <Exclude>
+                <Attribute>^System\.Diagnostics\.DebuggerHiddenAttribute$</Attribute>
+                <Attribute>^System\.Diagnostics\.DebuggerNonUserCodeAttribute$</Attribute>
+                <Attribute>^System\.CodeDom\.Compiler\.GeneratedCodeAttribute$</Attribute>
+                <Attribute>^System\.Runtime\.CompilerServices\.CompilerGeneratedAttribute$</Attribute>
+              </Exclude>
+            </Attributes>
+            <UseVerifiableInstrumentation>False</UseVerifiableInstrumentation>
+            <AllowLowServiceLevel>True</AllowLowServiceLevel>
+            <CollectFromChildProcesses>True</CollectFromChildProcesses>
+          </CodeCoverage>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

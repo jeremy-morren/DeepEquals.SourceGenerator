@@ -1,0 +1,264 @@
+using System;
+using System.Linq;
+using FluentAssertions;
+using Microsoft.CodeAnalysis;
+using Xunit;
+using Xunit.Abstractions;
+
+namespace DeepEquals.SourceGenerator.Tests;
+
+public sealed class BasicGenerationTests
+{
+    private readonly ITestOutputHelper _output;
+
+    public BasicGenerationTests(ITestOutputHelper output)
+    {
+        _output = output;
+    }
+
+    private const string Prelude = """
+        using System;
+        using System.Collections.Generic;
+        using DeepEquals.SourceGeneration;
+        namespace Tests;
+        """;
+
+    private GeneratorRun RunAndAssertClean(string source)
+    {
+        GeneratorRun run = GeneratorHost.Run(Prelude + source);
+        if (run.CompileErrors.Any() || run.GeneratorDiagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
+        {
+            string? dump = Environment.GetEnvironmentVariable("DEEPEQUALS_DUMP");
+            if (dump is not null)
+            {
+                System.IO.Directory.CreateDirectory(dump);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dump, "last.g.cs"), run.GeneratedSource);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dump, "last.errors.txt"), string.Join(global::System.Environment.NewLine, run.CompileErrors.Concat(run.GeneratorDiagnostics.Select(d => d.ToString()))));
+            }
+
+            _output.WriteLine(string.Join(global::System.Environment.NewLine, run.CompileErrors));
+        }
+
+        run.GeneratorDiagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty();
+        run.CompileErrors.Should().BeEmpty();
+        run.Assembly.Should().NotBeNull();
+        return run;
+    }
+
+    [Fact]
+    public void Sealed_class_with_leaf_members_compares_by_value()
+    {
+        GeneratorRun run = RunAndAssertClean("""
+            public sealed class Person
+            {
+                public string? Name { get; set; }
+                public int Age;
+                private double _score;
+                public Person(double score) { _score = score; }
+            }
+
+            [GenerateDeepEquals(typeof(Person))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        run.GeneratedSource.Should().Contain("PersonEqualityComparer : global::System.Collections.Generic.IEqualityComparer<global::Tests.Person?>", "a reference-type wrapper accepts null and says so in its interface");
+        object comparer = run.Comparer("Ctx", "Person");
+        object a = run.New("Person", 1.5);
+        object b = run.New("Person", 1.5);
+        object c = run.New("Person", -0.0);
+        object d = run.New("Person", 0.0);
+        Set(a, "Name", "x"); Set(b, "Name", "x"); Set(a, "Age", 3); Set(b, "Age", 3);
+
+        run.Equals(comparer, a, b).Should().BeTrue();
+        run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
+        Set(b, "Age", 4);
+        run.Equals(comparer, a, b).Should().BeFalse();
+        run.Equals(comparer, c, d).Should().BeFalse("+0 and -0 differ bitwise");
+        run.Equals(comparer, null, null).Should().BeTrue();
+        run.Equals(comparer, a, null).Should().BeFalse();
+        run.Hash(comparer, null).Should().Be(0);
+    }
+
+    [Fact]
+    public void Cyclic_sealed_node_terminates_and_unrolled_cycles_are_equal()
+    {
+        GeneratorRun run = RunAndAssertClean("""
+            public sealed class Node
+            {
+                public int Value;
+                public Node? Next { get; set; }
+                public List<Node>? Children { get; set; }
+            }
+
+            [GenerateDeepEquals(typeof(Node))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        object comparer = run.Comparer("Ctx", "Node");
+        object a = run.New("Node"); Set(a, "Value", 1); Set(a, "Next", a);
+        object b1 = run.New("Node"); object b2 = run.New("Node");
+        Set(b1, "Value", 1); Set(b2, "Value", 1); Set(b1, "Next", b2); Set(b2, "Next", b1);
+
+        run.Equals(comparer, a, b1).Should().BeTrue("a 1-cycle equals a 2-cycle of equal nodes");
+        run.Hash(comparer, a).Should().Be(run.Hash(comparer, b1));
+        Set(b2, "Value", 2);
+        run.Equals(comparer, a, b1).Should().BeFalse();
+
+        // Long chain uses the tail loop.
+        object head1 = Chain(run, 100_000);
+        object head2 = Chain(run, 100_000);
+        run.Equals(comparer, head1, head2).Should().BeTrue();
+        run.Hash(comparer, head1).Should().Be(run.Hash(comparer, head2));
+    }
+
+    [Fact]
+    public void Unsealed_hierarchy_dispatches_on_runtime_type_and_throws_for_unknown()
+    {
+        GeneratorRun run = RunAndAssertClean("""
+            public abstract class Shape { public string? Name { get; set; } }
+            public sealed class Circle : Shape { public double Radius { get; set; } }
+            public class Square : Shape { public int Side { get; set; } }
+            public sealed class Unknown : Shape { }
+
+            [GenerateDeepEquals(typeof(Circle))]
+            [GenerateDeepEquals(typeof(Square))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        object shapes = run.Comparer("Ctx", "Shape");
+        object c1 = run.New("Circle"); Set(c1, "Radius", 2.0); Set(c1, "Name", "c");
+        object c2 = run.New("Circle"); Set(c2, "Radius", 2.0); Set(c2, "Name", "c");
+        object s1 = run.New("Square"); Set(s1, "Side", 2); Set(s1, "Name", "c");
+        run.Equals(shapes, c1, c2).Should().BeTrue();
+        run.Equals(shapes, c1, s1).Should().BeFalse("different runtime types");
+        run.Hash(shapes, c1).Should().Be(run.Hash(shapes, c2));
+
+        object u1 = run.New("Unknown"); object u2 = run.New("Unknown");
+        Action act = () => run.Equals(shapes, u1, u2);
+        act.Should().Throw<System.Reflection.TargetInvocationException>().WithInnerException<DeepEquals.SourceGeneration.Framework.DeepEqualsUnknownTypeException>();
+
+        object objects = run.Comparer("Ctx", "Object");
+        run.Equals(objects, c1, c2).Should().BeTrue();
+        run.Equals(objects, "abc", "abc").Should().BeTrue("built-in leaves are admitted behind object");
+        run.Equals(objects, 5, 5).Should().BeTrue();
+        run.Equals(objects, 5, 6).Should().BeFalse();
+        run.Equals(objects, new object(), new object()).Should().BeTrue("plain object is a zero-member exact case");
+    }
+
+    [Fact]
+    public void Structs_nullables_sets_and_dictionaries_work()
+    {
+        GeneratorRun run = RunAndAssertClean("""
+            public struct Point { public int X; public int Y; }
+            public struct Big { public long A; public long B; public string? Tag; public Point Inner; }
+            public sealed class Holder
+            {
+                public Point P;
+                public Point? Maybe;
+                public Big Large;
+                public Big? MaybeLarge;
+                public Dictionary<int, Big>? LargeByKey;
+                public List<Big>? Larges;
+                public (Big, int) LargePair;
+                public object? AnyLarge;
+                public HashSet<string>? Tags;
+                public Dictionary<string, int>? Counts;
+                public int[]? Values;
+                public IReadOnlyList<Point>? Points;
+                public (int, string) Pair;
+                public KeyValuePair<int, Point> Kvp;
+            }
+
+            [GenerateDeepEquals(typeof(Holder))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        object comparer = run.Comparer("Ctx", "Holder");
+        object a = run.New("Holder");
+        object b = run.New("Holder");
+        Set(a, "Tags", new System.Collections.Generic.HashSet<string> { "x", "y" });
+        Set(b, "Tags", new System.Collections.Generic.HashSet<string> { "y", "x" });
+        Set(a, "Counts", new System.Collections.Generic.Dictionary<string, int> { ["a"] = 1, ["b"] = 2 });
+        Set(b, "Counts", new System.Collections.Generic.Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["b"] = 2, ["a"] = 1 });
+        Set(a, "Values", new[] { 1, 2, 3 });
+        Set(b, "Values", new[] { 1, 2, 3 });
+        run.Equals(comparer, a, b).Should().BeTrue();
+        run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
+
+        // A struct above StructPassByValueMaxByteSize reached through property reads and rvalues: in cores take those without `in`.
+        Type big = run.Assembly!.GetTypes().Single(t => t.Name == "Big");
+        object Big(long x, string tag) { object v = Activator.CreateInstance(big)!; Set(v, "A", x); Set(v, "B", x + 1); Set(v, "Tag", tag); return v; }
+        Type dict = typeof(System.Collections.Generic.Dictionary<,>).MakeGenericType(typeof(int), big);
+        Type list = typeof(System.Collections.Generic.List<>).MakeGenericType(big);
+        foreach (object h in new[] { a, b })
+        {
+            Set(h, "MaybeLarge", Big(1, "m"));
+            var d = (System.Collections.IDictionary)Activator.CreateInstance(dict)!; d[5] = Big(2, "d");
+            Set(h, "LargeByKey", d);
+            var l = (System.Collections.IList)Activator.CreateInstance(list)!; l.Add(Big(3, "l"));
+            Set(h, "Larges", l);
+            Set(h, "LargePair", Activator.CreateInstance(typeof(ValueTuple<,>).MakeGenericType(big, typeof(int)), Big(4, "p"), 9));
+            Set(h, "AnyLarge", Big(5, "o"));
+        }
+        run.Equals(comparer, a, b).Should().BeTrue();
+        run.Hash(comparer, a).Should().Be(run.Hash(comparer, b));
+        ((System.Collections.IDictionary)run.Assembly.GetType(a.GetType().FullName!)!.GetField("LargeByKey")!.GetValue(b)!)[5] = Big(2, "changed");
+        run.Equals(comparer, a, b).Should().BeFalse("a large struct dictionary value differs");
+        Set(b, "LargeByKey", null);
+        Set(a, "LargeByKey", null);
+        Set(b, "AnyLarge", Big(6, "o"));
+        run.Equals(comparer, a, b).Should().BeFalse("a large struct behind object differs");
+        Set(b, "AnyLarge", Big(5, "o"));
+        run.Equals(comparer, a, b).Should().BeTrue();
+
+        Set(b, "Values", new[] { 1, 2, 4 });
+        run.Equals(comparer, a, b).Should().BeFalse();
+        Set(b, "Values", new[] { 1, 2, 3 });
+        Set(b, "Counts", new System.Collections.Generic.Dictionary<string, int> { ["A"] = 1, ["b"] = 2 });
+        run.Equals(comparer, a, b).Should().BeFalse("keys are ordinal");
+    }
+
+    [Fact]
+    public void Diagnostics_for_invalid_contexts()
+    {
+        GeneratorRun run = GeneratorHost.Run(Prelude + """
+            public sealed class A { public int X; }
+            [GenerateDeepEquals(typeof(A))]
+            public class NotPartial : DeepEqualsContextBase { }
+            [GenerateDeepEquals(typeof(A))]
+            public partial struct NotAClass { }
+            """, load: false);
+
+        run.GeneratorDiagnosticIds.Should().Contain("DEQ001");
+        run.GeneratorDiagnosticIds.Should().Contain("DEQ002");
+    }
+
+    private static void Set(object target, string member, object? value)
+    {
+        Type type = target.GetType();
+        System.Reflection.FieldInfo? field = type.GetField(member);
+        if (field is not null)
+        {
+            field.SetValue(target, value);
+            return;
+        }
+
+        type.GetProperty(member)!.SetValue(target, value);
+    }
+
+    private static object Chain(GeneratorRun run, int length)
+    {
+        object head = run.New("Node");
+        Set(head, "Value", 0);
+        object current = head;
+        for (int i = 1; i < length; i++)
+        {
+            object next = run.New("Node");
+            Set(next, "Value", i);
+            Set(current, "Next", next);
+            current = next;
+        }
+
+        return head;
+    }
+}

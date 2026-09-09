@@ -1,0 +1,40 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: 'ci'
+    groups:
+      actions:
+        patterns: ['*']
+
+  # The shipping projects. 
+  - package-ecosystem: nuget
+    directory: /src
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: 'build'
+    ignore:
+      # Pin Microsoft.CodeAnalysis at the oldest Roslyn the generator supports.
+      # Raising it would quietly raise the compiler a consumer needs.
+      - dependency-name: Microsoft.CodeAnalysis.CSharp
+      - dependency-name: Microsoft.CodeAnalysis.Analyzers
+    groups:
+      src:
+        patterns: ['*']
+
+  # The test matrix pins an older test platform and runner for the netcoreapp3.1 and net6.0 legs, which have no newer host.
+  # Those bumps are left to arrive and fail loudly rather than be ignored.
+  - package-ecosystem: nuget
+    directory: /tests
+    schedule:
+      interval: daily
+    commit-message:
+      prefix: 'test'
+    groups:
+      tests:
+        patterns: ['*']

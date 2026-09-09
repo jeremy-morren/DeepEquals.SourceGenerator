@@ -1,0 +1,56 @@
+name: Publish
+
+# build.yml drafts a release for every green push to main; publishing that draft is the release
+# decision, and this pushes the package it carries to NuGet.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Push to NuGet
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Download the package from the release
+        run: gh release download "$TAG" --pattern '*.nupkg' --dir package
+
+      # The draft carried the package built from that commit; a tag that disagrees with it means the
+      # release was assembled by hand, and pushing the wrong version to NuGet cannot be undone.
+      - name: Check the package matches the tag
+        run: |
+          set -euo pipefail
+          nupkg=$(ls package/DeepEquals.SourceGenerator.*.nupkg)
+          count=$(echo "$nupkg" | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "Expected exactly one package on release $TAG, found $count:" >&2
+            echo "$nupkg" >&2
+            exit 1
+          fi
+          version=$(basename "$nupkg" .nupkg)
+          version=v${version#DeepEquals.SourceGenerator.}
+          if [ "$version" != "$TAG" ]; then
+            echo "Package is $version but the release is tagged $TAG" >&2
+            exit 1
+          fi
+          echo "Publishing $version"
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Push to NuGet
+        run: >-
+          dotnet nuget push "package/*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --skip-duplicate

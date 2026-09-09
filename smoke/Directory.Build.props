@@ -1,0 +1,19 @@
+<!--
+  This file deliberately does not import the repository's Directory.Build.props, and MSBuild stops walking up once it finds one. 
+  A smoke consumer must look like a project outside this repository:
+  no strong naming with the repository key, no artifacts output layout, no packaging metadata.
+  What it shares with the repository is the SDK and nothing else.
+-->
+<Project>
+
+  <PropertyGroup>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <SuppressTfmSupportBuildErrors>true</SuppressTfmSupportBuildErrors>
+    <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
+  </PropertyGroup>
+
+</Project>

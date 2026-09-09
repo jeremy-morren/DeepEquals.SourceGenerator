@@ -1,0 +1,23 @@
+<Project>
+
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <PropertyGroup>
+    <!--
+      Floating, so nothing has to thread the version through from version.props. 
+      Source mapping in NuGet.config keeps this resolving against the local feed, 
+      so it always means "whatever was just packed" rather than "the newest release".
+    -->
+    <DeepEqualsVersion Condition="'$(DeepEqualsVersion)' == ''">*-*</DeepEqualsVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DeepEquals.SourceGenerator" Version="$(DeepEqualsVersion)" />
+  </ItemGroup>
+
+  <!-- Building net472 away from Windows needs the reference assemblies from NuGet. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

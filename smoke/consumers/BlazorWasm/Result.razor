@@ -1,0 +1,29 @@
+@* The smoke test waits for #result and reads its text, so the element appears only once the
+   assertions have actually run on the WebAssembly runtime. *@
+
+<h1>DeepEquals WebAssembly smoke</h1>
+
+@if (_result == null)
+{
+    <p><em>running…</em></p>
+}
+else
+{
+    <p id="result">@_result</p>
+}
+
+@code {
+    private string _result;
+
+    protected override void OnInitialized()
+    {
+        try
+        {
+            _result = Checks.Run();
+        }
+        catch (Exception ex)
+        {
+            _result = "FAIL " + ex.GetType().FullName + ": " + ex.Message;
+        }
+    }
+}

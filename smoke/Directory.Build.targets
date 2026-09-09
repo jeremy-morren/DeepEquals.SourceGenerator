@@ -1,0 +1,6 @@
+<!--
+  Present so the search for a Directory.Build.targets stops here rather than reaching the repository
+  root, for the same reason Directory.Build.props does not import its parent.
+-->
+<Project>
+</Project>

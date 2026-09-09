@@ -1,0 +1,32 @@
+<!--
+  Drives the consumer projects next door by invoking the SDK on them, rather than referencing them:
+  a smoke consumer has to restore the packed package from the local feed the way an outside project
+  would, which only happens in its own build. Run this after `dotnet pack`.
+
+  Not in DeepEquals.SourceGenerator.slnx on purpose, for the same reason.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>DeepEquals.Smoke.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Serves the published Blazor application to the headless browser, in process. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
+    <PackageReference Include="FluentAssertions" Version="7.2.0" />
+    <PackageReference Include="Microsoft.Playwright" Version="1.56.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,25 @@
+<!--
+  The unsafe half of the trimming boundary. On net8.0 the generic holder takes the delegate path, so
+  touching its comparer must warn, and the warning must land on the consumer's own access line rather
+  than inside a generated file. The smoke tests assert on where the warnings point, so warnings are
+  not errors here.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>DeepEquals.Smoke.Trimming</RootNamespace>
+    <PublishTrimmed>true</PublishTrimmed>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/TrimmingModels.cs" Link="TrimmingModels.cs" />
+  </ItemGroup>
+
+</Project>

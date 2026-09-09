@@ -1,0 +1,42 @@
+<Project>
+
+  <Import Project="version.props" />
+
+  <PropertyGroup>
+    <Authors>Jeremy Morren</Authors>
+    <Copyright>Copyright © Jeremy Morren</Copyright>
+    <NeutralLanguage>en-GB</NeutralLanguage>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$(MSBuildThisFileDirectory)artifacts</ArtifactsPath>
+  </PropertyGroup>
+
+    <!-- Deterministic builds for everyone -->
+  <PropertyGroup>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  
+  <!-- Every assembly, including the analyzer and the test projects, is strong-named with the checked-in key. -->
+  <PropertyGroup>
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)eng/DeepEquals.snk</AssemblyOriginatorKeyFile>
+    <DeepEqualsPublicKey>002400000480000014010000060200000024000052534131000800000100010081957d73ba70466a461435b0cb068e6e844c829411e845c7098fdca5101d8ef79a754034457dc0103fc41e58c5cb8f1511740fff67b595d478822d6ad987e8386b3d899080690bdb9beac1a139ed7a2868c8a38bc004eeb0e9dc3ed6d8db04b0e22b23d892203ec2e4473e5f96eddc20101790395eafba934c342ba65548233407f6a916272e3d0cd05be1868e6318411f01c8ee32a07309a97f5db29cbab0474b8eabd3600e7101791d1974b3a4c35c17e5942ac60c38498728b87f3000d257208b0386a822ddd9e4cf5fffc0c0de19e7174b37ed287551b093784ebd73d3cd7afceb9e9fc1210f1023211007dd04b426e0591c664cb95d841723032f95ebc1</DeepEqualsPublicKey>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DebugType>embedded</DebugType>
+    <GeneratePackageOnBuild>False</GeneratePackageOnBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+  
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\"/>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;netstandard2.1;net6.0;net8.0;net10.0</TargetFrameworks>
+    <!-- Pinned so an SDK upgrade cannot change how the shipped assets compile without a deliberate edit. -->
+    <LangVersion>13</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>DeepEquals.SourceGeneration.Framework</RootNamespace>
+    <AssemblyName>DeepEquals.SourceGeneration.Framework</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- One package carries the generator (as an analyzer) and every runtime asset; the assembly keeps its own name. -->
+    <IsPackable>true</IsPackable>
+    <PackageId>DeepEquals.SourceGenerator</PackageId>
+    <Description>A Roslyn source generator that emits deep, by-value IEqualityComparer&lt;T&gt; implementations for a closed set of types: cycle-safe, allocation-conscious, exact-representation leaves, and unordered set/dictionary semantics.</Description>
+    <PackageTags>equality;comparer;source-generator;roslyn;deep-equals</PackageTags>
+    <DevelopmentDependency>false</DevelopmentDependency>
+  </PropertyGroup>
+
+  <!-- The generator is built first and shipped in analyzers/dotnet/cs; nothing in this assembly references it. -->
+  <ItemGroup>
+    <ProjectReference Include="..\DeepEquals.SourceGenerator\DeepEquals.SourceGenerator.csproj" 
+                      ReferenceOutputAssembly="false" 
+                      PrivateAssets="all" />
+    <None Include="$(ArtifactsPath)/bin/DeepEquals.SourceGenerator/$(Configuration.ToLowerInvariant())/DeepEquals.SourceGenerator.dll"
+          Pack="true" 
+          PackagePath="analyzers/dotnet/cs" 
+          Visible="false" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net6.0'))">
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="System.Buffers" Version="4.6.1" />
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.1'">
+    <PackageReference Include="System.Runtime.CompilerServices.Unsafe" Version="6.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="DeepEquals.SourceGeneration.Framework.Tests" 
+                        Key="$(DeepEqualsPublicKey)" />
+  </ItemGroup>
+
+</Project>
