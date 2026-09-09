@@ -19,7 +19,7 @@
     <Deterministic>true</Deterministic>
   </PropertyGroup>
   
-  <!-- Every assembly, including the analyzer and the test projects, is strong-named with the checked-in key. -->
+  <!-- Strong-name every assembly -->
   <PropertyGroup>
     <SignAssembly>true</SignAssembly>
     <AssemblyOriginatorKeyFile>$(MSBuildThisFileDirectory)eng/DeepEquals.snk</AssemblyOriginatorKeyFile>
