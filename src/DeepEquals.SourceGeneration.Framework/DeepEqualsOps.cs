@@ -1,3 +1,7 @@
+// Copyright 2026 Jeremy Morren <jeremy.morren@outlook.com>. All rights reserved.
+// Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
+// Use of this source code is governed by the MIT License as found in the LICENSE.txt file
+
 namespace DeepEquals.SourceGeneration.Framework;
 
 /// <summary>Hash-only callback into a generated core. Implemented by a generated struct so the call devirtualizes.</summary>

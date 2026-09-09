@@ -1,9 +1,13 @@
+// Copyright 2026 Jeremy Morren <jeremy.morren@outlook.com>. All rights reserved.
+// Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
+// Use of this source code is governed by the MIT License as found in the LICENSE.txt file
+
 using System;
 using DeepEquals.SourceGeneration.Framework;
 
 namespace DeepEquals.SourceGeneration;
 
-/// <summary>Registers one type as a closure root of the context. Repeat the attribute for every root, as with <c>[JsonSerializable]</c>.</summary>
+/// <summary>Generates deep equality comparer for the specified type and all base types</summary>
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface, AllowMultiple = true, Inherited = false)]
 public sealed class GenerateDeepEqualsAttribute : Attribute
 {

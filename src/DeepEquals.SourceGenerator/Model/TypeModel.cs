@@ -1,3 +1,7 @@
+// Copyright 2026 Jeremy Morren <jeremy.morren@outlook.com>. All rights reserved.
+// Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
+// Use of this source code is governed by the MIT License as found in the LICENSE.txt file
+
 namespace DeepEquals.SourceGenerator.Model;
 
 /// <summary>The semantic kind of a closure type; decides which cores exist and which rule compares it.</summary>

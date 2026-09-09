@@ -1,3 +1,7 @@
+// Copyright 2026 Jeremy Morren <jeremy.morren@outlook.com>. All rights reserved.
+// Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
+// Use of this source code is governed by the MIT License as found in the LICENSE.txt file
+
 // Trimming-analysis attributes for assets whose reference surface lacks them. The netstandard assets define them publicly
 // so that other generators (PolySharp) see them in the consumer's compilation and do not emit duplicates; the net6.0 asset
 // keeps RequiresDynamicCode internal because a public copy would conflict for a net7.0 consumer resolving the same asset.

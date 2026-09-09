@@ -55,6 +55,12 @@ jobs:
           --logger trx
           --results-directory "${{ env.results }}"
 
+      # Provenance for the sources compiled into the package. It rewrites the working tree, so it
+      # goes after the tests and before the pack that produces what ships.
+      - name: Stamp the commit onto the sources
+        run: ./eng/Add-CommitDetails.ps1
+        shell: pwsh
+
       # The smoke consumers restore both packages from artifacts/package/release, so pack first.
       - name: Pack (the analyzer and the runtime library)
         run: dotnet pack DeepEquals.SourceGenerator.slnx -c Release

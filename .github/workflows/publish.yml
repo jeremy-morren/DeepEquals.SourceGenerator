@@ -58,6 +58,7 @@ jobs:
             echo "Publishing $id $version"
           done
 
+      # Install the dotnet SDK for nuget cli
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v6
         with:
@@ -70,8 +71,7 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
-      # The runtime library goes first: the analyzer package depends on it, and a consumer restoring in
-      # the window between the two pushes should not find an analyzer whose dependency is missing.
+      # The runtime library goes first since the analyzer package depends on it
       - name: Push to NuGet
         env:
           NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
