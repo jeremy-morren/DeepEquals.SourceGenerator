@@ -58,7 +58,7 @@ internal sealed class ModelBuilder
             _types[i].Id = i;
     }
 
-    public ContextModel Build(string hintName, LocationInfo? location)
+    public ContextModel Build(string hintNamePrefix, LocationInfo? location)
     {
         AssignNames();
         _cancellationToken.ThrowIfCancellationRequested();
@@ -109,7 +109,7 @@ internal sealed class ModelBuilder
         containing.Reverse();
 
         return new ContextModel(
-            hintName,
+            hintNamePrefix,
             ns,
             EquatableArray.Create(containing),
             _context.Name,

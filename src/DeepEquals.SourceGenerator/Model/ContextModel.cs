@@ -15,7 +15,7 @@ internal sealed record AccessorHolderModel(string HolderName, string DeclaringTy
 /// The complete, immutable, equatable description of one context. Equal models skip emission.
 /// </summary>
 internal sealed record ContextModel(
-    string HintName,
+    string HintNamePrefix,
     string Namespace,
     EquatableArray<string> ContainingTypes,
     string Name,
@@ -33,9 +33,9 @@ internal sealed record ContextModel(
     public bool HasErrors => Diagnostics.Any(d => d.IsError);
 
     /// <summary>A model that carries only diagnostics; nothing is emitted for it.</summary>
-    public static ContextModel Failed(string hintName, string name, LocationInfo? location, EquatableArray<DiagnosticInfo> diagnostics)
+    public static ContextModel Failed(string hintNamePrefix, string name, LocationInfo? location, EquatableArray<DiagnosticInfo> diagnostics)
         => new(
-            hintName,
+            hintNamePrefix,
             string.Empty,
             EquatableArray<string>.Empty,
             name,

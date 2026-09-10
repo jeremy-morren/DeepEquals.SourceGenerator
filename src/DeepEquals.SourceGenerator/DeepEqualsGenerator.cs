@@ -3,6 +3,7 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using DeepEquals.SourceGenerator.Analysis;
 using DeepEquals.SourceGenerator.Emit;
@@ -56,7 +57,7 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
             var name = context.TargetSymbol.Name;
             var location = LocationInfo.From(context.TargetNode);
             return ContextModel.Failed(
-                ContextAnalyzer.HintNameFor(context.TargetSymbol),
+                ContextAnalyzer.HintNamePrefixFor(context.TargetSymbol),
                 name,
                 location,
                 EquatableArray.Create(
@@ -78,10 +79,10 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
         if (model.HasErrors)
             return;
 
-        string source;
+        IReadOnlyList<GeneratedFile> files;
         try
         {
-            source = Emitter.Emit(model, context.CancellationToken);
+            files = Emitter.Emit(model, context.CancellationToken);
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
@@ -96,7 +97,8 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
             return;
         }
 
-        context.AddSource(model.HintName, SourceText.From(source, System.Text.Encoding.UTF8));
+        foreach (var file in files)
+            context.AddSource(file.HintName, SourceText.From(file.Source, System.Text.Encoding.UTF8));
     }
 }
 

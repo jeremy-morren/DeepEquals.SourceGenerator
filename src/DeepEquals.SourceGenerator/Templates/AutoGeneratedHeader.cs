@@ -26,7 +26,7 @@ Context
 Registered roots
 {{Roots}}
 
-Closure ({{TypeCount}} types, {{WrapperCount}} public comparers)
+{{ClosureHeading}}
 {{Closure}}
 
 Custom comparers

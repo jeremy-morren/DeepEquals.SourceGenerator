@@ -77,6 +77,6 @@ public sealed class IncrementalTests
         var result = driver.GetRunResult().Results.Single();
         result.TrackedOutputSteps.SelectMany(kv => kv.Value).SelectMany(s => s.Outputs)
             .Should().Contain(o => o.Reason == IncrementalStepRunReason.Modified || o.Reason == IncrementalStepRunReason.New);
-        result.GeneratedSources.Single().SourceText.ToString().Should().Contain("Score");
+        result.GeneratedSources.Should().Contain(s => s.SourceText.ToString().Contains("Score"), "the Person file carries the new member");
     }
 }

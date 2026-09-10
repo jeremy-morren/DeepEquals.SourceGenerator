@@ -5,8 +5,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using DeepEquals.SourceGenerator.Model;
 using Microsoft.CodeAnalysis;
@@ -38,7 +36,7 @@ internal static class ContextAnalyzer
         var symbol = compilation.GetSemanticModel(context.TargetNode.SyntaxTree).GetDeclaredSymbol(context.TargetNode, cancellationToken) as INamedTypeSymbol
                      ?? throw new InvalidOperationException("The context symbol could not be re-resolved in the All-import view.");
 
-        var hintName = HintNameFor(symbol);
+        var hintName = HintNamePrefixFor(symbol);
         var location = LocationInfo.From(context.TargetNode);
         var diagnostics = new List<DiagnosticInfo>();
 
@@ -63,20 +61,18 @@ internal static class ContextAnalyzer
         return modelBuilder.Build(hintName, location);
     }
 
-    /// <summary>The context's namespace-qualified name plus a short hash of it; hint names must be unique per generator.</summary>
-    public static string HintNameFor(ISymbol symbol)
+    /// <summary>
+    /// The namespace-qualified name of the context, the stem every hint name of the context starts with: the context
+    /// file is <c>{stem}.g.cs</c> and each type file <c>{stem}.{TypeName}.g.cs</c>, the layout System.Text.Json uses.
+    /// A context is non-generic and its name is an identifier, so the stem is a valid hint name as it stands.
+    /// </summary>
+    public static string HintNamePrefixFor(ISymbol symbol)
     {
         var full = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
         if (full.StartsWith("global::", StringComparison.Ordinal))
             full = full["global::".Length..];
 
-        using var sha = SHA256.Create();
-        var digest = sha.ComputeHash(Encoding.UTF8.GetBytes(full));
-        var hex = new StringBuilder(8);
-        for (var i = 0; i < 4; i++) 
-            hex.Append(digest[i].ToString("x2"));
-
-        return $"{full.Replace('.', '_').Replace('+', '_')}_{hex}.g.cs";
+        return full.Replace('+', '.');
     }
 
     private static bool IsCanonical(GeneratorAttributeSyntaxContext context, INamedTypeSymbol symbol, MarkerKind marker)

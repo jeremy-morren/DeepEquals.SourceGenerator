@@ -51,6 +51,30 @@ public sealed class BasicGenerationTests
     }
 
     [Fact]
+    public void Output_is_one_context_file_plus_one_file_per_emitted_type()
+    {
+        var run = RunAndAssertClean(
+            """
+            public sealed class Person { public string? Name; public int Age; public int[]? Scores; }
+
+            [GenerateDeepEquals(typeof(Person))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        var files = run.Result.Results.Single().GeneratedSources.ToDictionary(s => s.HintName, s => s.SourceText.ToString());
+
+        // The hint name is the context's namespace-qualified name, no hash, then the type's short name.
+        files.Keys.Should().Contain("Tests.Ctx.g.cs", "Tests.Ctx.Person.g.cs", "Tests.Ctx.ArrayOfInt32.g.cs", "Tests.Ctx.Int32.g.cs", "Tests.Ctx.String.g.cs");
+        files.Keys.Should().OnlyContain(k => k.StartsWith("Tests.Ctx.", StringComparison.Ordinal) && k.EndsWith(".g.cs", StringComparison.Ordinal));
+
+        files["Tests.Ctx.g.cs"].Should().Contain("GetEqualityComparer<T>()").And.Contain("Closure (");
+        files["Tests.Ctx.Person.g.cs"].Should().Contain("class PersonEqualityComparer").And.Contain("Type (one of ");
+        files["Tests.Ctx.Person.g.cs"].Should().NotContain("class Int32EqualityComparer", "each type lives in its own file");
+        files["Tests.Ctx.Int32.g.cs"].Should().Contain("Equals_SpanOfInt32", "a span core lives with its element type");
+        files.Values.Should().OnlyContain(f => f.Contains("partial class Ctx"), "every file is a partial declaration of the context");
+    }
+
+    [Fact]
     public void Sealed_class_with_leaf_members_compares_by_value()
     {
         var run = RunAndAssertClean(

@@ -107,6 +107,9 @@ internal sealed class CodeWriter
         Line("}");
     }
 
+    /// <summary>The number of characters written so far; a caller compares two readings to learn whether anything was written between them.</summary>
+    public int Length => _builder.Length;
+
     public override string ToString() => _builder.ToString();
 
     private void Write(string text)

@@ -27,25 +27,29 @@ internal sealed class Emitter
 
     private readonly ContextModel _model;
     private readonly CancellationToken _cancellationToken;
-    private readonly CodeWriter _w;
     private readonly TypeModel[] _types;
     private readonly HashSet<int> _spanCores = [];
     private readonly List<(TypeModel Type, List<DispatchCase> Exact)> _pendingDispatchHolders = [];
+
+    /// <summary>The writer of the file being emitted; every emit method writes here, and the file loop swaps it.</summary>
+    private CodeWriter _w;
 
     private Emitter(ContextModel model, CancellationToken cancellationToken)
     {
         _model = model;
         _cancellationToken = cancellationToken;
-        // Estimate capacity: 2048 characters per type + 4096 characters for the usings and namespace
-        _w = new CodeWriter(Math.Min(model.Types.Count * 2048 + 4096, 4 * 1024 * 1024));
         _types = model.Types.ToArray();
+        _w = new CodeWriter(0);
     }
 
-    public static string Emit(ContextModel model, CancellationToken cancellationToken)
+    /// <summary>
+    /// The files of a context, the layout System.Text.Json uses: the context file carries what is shared, and each
+    /// closure type that has anything to emit gets a file of its own.
+    /// </summary>
+    public static IReadOnlyList<GeneratedFile> Emit(ContextModel model, CancellationToken cancellationToken)
     {
         var emitter = new Emitter(model, cancellationToken);
-        emitter.EmitFile();
-        return emitter._w.ToString();
+        return emitter.EmitFiles();
     }
 
     private TypeModel Type(int id) => _types[id];
@@ -106,8 +110,11 @@ internal sealed class Emitter
             : string.Join("\n", lines.Select(l => CommentIndent + l));
     }
 
-    /// <summary>Every value the header template can ask for, computed from the model alone so output stays deterministic.</summary>
-    private Dictionary<string, string> HeaderValues()
+    /// <summary>
+    /// Every value the header template can ask for, computed from the model alone so output stays deterministic.
+    /// The context file lists the whole closure; a type file lists the one type it holds.
+    /// </summary>
+    private Dictionary<string, string> HeaderValues(TypeModel? single)
     {
         var contextName = _model.Namespace.Length > 0 ? $"{_model.Namespace}.{_model.Name}" : _model.Name;
         var c = _model.Capabilities;
@@ -137,6 +144,19 @@ internal sealed class Emitter
         };
 
         var wrappers = _types.Where(t => t.EmitWrapper).ToList();
+        var typeCount = _types.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var wrapperCount = wrappers.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string TypeLine(TypeModel t)
+        {
+            var note = !t.EmitWrapper ? "; no public comparer" : !t.EmitConvenienceProperty ? "; convenience property omitted" : string.Empty;
+            return $"{Display(t.GlobalName)}  ({KindLabel(t)}{note})";
+        }
+
+        var closureHeading = single is null
+            ? $"Closure ({typeCount} types, {wrapperCount} public comparers)"
+            : $"Type (one of {typeCount} in the closure; {_model.HintNamePrefix}.g.cs lists them all)";
+        var closure = single is null ? CommentList(wrappers.Select(TypeLine)) : CommentList([TypeLine(single)]);
+
         (string Name, bool Present)[] capabilities =
         [
             ("ReadOnlySpan<T>", c.HasReadOnlySpan),
@@ -167,9 +187,10 @@ internal sealed class Emitter
             ["ContextShortName"] = _model.Name,
             ["ContextAccessibility"] = _model.Accessibility,
             ["Roots"] = CommentList(_types.Where(t => t.IsRoot).Select(t => Display(t.GlobalName))),
-            ["TypeCount"] = _types.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["WrapperCount"] = wrappers.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["Closure"] = CommentList(wrappers.Select(t => $"{Display(t.GlobalName)}  ({KindLabel(t)}{(t.EmitConvenienceProperty ? string.Empty : "; convenience property omitted")})")),
+            ["TypeCount"] = typeCount,
+            ["WrapperCount"] = wrapperCount,
+            ["ClosureHeading"] = closureHeading,
+            ["Closure"] = closure,
             ["CustomComparers"] = CommentList(_model.CustomComparers.Select(cc => $"{Display(cc.TargetTypeGlobalName)}  by {Display(cc.ComparerTypeGlobalName)}{(cc.HandleNulls ? ", handles null itself" : string.Empty)}")),
             ["UnsafeTypes"] = CommentList(_types.Where(t => t.IsUnsafe && t.EmitWrapper).Select(t => Display(t.GlobalName))),
             ["MaxSwitchCases"] = o.MaxSwitchCases.ToString(System.Globalization.CultureInfo.InvariantCulture),
@@ -190,13 +211,12 @@ internal sealed class Emitter
         };
     }
 
-    private void EmitHeader()
+    private void EmitHeader(Dictionary<string, string> values)
     {
-        var values = HeaderValues();
         foreach (var templateLine in HeaderTemplate)
         {
             var line = values.Aggregate(
-                templateLine, 
+                templateLine,
                 (current, value) => current.Replace("{{" + value.Key + "}}", value.Value));
 
             if (line.Length == 0 && templateLine.Length > 0)
@@ -207,9 +227,87 @@ internal sealed class Emitter
         }
     }
 
-    private void EmitFile()
+    /// <summary>
+    /// One file being written. Its writer stays open until every body is complete, because a span core lands in
+    /// its element's file only once the containers that call it have been emitted.
+    /// </summary>
+    private sealed class OpenFile
     {
-        EmitHeader();
+        public OpenFile(string hintName, CodeWriter writer, int bodyStart, int closes)
+        {
+            HintName = hintName;
+            Writer = writer;
+            BodyStart = bodyStart;
+            Closes = closes;
+        }
+
+        public string HintName { get; }
+
+        public CodeWriter Writer { get; }
+
+        /// <summary>The writer's length once the skeleton is open; a file whose body never grew past it is not emitted.</summary>
+        public int BodyStart { get; }
+
+        /// <summary>The blocks opened above the class body: namespace, containing types and the context class itself.</summary>
+        public int Closes { get; }
+    }
+
+    private List<GeneratedFile> EmitFiles()
+    {
+        // Roslyn compares hint names case-insensitively, so two types differing only by case share a stem.
+        var hintNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var contextFile = Open($"{_model.HintNamePrefix}.g.cs", HeaderValues(null), 4096 + _types.Length * 256);
+        hintNames.Add(contextFile.HintName);
+
+        var typeFiles = new OpenFile[_types.Length];
+        foreach (var type in _types)
+        {
+            _cancellationToken.ThrowIfCancellationRequested();
+            var stem = $"{_model.HintNamePrefix}.{type.ShortName}";
+            var hintName = $"{stem}.g.cs";
+            for (var n = 2; !hintNames.Add(hintName); n++)
+                hintName = $"{stem}_{n}.g.cs";
+
+            var file = typeFiles[type.Id] = Open(hintName, HeaderValues(type), 4096 + 2048);
+            _w = file.Writer;
+            EmitKinds(type);
+            EmitConvenienceProperty(type);
+            if (type.EmitWrapper)
+                EmitWrapper(type);
+
+            EmitCores(type);
+            EmitDispatchHolders();
+        }
+
+        // Span cores are requested by the containers emitted above and belong to the element they compare.
+        foreach (var element in _spanCores.OrderBy(i => i))
+        {
+            _w = typeFiles[element].Writer;
+            EmitSpanCores(Type(element));
+        }
+
+        _w = contextFile.Writer;
+        EmitConstants();
+        EmitLookup();
+        EmitAccessors();
+        EmitAccessorHolders();
+        EmitCustomComparerHolders();
+
+        var files = new List<GeneratedFile>(_types.Length + 1) { Close(contextFile)! };
+        foreach (var file in typeFiles)
+        {
+            if (Close(file) is { } generated)
+                files.Add(generated);
+        }
+
+        return files;
+    }
+
+    /// <summary>The header and the skeleton down to the context's partial class, with the writer left inside it.</summary>
+    private OpenFile Open(string hintName, Dictionary<string, string> headerValues, int capacity)
+    {
+        _w = new CodeWriter(capacity);
+        EmitHeader(headerValues);
         _w.Line();
 
         var closes = 0;
@@ -225,49 +323,41 @@ internal sealed class Emitter
             closes++;
         }
 
-        using (_w.Block($"{_model.Accessibility} partial class {_model.Name}"))
-        {
-            EmitConstants();
-            EmitLookup();
-            EmitConvenienceProperties();
-            foreach (var type in _types)
-            {
-                _cancellationToken.ThrowIfCancellationRequested();
-                if (type.EmitWrapper) 
-                    EmitWrapper(type);
-            }
+        _w.Open($"{_model.Accessibility} partial class {_model.Name}");
+        return new OpenFile(hintName, _w, _w.Length, closes + 1);
+    }
 
-            foreach (var type in _types)
-            {
-                _cancellationToken.ThrowIfCancellationRequested();
-                EmitCores(type);
-            }
+    /// <summary>Closes the skeleton and returns the file, or null when nothing was written into the class.</summary>
+    private static GeneratedFile? Close(OpenFile file)
+    {
+        if (file.Writer.Length == file.BodyStart)
+            return null;
 
-            foreach (var element in _spanCores.OrderBy(i => i))
-                EmitSpanCores(Type(element));
+        for (var i = 0; i < file.Closes; i++)
+            file.Writer.Close();
 
-            EmitDispatchHolders();
-            EmitAccessors();
-            EmitAccessorHolders();
-            EmitCustomComparerHolders();
-        }
-
-        // The namespace and containing types opened above, however many there were.
-        for (var i = 0; i < closes; i++) _w.Close();
+        return new GeneratedFile(file.HintName, file.Writer.ToString());
     }
 
     private void EmitConstants()
     {
         _w.Line($"private const int MaxComparisonPairs = {_model.Options.MaxComparisonPairs};");
         _w.Line($"private const int MaxUnorderedCollisionRun = {_model.Options.MaxUnorderedCollisionRun};");
-        foreach (var type in _types)
-        {
-            if (type.IsGuarded)
-                _w.Line($"private const int Kind_{type.ShortName} = {type.GuardKind};");
+        _w.Line();
+    }
 
-            if (type.BoxedAdapterGuarded)
-                _w.Line($"private const int Kind_Boxed_{type.ShortName} = {type.BoxedGuardKind};");
-        }
+    /// <summary>The cycle-guard kinds of a type, read only by its own cores.</summary>
+    private void EmitKinds(TypeModel type)
+    {
+        if (!type.IsGuarded && !type.BoxedAdapterGuarded)
+            return;
+
+        if (type.IsGuarded)
+            _w.Line($"private const int Kind_{type.ShortName} = {type.GuardKind};");
+
+        if (type.BoxedAdapterGuarded)
+            _w.Line($"private const int Kind_Boxed_{type.ShortName} = {type.BoxedGuardKind};");
+
         _w.Line();
     }
 
@@ -298,28 +388,25 @@ internal sealed class Emitter
         _w.Line();
     }
 
-    private void EmitConvenienceProperties()
+    private void EmitConvenienceProperty(TypeModel type)
     {
-        foreach (var type in _types)
-        {
-            if (!type.EmitConvenienceProperty)
-                continue;
+        if (!type.EmitConvenienceProperty)
+            return;
 
-            if (type.IsUnsafe)
+        if (type.IsUnsafe)
+        {
+            // The attributes belong on the getter: RequiresUnreferencedCode targets methods, not properties.
+            using (_w.Block($"{type.Accessibility} static {type.ShortName}EqualityComparer {Identifier(type.ShortName)}"))
             {
-                // The attributes belong on the getter: RequiresUnreferencedCode targets methods, not properties.
-                using (_w.Block($"{type.Accessibility} static {type.ShortName}EqualityComparer {Identifier(type.ShortName)}"))
-                {
-                    EmitUnsafeAttributes(true);
-                    _w.Arrow("get", $"{type.ShortName}EqualityComparer.Instance");
-                }
+                EmitUnsafeAttributes(true);
+                _w.Arrow("get", $"{type.ShortName}EqualityComparer.Instance");
             }
-            else
-            {
-                _w.Arrow(
-                    $"{type.Accessibility} static {type.ShortName}EqualityComparer {Identifier(type.ShortName)}",
-                    $"{type.ShortName}EqualityComparer.Instance");
-            }
+        }
+        else
+        {
+            _w.Arrow(
+                $"{type.Accessibility} static {type.ShortName}EqualityComparer {Identifier(type.ShortName)}",
+                $"{type.ShortName}EqualityComparer.Instance");
         }
 
         _w.Line();
@@ -1249,7 +1336,7 @@ internal sealed class Emitter
             _pendingDispatchHolders.Add((type, exact));
     }
 
-    /// <summary>The Dictionary{Type, int} holders of large dispatch shapes, emitted after every core.</summary>
+    /// <summary>The Dictionary{Type, int} holders of large dispatch shapes, emitted after the cores of the type that asked for them.</summary>
     private void EmitDispatchHolders()
     {
         foreach (var (type, exact) in _pendingDispatchHolders)
@@ -1269,6 +1356,8 @@ internal sealed class Emitter
             }
             _w.Line();
         }
+
+        _pendingDispatchHolders.Clear();
     }
 
     /// <summary>
@@ -1894,6 +1983,9 @@ internal sealed class Emitter
         }
     }
 }
+
+/// <summary>One output of a context: the hint name Roslyn files it under and its text.</summary>
+internal sealed record GeneratedFile(string HintName, string Source);
 
 internal static class HeaderStringExtensions
 {
