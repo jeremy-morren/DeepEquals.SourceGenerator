@@ -31,16 +31,18 @@ it means every project downstream of yours also loads the generator. It emits no
 
 Everything under [Project setup](#project-setup) applies to the project that **declares the context**.
 
-| Consumer target                   | Runtime asset  | Notes                                                                                                                             |
-|-----------------------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `netstandard2.0`, `net472`        | netstandard2.0 | `System.Buffers` and `System.Runtime.CompilerServices.Unsafe` flow transitively. Field access below net8.0 uses cached delegates. |
-| `netstandard2.1`, `netcoreapp3.1` | netstandard2.1 | `System.Runtime.CompilerServices.Unsafe` flows transitively.                                                                      |
-| `net6.0`, `net7.0`                | net6.0         | No extra dependencies. Compiles and runs; not a run-time test tier.                                                               |
-| `net8.0`                          | net8.0         | `[UnsafeAccessor]` field access; generic declaring types still use delegates.                                                     |
-| `net10.0`                         | net10.0        | `[UnsafeAccessor]` for every field, including generic declaring types.                                                            |
+| Consumer target                   | Runtime asset  | Notes                                                                                                                                                                                                  |
+|-----------------------------------|----------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `netstandard2.0`, `net472`        | netstandard2.0 | `System.Buffers`, `System.Memory`, `System.Runtime.CompilerServices.Unsafe` and `System.IO.Hashing` 10.0.12 flow transitively, so spans are available. Field access below net8.0 uses cached delegates. |
+| `netstandard2.1`, `netcoreapp3.1` | netstandard2.1 | `System.Runtime.CompilerServices.Unsafe` flows transitively. No `System.IO.Hashing`, which warns on these runtimes, so sequences of bit-block values keep the per-element path.                          |
+| `net6.0`, `net7.0`                | net6.0         | `System.IO.Hashing` 8.0.0, the last release that supports these runtimes. Compiles and runs; not a run-time test tier.                                                                                  |
+| `net8.0`                          | net8.0         | `System.IO.Hashing` 10.0.12. `[UnsafeAccessor]` field access; generic declaring types still use delegates.                                                                                               |
+| `net10.0`                         | net10.0        | `System.IO.Hashing` 10.0.12. `[UnsafeAccessor]` for every field, including generic declaring types.                                                                                                     |
 
-`net5.0` and earlier .NET Core versions are unsupported as direct consumers (the netstandard2.1 asset's trimming attributes conflict with the in-box ones, CS0433). 
+`net5.0` and earlier .NET Core versions are unsupported as direct consumers (the netstandard2.1 asset's trimming attributes conflict with the in-box ones, CS0433).
 A `netstandard2.1` library using this package still runs on them.
+
+**Use both packages at the same version.** The generated code binds the framework surface of its own version, so the generator checks the referenced framework assembly and reports [`DEQ036`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#package-versions), an error, when the versions differ. Nothing else in the generator adapts to an older or newer framework package.
 
 ## Project setup
 
@@ -73,8 +75,8 @@ Add `InternalsVisibleTo` for the context's assembly in the declaring project, or
 </PropertyGroup>
 ```
 
-**`netstandard2.0` with spans.** Referencing `System.Memory` lets the generator emit `Memory<T>`/`ReadOnlyMemory<T>` shapes and direct span equality loops. 
-Hash loops and interface-typed collection views still use streaming and indexer/enumerator fallbacks on that tier.
+**`netstandard2.0` and .NET Framework spans.** The framework package brings `System.Memory` on this tier, so the generator emits `Memory<T>`/`ReadOnlyMemory<T>` shapes, span equality loops and the bit-block byte paths there too.
+Hash loops over interface-typed collection views still use streaming and indexer/enumerator fallbacks, since the span helpers for them are absent from this asset.
 
 **Trimming and NativeAOT.** Field access through `[UnsafeAccessor]` is trim- and AOT-safe. Where the delegate fallback is needed (below net8.0, and generic declaring types on net8.0), 
 the affected type's convenience property getter and `GetEqualityComparer<T>()` carry `[RequiresUnreferencedCode]`/`[RequiresDynamicCode]`, 
@@ -104,8 +106,10 @@ Every type in the closure gets:
 - a static convenience property `MyDeepEqualsContext.{Name}`,
 - an entry behind `GetEqualityComparer<T>()`, which throws `DeepEqualsMissingComparerException` for a type outside the closure.
 
-Derived types are **not** discovered. Register every runtime type a polymorphic member (`object`, an interface, an abstract or unsealed class) can hold; 
+Derived types are **not** discovered. Register every runtime type a polymorphic member (`object`, an interface, an abstract or unsealed class) can hold;
 an unregistered runtime type throws `DeepEqualsUnknownTypeException` at comparison time.
+
+**Seal your contract classes.** An unsealed class is compared through a dispatch on its runtime type every time, because a derived instance may be behind it. A sealed class is compared by its members directly. There is no option to assume the declared type: sealing is how a class says it has no subclasses.
 
 **Shared registrations.** Attributes on an abstract base context are inherited. A derived context must carry at least one 
 `[GenerateDeepEquals]` or a `[DeepEqualsSourceGenerationOptions]` on its own declaration to be discovered:
@@ -158,6 +162,18 @@ Set on `[DeepEqualsSourceGenerationOptions]`. Invalid values warn ([`DEQ013`](ht
 | `MaxBinaryExpressionArity`     | 64        | ≥ 1                | Largest generated `&&` chain; longer member lists are split into consecutive `if` statements.                                                                                                       |
 | `StructPassByValueMaxByteSize` | 8         | ≥ 0                | Structs whose estimated field size is at most this are passed by value to generated cores; larger ones by `in`.                                                                                     |
 | `ExcludeInterfacesByPrefix`    | empty     | namespace prefixes | Interfaces whose namespace equals a prefix or starts with `prefix + "."` are skipped by the automatic base/interface crawl, as `System` already is. Does not affect explicit roots or member types. |
+| `CycleHandling`                | `Graph`   | `Graph`, `Path`, `Tree` | How a comparison remembers where it has been, and so what a recursive type costs. See [Choosing a cycle mode](#choosing-a-cycle-mode).                                                          |
+| `MaxDepth`                     | 512       | 1..1,000,000       | Under `Tree` only: the guarded nesting depth past which a comparison or hash throws. Linked lists are walked in a loop and do not count against it. Setting it under another mode warns ([`DEQ037`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#options-and-bounds)). |
+| `MatchingHashDepth`            | 4         | 1..16              | Under `Graph` and `Path`: how many payload edges into a recursive type the fingerprint that buckets set and dictionary entries follows, where the public hash follows one. Setting it under `Tree` warns ([`DEQ037`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#options-and-bounds)). |
+| `Hashing`                      | `XxHash32` | `XxHash32`, `XxHash64` | The width of the hash stream. `XxHash64` hashes a 64-bit value as one word and two 32-bit values packed into one, so a value takes about half the rounds; only the public result folds to 32 bits. Prefer it on 64-bit processes and in the browser. |
+
+### Choosing a cycle mode
+
+- **`Graph`**, the default, retains every pair of objects it meets at a cycle guard for the whole comparison. A pair met again is assumed equal, so real cycles terminate and a subgraph shared by many parents is compared once. Each guarded pair costs a table probe, and a wide tree retains a pair per node.
+- **`Path`** retains only the ancestors of the pair being compared: each pair leaves the table when its comparison returns. Real cycles still terminate and answers are identical to `Graph`, and the table stays as small as the nesting is deep. A shared subgraph is compared once per path that reaches it, which can be exponential on heavily shared graphs.
+- **`Tree`** retains nothing. One depth counter bounds the traversal, there is no pair table, no pool rental and no pair budget, and the hash walks the whole value instead of one level into a recursive type. It is the mode for deserialized data, which cannot hold cycles. The traversal is bounded, not the input validated. The same reference is equal before any traversal, a cyclic child shared by both sides is met as one reference, and a member that differs before a cycle decides first. A cycle the traversal does enter throws `DeepEqualsComplexityException` once the depth passes `MaxDepth`, or at once from a linked-list loop. The exception names the type whose guard ran out of depth, which is not necessarily the type that closes the cycle.
+
+Hash values differ between modes and widths, as they already differ between processes; persist none of them.
 
 ## What is compared
 
@@ -169,11 +185,12 @@ Set on `[DeepEqualsSourceGenerationOptions]`. Invalid values warn ([`DEQ013`](ht
 - **Enums** as their declared underlying integer, all bits. **64-bit and wider leaves**, `Guid` and strings hash through a per-process seeded mix rather than the BCL's xor fold.
 - **Other built-in leaves** (`Guid`, `TimeSpan`, `DateOnly`, `TimeOnly`, `Version`, `Type`, `IPAddress`, `CultureInfo`, `TimeZoneInfo`, `Encoding`, `Index`, `Range`, `BigInteger`, `Half`, `Int128`, `Rune`, `Color`, `Point`, `Size`, `Rectangle`) and `[SimpleType]` leaves by their own equality, calling `IEquatable<T>.Equals` directly where the type implements it. **`Regex`** by reference, with [`DEQ022`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#collections-and-shapes) unless a custom comparer is registered.
 - **Structs** by members, ignoring layout and padding. **Nullable values** by `HasValue` then payload.
+- **Sequences of bit-block values** compare as one block of memory and hash with seeded XxHash3 over their bytes, which is exactly the rules above for these types. A bit-block value is an integer other than `bool` and `nint`, a floating-point value, `decimal`, `Guid`, `DateTime`, `TimeSpan`, `Int128`, an enum, or a source-declared struct of such fields with no padding and every field compared. Every container shape of the declared type hashes alike; a shape without a span is copied into a pooled buffer first.
 - **`KeyValuePair<K,V>`**, **`ValueTuple`** and **`Tuple`** item by item; tuple element names do not participate.
 - **Ordered collections** (`T[]`, `List<T>`, `ImmutableArray<T>`, `ArraySegment<T>`, `Memory<T>`, `IList<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `IEnumerable<T>`) element by element, by the **declared** static type. A `HashSet<T>` behind `IEnumerable<T>` is an ordered sequence.
 - **Sets** (`ISet<T>`, `IReadOnlySet<T>`) and **dictionaries** (`IDictionary<K,V>`, `IReadOnlyDictionary<K,V>`) as unordered multisets under **this library's** equality of elements and key-value pairs. The collection's own comparer is never consulted.
 - **Polymorphic members** (`object`, interfaces, abstract or unsealed classes) require equal runtime types, then dispatch to the concrete type's comparison. Collections and leaves behind such a member match by shape rather than exact runtime type, so `HashSet<T>` equals `SortedSet<T>` behind `ISet<T>`.
-- **Cycles** terminate with coinductive semantics: a pair already under comparison is assumed equal, so `A→B→A` equals its unrolled form. Shared and copied subgraphs compare equal, and equal graphs always hash equal.
+- **Cycles** terminate with coinductive semantics under `Graph` and `Path`: a pair already under comparison is assumed equal, so `A→B→A` equals its unrolled form. Shared and copied subgraphs compare equal, and equal graphs always hash equal. Under `Tree` a cycle the traversal enters throws; see [Choosing a cycle mode](#choosing-a-cycle-mode).
 - **Null and empty** collections differ; null hashes to 0, empty to a nonzero value.
 
 Register a custom comparer for any type where the BCL's normalized equality is what you want.
@@ -184,11 +201,11 @@ Register a custom comparer for any type where the BCL's normalized equality is w
 |---------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `DeepEqualsUnknownTypeException`      | A polymorphic member holds a runtime type outside the closure, on both sides with the same type, or on any hash. Two *different* unregistered types compare unequal without throwing. |
 | `DeepEqualsMissingComparerException`  | `GetEqualityComparer<T>()` for a `T` outside the closure.                                                                                                                             |
-| `DeepEqualsComplexityException`       | `MaxComparisonPairs` exceeded, or a set/dictionary hash-collision run longer than `MaxUnorderedCollisionRun`.                                                                         |
-| `InsufficientExecutionStackException` | Recursion deep enough to threaten the thread stack; checked at every entry point and recursive core.                                                                                  |
+| `DeepEqualsComplexityException`       | `MaxComparisonPairs` exceeded, a set/dictionary hash-collision run longer than `MaxUnorderedCollisionRun`, or under `Tree` a traversal deeper than `MaxDepth` or a linked list that loops. |
+| `InsufficientExecutionStackException` | Recursion deep enough to threaten the thread stack. Checked at the `Equals` entry of a comparer whose closure has a cycle and at every cycle guard, in hashing too under `Tree`. An acyclic closure is as deep as its declarations and is not checked. |
 | `InvalidOperationException`           | A collection enumerated more or fewer elements than its advertised `Count`.                                                                                                           |
 
-Neither budget bounds cumulative work or elapsed time; nested unordered trials may repeat comparisons. Allocation-free steady state holds for acyclic graphs and known collections; cyclic graphs beyond 8 retained pairs and every set/dictionary comparison rent pooled arrays, and exact `decimal` below net8.0 allocates small arrays. Near the default pair budget a spilled state can hold roughly 32 MB of pooled arrays.
+Neither budget bounds cumulative work or elapsed time; nested unordered trials may repeat comparisons. Allocation-free steady state holds for acyclic graphs and known collections. Cyclic graphs beyond 8 retained pairs, every set/dictionary comparison, and the hash of a bit-block sequence that has no span rent pooled arrays. Under `Path` the state holds only the ancestors of the current pair, and under `Tree` there is no state at all. Near the default pair budget a spilled `Graph` state can hold about 36 MB of pooled arrays: 24 MB of pairs, an 8 MB index and 4 MB of cached pair hashes.
 
 ## Trip hazards
 
