@@ -71,6 +71,9 @@ jobs:
       - name: Build the benchmarks (every platform, against the packed package)
         run: dotnet build downstream/benchmarks/DeepEquals.Benchmarks -c Release
 
+      - name: Build the generator benchmarks (against the generator source)
+        run: dotnet build downstream/benchmarks/DeepEquals.Generator.Benchmarks -c Release
+
       - name: Install the headless browser
         run: ./downstream/smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install chromium
         shell: pwsh
@@ -164,6 +167,9 @@ jobs:
 
       - name: Build the benchmarks (every platform, against the packed package)
         run: dotnet build downstream/benchmarks/DeepEquals.Benchmarks -c Release
+
+      - name: Build the generator benchmarks (against the generator source)
+        run: dotnet build downstream/benchmarks/DeepEquals.Generator.Benchmarks -c Release
 
       - name: Install the headless browser
         run: ./downstream/smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium

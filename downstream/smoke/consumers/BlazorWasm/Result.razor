@@ -22,14 +22,22 @@ else if (_benchmarks != null)
     <pre id="benchmarks">@_benchmarks</pre>
 }
 
+@if (_cold != null)
+{
+    <pre id="cold">@_cold</pre>
+}
+
 @code {
     private string _result;
     private string _benchmarks;
+    private string _cold;
 
     protected override void OnInitialized()
     {
         try
         {
+            // Cold start first, before the checks warm every context.
+            _cold = MicroBench.ColdStart();
             _result = Checks.Run();
         }
         catch (Exception ex)

@@ -1,0 +1,30 @@
+<!--
+    Times the generator itself on synthetic closures: elapsed time and allocations for 100, 1,000 and 4,000 closure
+    types, with one registered root and with every type a root, and how quickly a cancelled run returns. The baseline
+    for the audit's O1 (header work per file) and O2 (graph passes and cancellation) findings.
+
+        dotnet run -c Release
+
+    References the generator's source project, not the packed package, since the package ships the generator only as
+    an analyzer.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <LangVersion>latest</LangVersion>
+        <Nullable>enable</Nullable>
+        <RootNamespace>DeepEquals.Generator.Benchmarks</RootNamespace>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+        <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../../../src/DeepEquals.SourceGenerator/DeepEquals.SourceGenerator.csproj" />
+    </ItemGroup>
+
+</Project>

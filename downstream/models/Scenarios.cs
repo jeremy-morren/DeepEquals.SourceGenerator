@@ -13,10 +13,15 @@ using System.Collections.Generic;
 
 namespace DeepEquals.Downstream
 {
-    /// <summary>Equal operands and the four operations over them. The delegates are called on the same data every time.</summary>
+    /// <summary>Equal operands and the operations over them. The delegates are called on the same data every time.</summary>
     public sealed class Scenario
     {
         public Scenario(string name, Func<bool> generatedEquals, Func<bool> builtInEquals, Func<int> generatedHash, Func<int> builtInHash, Func<int> generatedHashOfOther)
+            : this(name, generatedEquals, builtInEquals, generatedHash, builtInHash, generatedHashOfOther, null, null)
+        {
+        }
+
+        public Scenario(string name, Func<bool> generatedEquals, Func<bool> builtInEquals, Func<int> generatedHash, Func<int> builtInHash, Func<int> generatedHashOfOther, Func<int> generated64Hash, Func<int> generated64HashOfOther)
         {
             Name = name;
             GeneratedEquals = generatedEquals;
@@ -24,6 +29,8 @@ namespace DeepEquals.Downstream
             GeneratedHash = generatedHash;
             BuiltInHash = builtInHash;
             GeneratedHashOfOther = generatedHashOfOther;
+            Generated64Hash = generated64Hash;
+            Generated64HashOfOther = generated64HashOfOther;
         }
 
         public string Name { get; }
@@ -40,6 +47,11 @@ namespace DeepEquals.Downstream
 
         /// <summary>The generated hash of the other operand, which the checks compare against <see cref="GeneratedHash"/>.</summary>
         public Func<int> GeneratedHashOfOther { get; }
+
+        /// <summary>The same hash under the 64-bit stream, from <c>DownstreamHash64Context</c>; null where no such root exists.</summary>
+        public Func<int> Generated64Hash { get; }
+
+        public Func<int> Generated64HashOfOther { get; }
 
         /// <summary>The name is what a benchmark table shows for the parameter.</summary>
         public override string ToString() { return Name; }
@@ -59,7 +71,9 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.CustomerEquals(customerA, customerB),
                 () => DownstreamContext.Customer.GetHashCode(customerA),
                 () => BuiltIn.CustomerHash(customerA),
-                () => DownstreamContext.Customer.GetHashCode(customerB)));
+                () => DownstreamContext.Customer.GetHashCode(customerB),
+                () => DownstreamHash64Context.Customer.GetHashCode(customerA),
+                () => DownstreamHash64Context.Customer.GetHashCode(customerB)));
 
             var orderA = Data.Order(2);
             var orderB = Data.Order(2);
@@ -68,7 +82,9 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.OrderEquals(orderA, orderB),
                 () => DownstreamContext.Order.GetHashCode(orderA),
                 () => BuiltIn.OrderHash(orderA),
-                () => DownstreamContext.Order.GetHashCode(orderB)));
+                () => DownstreamContext.Order.GetHashCode(orderB),
+                () => DownstreamHash64Context.Order.GetHashCode(orderA),
+                () => DownstreamHash64Context.Order.GetHashCode(orderB)));
 
             IReadOnlyList<OrderLine> linesA = Data.Lines(3, 100);
             IReadOnlyList<OrderLine> linesB = Data.Lines(3, 100);
@@ -77,7 +93,9 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.LinesEqual(linesA, linesB),
                 () => DownstreamContext.IReadOnlyListOfOrderLine.GetHashCode(linesA),
                 () => BuiltIn.LinesHash(linesA),
-                () => DownstreamContext.IReadOnlyListOfOrderLine.GetHashCode(linesB)));
+                () => DownstreamContext.IReadOnlyListOfOrderLine.GetHashCode(linesB),
+                () => DownstreamHash64Context.IReadOnlyListOfOrderLine.GetHashCode(linesA),
+                () => DownstreamHash64Context.IReadOnlyListOfOrderLine.GetHashCode(linesB)));
 
             var stringMapA = Data.StringMap(4, 100);
             var stringMapB = Data.StringMap(4, 100);
@@ -86,7 +104,9 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.StringMapEquals(stringMapA, stringMapB),
                 () => DownstreamContext.DictionaryOfStringAndDecimal.GetHashCode(stringMapA),
                 () => BuiltIn.StringMapHash(stringMapA),
-                () => DownstreamContext.DictionaryOfStringAndDecimal.GetHashCode(stringMapB)));
+                () => DownstreamContext.DictionaryOfStringAndDecimal.GetHashCode(stringMapB),
+                () => DownstreamHash64Context.DictionaryOfStringAndDecimal.GetHashCode(stringMapA),
+                () => DownstreamHash64Context.DictionaryOfStringAndDecimal.GetHashCode(stringMapB)));
 
             var skuMapA = Data.SkuMap(5, 100);
             var skuMapB = Data.SkuMap(5, 100);
@@ -95,7 +115,9 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.SkuMapEquals(skuMapA, skuMapB),
                 () => DownstreamContext.DictionaryOfSkuIdAndInt32.GetHashCode(skuMapA),
                 () => BuiltIn.SkuMapHash(skuMapA),
-                () => DownstreamContext.DictionaryOfSkuIdAndInt32.GetHashCode(skuMapB)));
+                () => DownstreamContext.DictionaryOfSkuIdAndInt32.GetHashCode(skuMapB),
+                () => DownstreamHash64Context.DictionaryOfSkuIdAndInt32.GetHashCode(skuMapA),
+                () => DownstreamHash64Context.DictionaryOfSkuIdAndInt32.GetHashCode(skuMapB)));
 
             var treeA = Data.Tree(6, 3, 8);
             var treeB = Data.Tree(6, 3, 8);
@@ -104,7 +126,23 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.TreeEquals(treeA, treeB),
                 () => DownstreamContext.TreeNode.GetHashCode(treeA),
                 () => BuiltIn.TreeHash(treeA),
-                () => DownstreamContext.TreeNode.GetHashCode(treeB)));
+                () => DownstreamContext.TreeNode.GetHashCode(treeB),
+                () => DownstreamHash64Context.TreeNode.GetHashCode(treeA),
+                () => DownstreamHash64Context.TreeNode.GetHashCode(treeB)));
+
+            scenarios.Add(new Scenario("TreeNode x585 (Path)",
+                () => DownstreamPathContext.TreeNode.Equals(treeA, treeB),
+                () => BuiltIn.TreeEquals(treeA, treeB),
+                () => DownstreamPathContext.TreeNode.GetHashCode(treeA),
+                () => BuiltIn.TreeHash(treeA),
+                () => DownstreamPathContext.TreeNode.GetHashCode(treeB)));
+
+            scenarios.Add(new Scenario("TreeNode x585 (Tree)",
+                () => DownstreamTreeContext.TreeNode.Equals(treeA, treeB),
+                () => BuiltIn.TreeEquals(treeA, treeB),
+                () => DownstreamTreeContext.TreeNode.GetHashCode(treeA),
+                () => BuiltIn.TreeHash(treeA),
+                () => DownstreamTreeContext.TreeNode.GetHashCode(treeB)));
 
             Shape shapeA = Data.Square(7);
             Shape shapeB = Data.Square(7);
@@ -113,7 +151,9 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.ShapeEquals(shapeA, shapeB),
                 () => DownstreamContext.Shape.GetHashCode(shapeA),
                 () => BuiltIn.ShapeHash(shapeA),
-                () => DownstreamContext.Shape.GetHashCode(shapeB)));
+                () => DownstreamContext.Shape.GetHashCode(shapeB),
+                () => DownstreamHash64Context.Shape.GetHashCode(shapeA),
+                () => DownstreamHash64Context.Shape.GetHashCode(shapeB)));
 
             var payloadA = Data.Payload(8);
             var payloadB = Data.Payload(8);
@@ -122,9 +162,33 @@ namespace DeepEquals.Downstream
                 () => BuiltIn.PayloadEquals(payloadA, payloadB),
                 () => DownstreamContext.Payload.GetHashCode(payloadA),
                 () => BuiltIn.PayloadHash(payloadA),
-                () => DownstreamContext.Payload.GetHashCode(payloadB)));
+                () => DownstreamContext.Payload.GetHashCode(payloadB),
+                () => DownstreamHash64Context.Payload.GetHashCode(payloadA),
+                () => DownstreamHash64Context.Payload.GetHashCode(payloadB)));
+
+            var doublesA = Data.Doubles(13, 1000);
+            var doublesB = Data.Doubles(13, 1000);
+            scenarios.Add(new Scenario("double[] x1000 (bit block)",
+                () => DownstreamContext.ArrayOfDouble.Equals(doublesA, doublesB),
+                () => BuiltIn.SequenceEquals(doublesA, doublesB),
+                () => DownstreamContext.ArrayOfDouble.GetHashCode(doublesA),
+                () => BuiltIn.SequenceHash(doublesA),
+                () => DownstreamContext.ArrayOfDouble.GetHashCode(doublesB),
+                () => DownstreamHash64Context.ArrayOfDouble.GetHashCode(doublesA),
+                () => DownstreamHash64Context.ArrayOfDouble.GetHashCode(doublesB)));
 
 #if RECORDS
+            var pointsA = Data.Point3s(14, 1000);
+            var pointsB = Data.Point3s(14, 1000);
+            scenarios.Add(new Scenario("Point3[] x1000 (bit-block struct)",
+                () => DownstreamContext.ArrayOfPoint3.Equals(pointsA, pointsB),
+                () => BuiltIn.SequenceEquals(pointsA, pointsB),
+                () => DownstreamContext.ArrayOfPoint3.GetHashCode(pointsA),
+                () => BuiltIn.SequenceHash(pointsA),
+                () => DownstreamContext.ArrayOfPoint3.GetHashCode(pointsB),
+                () => DownstreamHash64Context.ArrayOfPoint3.GetHashCode(pointsA),
+                () => DownstreamHash64Context.ArrayOfPoint3.GetHashCode(pointsB)));
+
             var moneyA = Data.Money(9);
             var moneyB = Data.Money(9);
             scenarios.Add(new Scenario("record struct Money",
@@ -132,7 +196,9 @@ namespace DeepEquals.Downstream
                 () => moneyA.Equals(moneyB),
                 () => DownstreamContext.Money.GetHashCode(moneyA),
                 () => moneyA.GetHashCode(),
-                () => DownstreamContext.Money.GetHashCode(moneyB)));
+                () => DownstreamContext.Money.GetHashCode(moneyB),
+                () => DownstreamHash64Context.Money.GetHashCode(moneyA),
+                () => DownstreamHash64Context.Money.GetHashCode(moneyB)));
 
             var pointA = Data.Point3(10);
             var pointB = Data.Point3(10);
@@ -141,7 +207,9 @@ namespace DeepEquals.Downstream
                 () => pointA.Equals(pointB),
                 () => DownstreamContext.Point3.GetHashCode(pointA),
                 () => pointA.GetHashCode(),
-                () => DownstreamContext.Point3.GetHashCode(pointB)));
+                () => DownstreamContext.Point3.GetHashCode(pointB),
+                () => DownstreamHash64Context.Point3.GetHashCode(pointA),
+                () => DownstreamHash64Context.Point3.GetHashCode(pointB)));
 
             var invoiceA = Data.Invoice(11);
             var invoiceB = Data.Invoice(11);
@@ -150,7 +218,9 @@ namespace DeepEquals.Downstream
                 () => invoiceA.Equals(invoiceB),
                 () => DownstreamContext.Invoice.GetHashCode(invoiceA),
                 () => invoiceA.GetHashCode(),
-                () => DownstreamContext.Invoice.GetHashCode(invoiceB)));
+                () => DownstreamContext.Invoice.GetHashCode(invoiceB),
+                () => DownstreamHash64Context.Invoice.GetHashCode(invoiceA),
+                () => DownstreamHash64Context.Invoice.GetHashCode(invoiceB)));
 
             var personA = Data.Person(12);
             var personB = Data.Person(12);
@@ -159,7 +229,9 @@ namespace DeepEquals.Downstream
                 () => personA.Equals(personB),
                 () => DownstreamContext.Person.GetHashCode(personA),
                 () => personA.GetHashCode(),
-                () => DownstreamContext.Person.GetHashCode(personB)));
+                () => DownstreamContext.Person.GetHashCode(personB),
+                () => DownstreamHash64Context.Person.GetHashCode(personA),
+                () => DownstreamHash64Context.Person.GetHashCode(personB)));
 #endif
 
             return scenarios.ToArray();

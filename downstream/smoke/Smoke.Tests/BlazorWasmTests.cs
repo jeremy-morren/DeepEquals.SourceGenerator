@@ -69,6 +69,12 @@ public sealed partial class BlazorWasmTests
         result.Should().StartWith("OK ", "the assertions must pass in the browser");
         result.Should().Contain("pointer=32-bit", "Blazor WebAssembly is the 32-bit target");
 
+        // The first calls per context, timed before the checks warmed them: what a new browser tab pays.
+        var cold = (await page.InnerTextAsync("#cold")).Trim();
+        _output.WriteLine("browser cold start:");
+        _output.WriteLine(cold);
+        cold.Should().StartWith("cold start").And.NotContain("unexpected result");
+
         // The stopwatch harness follows: indicative numbers for the browser, logged rather than asserted.
         await page.WaitForSelectorAsync("#benchmarks", new PageWaitForSelectorOptions { Timeout = 300_000 });
         var benchmarks = (await page.InnerTextAsync("#benchmarks")).Trim();

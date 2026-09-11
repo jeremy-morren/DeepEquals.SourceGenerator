@@ -262,6 +262,79 @@ namespace DeepEquals.Downstream
             return h;
         }
 
+        // ----- ListNode, Texts, sequences --------------------------------------------------------------------------------
+
+        public static bool ChainEquals(ListNode a, ListNode b)
+        {
+            while (true)
+            {
+                if (ReferenceEquals(a, b)) return true;
+                if (a == null || b == null || a.Value != b.Value) return false;
+                a = a.Next;
+                b = b.Next;
+            }
+        }
+
+        public static int ChainHash(ListNode a)
+        {
+            var h = 0;
+            for (; a != null; a = a.Next) h = Combine(h, a.Value);
+            return h;
+        }
+
+        public static bool TextsEquals(Texts a, Texts b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+            return a.A == b.A && a.B == b.B && a.C == b.C && a.D == b.D && a.E == b.E && a.F == b.F && a.G == b.G && a.H == b.H;
+        }
+
+        public static int TextsHash(Texts a)
+        {
+            if (a == null) return 0;
+            var h = 0;
+            h = Combine(h, a.A); h = Combine(h, a.B); h = Combine(h, a.C); h = Combine(h, a.D);
+            h = Combine(h, a.E); h = Combine(h, a.F); h = Combine(h, a.G); h = Combine(h, a.H);
+            return h;
+        }
+
+        /// <summary>An element loop through the default comparer: what a hand-written sequence comparison does.</summary>
+        public static bool SequenceEquals<T>(IReadOnlyList<T> a, IReadOnlyList<T> b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null || a.Count != b.Count) return false;
+            var comparer = EqualityComparer<T>.Default;
+            for (var i = 0; i < a.Count; i++)
+                if (!comparer.Equals(a[i], b[i])) return false;
+
+            return true;
+        }
+
+        public static int SequenceHash<T>(IReadOnlyList<T> a)
+        {
+            if (a == null) return 0;
+            var h = 0;
+            for (var i = 0; i < a.Count; i++) h = Combine(h, a[i]);
+            return h;
+        }
+
+        /// <summary>A hand-written comparer from a pair of delegates, for timing hash tables against the generated one.</summary>
+        public sealed class Comparer<T> : IEqualityComparer<T>
+        {
+            private readonly Func<T, T, bool> _equals;
+            private readonly Func<T, int> _hash;
+
+            public Comparer(Func<T, T, bool> equals, Func<T, int> hash)
+            {
+                _equals = equals;
+                _hash = hash;
+            }
+
+            public bool Equals(T x, T y) { return _equals(x, y); }
+
+            public int GetHashCode(T obj) { return _hash(obj); }
+        }
+
         // ----- Payload --------------------------------------------------------------------------------------------------
 
         public static bool PayloadEquals(Payload a, Payload b)

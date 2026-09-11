@@ -23,10 +23,38 @@ namespace DeepEquals.Downstream
         public double BuiltInEqualsNs;
         public double GeneratedHashNs;
         public double BuiltInHashNs;
+
+        /// <summary>The same hash under the 64-bit stream, or NaN where the scenario has no 64-bit root.</summary>
+        public double Generated64HashNs;
     }
 
     public static class MicroBench
     {
+        /// <summary>
+        /// The first call per context, timed once in a fresh process: holder initialization, dispatch maps, bit-block size
+        /// checks and the hashing library's type load, which is what a new process or a browser tab pays before any
+        /// steady-state number applies. Returns one line per context.
+        /// </summary>
+        public static string ColdStart()
+        {
+            var text = new StringBuilder();
+            text.AppendLine(Pad("cold start", 32) + "first Equals + GetHashCode");
+            Cold(text, "Graph, XxHash32", () => DownstreamContext.Order.Equals(Data.Order(2), Data.Order(2)) && DownstreamContext.Order.GetHashCode(Data.Order(2)) != 0);
+            Cold(text, "Graph, XxHash64", () => DownstreamHash64Context.Order.Equals(Data.Order(2), Data.Order(2)) && DownstreamHash64Context.Order.GetHashCode(Data.Order(2)) != 0);
+            Cold(text, "Path", () => DownstreamPathContext.TreeNode.Equals(Data.Tree(6, 2, 4), Data.Tree(6, 2, 4)) && DownstreamPathContext.TreeNode.GetHashCode(Data.Tree(6, 2, 4)) != 0);
+            Cold(text, "Tree", () => DownstreamTreeContext.TreeNode.Equals(Data.Tree(6, 2, 4), Data.Tree(6, 2, 4)) && DownstreamTreeContext.TreeNode.GetHashCode(Data.Tree(6, 2, 4)) != 0);
+            Cold(text, "bit blocks", () => DownstreamContext.ArrayOfDouble.Equals(Data.Doubles(1, 64), Data.Doubles(1, 64)) && DownstreamContext.ArrayOfDouble.GetHashCode(Data.Doubles(1, 64)) != 0);
+            return text.ToString();
+        }
+
+        private static void Cold(StringBuilder text, string name, Func<bool> first)
+        {
+            var watch = Stopwatch.StartNew();
+            var ok = first();
+            watch.Stop();
+            text.AppendLine(Pad(name, 32) + (watch.ElapsedTicks * (1e6 / Stopwatch.Frequency)).ToString("N1", CultureInfo.InvariantCulture) + " us" + (ok ? string.Empty : " (unexpected result)"));
+        }
+
         /// <summary>Consumed by every measured call, so no result is dead.</summary>
         public static int Sink;
 
@@ -43,6 +71,7 @@ namespace DeepEquals.Downstream
                     Warm(scenario.BuiltInEquals);
                     Warm(scenario.GeneratedHash);
                     Warm(scenario.BuiltInHash);
+                    if (scenario.Generated64Hash != null) Warm(scenario.Generated64Hash);
                 }
 
                 Settle();
@@ -58,6 +87,7 @@ namespace DeepEquals.Downstream
                     BuiltInEqualsNs = Measure(scenario.BuiltInEquals, millisecondsPerCase),
                     GeneratedHashNs = Measure(scenario.GeneratedHash, millisecondsPerCase),
                     BuiltInHashNs = Measure(scenario.BuiltInHash, millisecondsPerCase),
+                    Generated64HashNs = scenario.Generated64Hash != null ? Measure(scenario.Generated64Hash, millisecondsPerCase) : double.NaN,
                 });
             }
 
@@ -68,7 +98,7 @@ namespace DeepEquals.Downstream
         public static string Format(List<MicroResult> results)
         {
             var text = new StringBuilder();
-            text.AppendLine(Pad("scenario", 48) + Pad("equals gen", 14) + Pad("equals builtin", 16) + Pad("ratio", 8) + Pad("hash gen", 14) + Pad("hash builtin", 16) + "ratio");
+            text.AppendLine(Pad("scenario", 48) + Pad("equals gen", 14) + Pad("equals builtin", 16) + Pad("ratio", 8) + Pad("hash gen", 14) + Pad("hash builtin", 16) + Pad("ratio", 8) + Pad("hash64 gen", 14) + "ratio");
             foreach (var r in results)
             {
                 text.Append(Pad(r.Name, 48));
@@ -77,7 +107,9 @@ namespace DeepEquals.Downstream
                 text.Append(Pad(Ratio(r.GeneratedEqualsNs, r.BuiltInEqualsNs), 8));
                 text.Append(Pad(Ns(r.GeneratedHashNs), 14));
                 text.Append(Pad(Ns(r.BuiltInHashNs), 16));
-                text.AppendLine(Ratio(r.GeneratedHashNs, r.BuiltInHashNs));
+                text.Append(Pad(Ratio(r.GeneratedHashNs, r.BuiltInHashNs), 8));
+                text.Append(Pad(double.IsNaN(r.Generated64HashNs) ? "-" : Ns(r.Generated64HashNs), 14));
+                text.AppendLine(double.IsNaN(r.Generated64HashNs) ? "-" : Ratio(r.Generated64HashNs, r.BuiltInHashNs));
             }
 
             return text.ToString();

@@ -15,6 +15,14 @@ namespace DeepEquals.Smoke
     {
         public static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--cold")
+            {
+                // Before anything else touches a context, so the first call pays every one-time cost.
+                Console.WriteLine(Checks.Describe());
+                Console.WriteLine(MicroBench.ColdStart());
+                return 0;
+            }
+
             if (args.Length > 0 && args[0] == "--bench")
             {
                 // The stopwatch harness over the shared scenarios: indicative numbers for this tier.

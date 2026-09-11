@@ -24,6 +24,7 @@ namespace DeepEquals.Downstream
                 GraphChecks(failures);
                 ScenarioChecks(failures);
                 DifferenceChecks(failures);
+                ModeChecks(failures);
             }
             catch (Exception ex)
             {
@@ -108,6 +109,72 @@ namespace DeepEquals.Downstream
                 if (!scenario.BuiltInEquals()) failures.Add(scenario.Name + ": built-in equals");
                 if (scenario.GeneratedHash() != scenario.GeneratedHashOfOther()) failures.Add(scenario.Name + ": hash");
                 if (scenario.GeneratedHash() != scenario.GeneratedHash()) failures.Add(scenario.Name + ": hash unstable");
+                if (scenario.Generated64Hash != null && scenario.Generated64Hash() != scenario.Generated64HashOfOther()) failures.Add(scenario.Name + ": 64-bit hash");
+            }
+        }
+
+        /// <summary>
+        /// The cycle-handling modes, the matching fingerprint and the bit-block paths, each on the shape that tells them
+        /// apart: Path equates rolled and unrolled cycles as Graph does; Tree bounds its traversal and throws on a cycle
+        /// it enters; the audit's chain sets need a deeper fingerprint; bit blocks keep the bitwise edges.
+        /// </summary>
+        private static void ModeChecks(List<string> failures)
+        {
+            // Path: the same answers as Graph, holding only ancestors.
+            var a = Data.Graph(1);
+            var b = Data.Graph(1);
+            if (!DownstreamPathContext.GraphNode.Equals(a, b)) failures.Add("path graph equal");
+            if (DownstreamPathContext.GraphNode.GetHashCode(a) != DownstreamPathContext.GraphNode.GetHashCode(b)) failures.Add("path graph hash");
+            if (!DownstreamPathContext.ListNode.Equals(Data.RolledLoop(3), Data.UnrolledLoop(3))) failures.Add("path rolled and unrolled");
+            if (!DownstreamContext.ListNode.Equals(Data.RolledLoop(3), Data.UnrolledLoop(3))) failures.Add("graph rolled and unrolled");
+
+            // Tree: the same reference is equal before any traversal; a cycle the traversal enters throws.
+            if (!DownstreamTreeContext.GraphNode.Equals(a, a)) failures.Add("tree same reference");
+            if (!Throws(() => DownstreamTreeContext.GraphNode.Equals(a, b))) failures.Add("tree cycle through a member");
+            if (!Throws(() => DownstreamTreeContext.ListNode.Equals(Data.RolledLoop(3), Data.RolledLoop(3)))) failures.Add("tree looping chain");
+            if (DownstreamTreeContext.ListNode.Equals(Data.RolledLoop(3), Data.Chain(5, 3))) failures.Add("tree loop against a finite chain");
+            var treeA = Data.Tree(6, 3, 8);
+            var treeB = Data.Tree(6, 3, 8);
+            if (!DownstreamTreeContext.TreeNode.Equals(treeA, treeB)) failures.Add("tree acyclic equal");
+            if (DownstreamTreeContext.TreeNode.GetHashCode(treeA) != DownstreamTreeContext.TreeNode.GetHashCode(treeB)) failures.Add("tree acyclic hash");
+            if (!DownstreamTreeContext.ListNode.Equals(Data.Chain(100000, 0), Data.Chain(100000, 0))) failures.Add("tree long chain");
+
+            // The audit's 65 chains: the public hash cannot tell them apart; the default fingerprint depth can.
+            if (!DownstreamContext.HashSetOfListNode.Equals(Data.ChainSet(65), Data.ChainSet(65))) failures.Add("chain sets at the default depth");
+            if (!DownstreamMatch2Context.HashSetOfListNode.Equals(Data.ChainSet(65), Data.ChainSet(65))) failures.Add("chain sets at depth 2");
+            if (!DownstreamMatch1WideContext.HashSetOfListNode.Equals(Data.ChainSet(65), Data.ChainSet(65))) failures.Add("chain sets at depth 1 with a wide cap");
+            if (!Throws(() => DownstreamMatch1Context.HashSetOfListNode.Equals(Data.ChainSet(65), Data.ChainSet(65)))) failures.Add("chain sets at depth 1 must exceed the cap");
+
+            // Collision runs: keys that share a fingerprint are matched exactly, early or late.
+            if (!DownstreamContext.HashSetOfCollidingId.Equals(Data.CollidingSet(100, 10, false), Data.CollidingSet(100, 10, false))) failures.Add("collision run equal");
+            if (DownstreamContext.HashSetOfCollidingId.Equals(Data.CollidingSet(100, 10, false), Data.CollidingSet(100, 10, true))) failures.Add("collision run late mismatch");
+
+            // Bit blocks keep the bitwise relation: the sign of zero, NaN payloads, decimal scale.
+            if (DownstreamContext.ArrayOfDouble.Equals(new[] { 0.0 }, new[] { -0.0 })) failures.Add("bit block negative zero");
+            if (DownstreamContext.ArrayOfDouble.GetHashCode(new double[0]) == 0) failures.Add("bit block empty hash");
+            decimal scale1 = 1.5m, scale2 = 1.50m;
+            var decimalsA = Data.Arrays(15, 4);
+            var decimalsB = Data.Arrays(15, 4);
+            if (!DownstreamContext.Arrays.Equals(decimalsA, decimalsB)) failures.Add("arrays equal");
+            if (DownstreamContext.Arrays.GetHashCode(decimalsA) != DownstreamContext.Arrays.GetHashCode(decimalsB)) failures.Add("arrays hash");
+            if (DownstreamHash64Context.Arrays.GetHashCode(decimalsA) != DownstreamHash64Context.Arrays.GetHashCode(decimalsB)) failures.Add("arrays 64-bit hash");
+            decimalsB.Decimals[0] = scale1;
+            decimalsA.Decimals[0] = scale2;
+            if (DownstreamContext.Arrays.Equals(decimalsA, decimalsB)) failures.Add("bit block decimal scale");
+            var view = new ReadOnlyListView<double>(Data.Doubles(16, 50));
+            if (DownstreamContext.IReadOnlyListOfDouble.GetHashCode(view) != DownstreamContext.IReadOnlyListOfDouble.GetHashCode(Data.Doubles(16, 50))) failures.Add("bit block copy path hash");
+        }
+
+        private static bool Throws(Func<bool> act)
+        {
+            try
+            {
+                act();
+                return false;
+            }
+            catch (DeepEquals.SourceGeneration.Framework.DeepEqualsComplexityException)
+            {
+                return true;
             }
         }
 

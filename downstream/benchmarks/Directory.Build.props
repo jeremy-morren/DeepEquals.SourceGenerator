@@ -1,4 +1,10 @@
 <Project>
     <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
-    <Import Project="$(MSBuildThisFileDirectory)../Packages.props" />
+
+    <!--
+        The runtime benchmarks consume the packed packages like any outside project. The generator benchmarks drive the
+        generator itself through its public type, which the packed analyzer does not expose to code, so they reference
+        the source project instead and stay out of the packages.
+    -->
+    <Import Project="$(MSBuildThisFileDirectory)../Packages.props" Condition="'$(MSBuildProjectName)' != 'DeepEquals.Generator.Benchmarks'" />
 </Project>

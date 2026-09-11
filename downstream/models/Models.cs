@@ -119,4 +119,68 @@ namespace DeepEquals.Downstream
         public Dictionary<string, object> Values { get; set; }
         public object Single { get; set; }
     }
+
+    /// <summary>A linked list: the chain shape, compared in a loop, whose public hash looks one node in.</summary>
+    public sealed class ListNode
+    {
+        public int Value { get; set; }
+        public ListNode Next { get; set; }
+    }
+
+    /// <summary>Eight strings: the record whose cost is the string hash itself, so gains elsewhere read against it.</summary>
+    public sealed class Texts
+    {
+        public string A { get; set; }
+        public string B { get; set; }
+        public string C { get; set; }
+        public string D { get; set; }
+        public string E { get; set; }
+        public string F { get; set; }
+        public string G { get; set; }
+        public string H { get; set; }
+    }
+
+    /// <summary>
+    /// A key whose hash is only its group, registered as a simple type: every key of a group shares a fingerprint, so a
+    /// set of them exercises the exact matching inside a collision run.
+    /// </summary>
+    public readonly struct CollidingId : IEquatable<CollidingId>
+    {
+        public CollidingId(int group, int id) { Group = group; Id = id; }
+
+        public int Group { get; }
+
+        public int Id { get; }
+
+        public bool Equals(CollidingId other) { return Group == other.Group && Id == other.Id; }
+
+        public override bool Equals(object obj) { return obj is CollidingId && Equals((CollidingId)obj); }
+
+        public override int GetHashCode() { return Group; }
+    }
+
+    /// <summary>A read-only list that is neither an array nor a List, so a sequence behind it takes the copy path.</summary>
+    public sealed class ReadOnlyListView<T> : IReadOnlyList<T>
+    {
+        private readonly T[] _items;
+
+        public ReadOnlyListView(T[] items) { _items = items; }
+
+        public T this[int index] { get { return _items[index]; } }
+
+        public int Count { get { return _items.Length; } }
+
+        public IEnumerator<T> GetEnumerator() { return ((IEnumerable<T>)_items).GetEnumerator(); }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() { return GetEnumerator(); }
+    }
+
+    /// <summary>The bit-block and wide-leaf sequences, each behind the declared type a contract would use.</summary>
+    public sealed class Arrays
+    {
+        public double[] Doubles { get; set; }
+        public Guid[] Guids { get; set; }
+        public decimal[] Decimals { get; set; }
+        public IReadOnlyList<double> DoubleView { get; set; }
+    }
 }

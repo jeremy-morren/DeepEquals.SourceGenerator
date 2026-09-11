@@ -179,6 +179,133 @@ namespace DeepEquals.Downstream
         }
 #endif
 
+        /// <summary>A linked list of <paramref name="length"/> nodes whose values count up from <paramref name="start"/>.</summary>
+        public static ListNode Chain(int length, int start)
+        {
+            ListNode head = null;
+            for (var i = length - 1; i >= 0; i--)
+                head = new ListNode { Value = start + i, Next = head };
+
+            return head;
+        }
+
+        /// <summary>A node whose Next is itself, and the same loop unrolled into two nodes.</summary>
+        public static ListNode RolledLoop(int value)
+        {
+            var node = new ListNode { Value = value };
+            node.Next = node;
+            return node;
+        }
+
+        public static ListNode UnrolledLoop(int value)
+        {
+            var a = new ListNode { Value = value };
+            var b = new ListNode { Value = value, Next = a };
+            a.Next = b;
+            return a;
+        }
+
+        /// <summary>
+        /// The audit's collision case: 65 chains 0 -> 0 -> i -> null. The public hash sees two equal nodes in each, so
+        /// only a fingerprint that looks two payload edges in tells them apart.
+        /// </summary>
+        public static HashSet<ListNode> ChainSet(int count)
+        {
+            var set = new HashSet<ListNode>();
+            for (var i = 0; i < count; i++)
+                set.Add(new ListNode { Value = 0, Next = new ListNode { Value = 0, Next = new ListNode { Value = i } } });
+
+            return set;
+        }
+
+        /// <summary>
+        /// A full tree whose every second-level subtree is one shared instance, <paramref name="sharedLevels"/> deep:
+        /// Graph compares a shared subtree once, Path and Tree once per path that reaches it.
+        /// </summary>
+        public static TreeNode Diamond(int seed, int sharedLevels, int subtreeDepth)
+        {
+            var shared = Tree(seed, subtreeDepth, 2);
+            var node = shared;
+            for (var i = 0; i < sharedLevels; i++)
+                node = new TreeNode { Value = seed + i, Children = new List<TreeNode> { node, node } };
+
+            return node;
+        }
+
+        /// <summary>
+        /// <paramref name="count"/> keys of which <paramref name="colliding"/> share one group, and so one fingerprint.
+        /// With <paramref name="mismatchLast"/> the last colliding key differs, so the collision run decides late.
+        /// </summary>
+        public static HashSet<CollidingId> CollidingSet(int count, int colliding, bool mismatchLast)
+        {
+            var set = new HashSet<CollidingId>();
+            for (var i = 0; i < count; i++)
+            {
+                var group = i < colliding ? -1 : i;
+                var id = mismatchLast && i == colliding - 1 ? -i - 1 : i;
+                set.Add(new CollidingId(group, id));
+            }
+
+            return set;
+        }
+
+        public static Texts Texts(int seed, int length)
+        {
+            var r = new Random(seed);
+            Func<string> next = () =>
+            {
+                var chars = new char[length];
+                for (var i = 0; i < length; i++) chars[i] = (char)('a' + r.Next(26));
+                return new string(chars);
+            };
+
+            return new Texts { A = next(), B = next(), C = next(), D = next(), E = next(), F = next(), G = next(), H = next() };
+        }
+
+        public static double[] Doubles(int seed, int count)
+        {
+            var r = new Random(seed);
+            var values = new double[count];
+            for (var i = 0; i < count; i++) values[i] = r.NextDouble() * 1000 + 1;
+            return values;
+        }
+
+        public static Guid[] Guids(int seed, int count)
+        {
+            var values = new Guid[count];
+            for (var i = 0; i < count; i++) values[i] = new Guid(seed, (short)i, (short)(i >> 16), 1, 2, 3, 4, 5, 6, 7, 8);
+            return values;
+        }
+
+        public static decimal[] Decimals(int seed, int count)
+        {
+            var r = new Random(seed);
+            var values = new decimal[count];
+            for (var i = 0; i < count; i++) values[i] = r.Next(1000000) / 100m;
+            return values;
+        }
+
+        public static Arrays Arrays(int seed, int count)
+        {
+            return new Arrays
+            {
+                Doubles = Doubles(seed, count),
+                Guids = Guids(seed, count),
+                Decimals = Decimals(seed, count),
+                DoubleView = new ReadOnlyListView<double>(Doubles(seed + 1, count)),
+            };
+        }
+
+#if RECORDS
+        public static Point3[] Point3s(int seed, int count)
+        {
+            var r = new Random(seed);
+            var values = new Point3[count];
+            for (var i = 0; i < count; i++) values[i] = new Point3(r.NextDouble() + 1, r.NextDouble() + 1, r.NextDouble() + 1);
+            return values;
+        }
+#endif
+
         private static long NextInt64(Random r)
         {
             return ((long)r.Next() << 32) | (uint)r.Next();

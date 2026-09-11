@@ -36,5 +36,6 @@
     <Folder Name="/benchmarks/">
         <File Path="benchmarks/Directory.Build.props" />
         <Project Path="benchmarks/DeepEquals.Benchmarks/DeepEquals.Benchmarks.csproj" />
+        <Project Path="benchmarks/DeepEquals.Generator.Benchmarks/DeepEquals.Generator.Benchmarks.csproj" />
     </Folder>
 </Solution>

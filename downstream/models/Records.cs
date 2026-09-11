@@ -25,6 +25,13 @@ namespace DeepEquals.Downstream
 
     /// <summary>A record holding a record, a record struct and a nullable record struct.</summary>
     public sealed record Person(string Name, Address Home, Point3 Position, Money? Balance);
+
+    /// <summary>Record structs in sequences: a bit-block struct behind an array and behind a list that is not one.</summary>
+    public sealed class PointArrays
+    {
+        public Point3[] Points { get; set; }
+        public System.Collections.Generic.IReadOnlyList<Point3> View { get; set; }
+    }
 }
 
 #if !NET5_0_OR_GREATER
