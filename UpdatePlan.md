@@ -191,7 +191,78 @@ Unchanged: the seed policy (a separate 64-bit process seed, settable from the te
 rule (0 for null, nonzero for empty), the level machinery under `Graph` and `Path`, and the matching hashes inside
 `DeepEqualsUnordered`, which keep their packed 32-bit `(hash, index)` keys and receive the folded value.
 
-### 2.2 Files
+### 2.2 Raw bits, never a numeric conversion
+
+Equality and hashing of a leaf operate on its storage bits. No path may apply a numeric conversion to a value: no
+`(uint)f` on a float, no `(long)d` on a double, no `decimal.GetBits`, no `.GetHashCode()` on a floating-point or
+decimal value. A numeric conversion rounds, saturates, collapses NaN payloads and merges `-0.0` with `0.0`; the
+documented representation rules keep all of those distinct, and the hash must agree with equality bit for bit.
+
+The only casts allowed in a hash word are the ones C# defines as bit-preserving on integers:
+
+| Cast | Effect | Where |
+|---|---|---|
+| `int` to `uint`, `long` to `ulong` (and back), always inside `unchecked(...)` | Reinterpretation, same width | `Pack`, `Words64`, the stream |
+| `uint` to `ulong` | Zero-extension | `Pack`, a lone narrow word |
+| `(int)ulong` | Truncation to the low word | `Fold`, the 32-bit `Words64` |
+| `byte`, `sbyte`, `short`, `ushort`, `char` to `int` | Extension to one narrow word | narrow leaves |
+| an enum to exactly its underlying type | Identity on the bits; the compiler emits nothing | enum leaves |
+| `bool` as `? 1 : 0` | Not a cast; both outcomes are distinct words | `bool` leaves |
+
+`unchecked` is written explicitly, as `Words64` does today, because a consumer project may compile with
+`CheckForOverflowUnderflow`. `nint`/`nuint` widen to 64 bits by sign or zero extension, which preserves every
+bit of the native word.
+
+**Reinterpretation per target, without `unsafe`.** The framework project does not set `AllowUnsafeBlocks` and this
+plan does not add it. The raw pointer form `*(uint*)&f` is also the slowest option: taking the address spills the
+local to the stack for the rest of the method. The fastest form on each asset is:
+
+| Value | net8.0, net10.0 | net6.0 | netstandard2.1 | netstandard2.0 |
+|---|---|---|---|---|
+| `float` | `BitConverter.SingleToUInt32Bits` | `BitConverter.SingleToUInt32Bits` | `BitConverter.SingleToInt32Bits` | `Unsafe.As<float, uint>(ref)` |
+| `double` | `BitConverter.DoubleToUInt64Bits` | `BitConverter.DoubleToUInt64Bits` | `BitConverter.DoubleToInt64Bits` | `Unsafe.As<double, ulong>(ref)` |
+| `Half` | `BitConverter.HalfToUInt16Bits` | `BitConverter.HalfToUInt16Bits` | not a leaf on this asset | not a leaf on this asset |
+| `decimal`, `Guid`, `Int128`, `UInt128` | `Unsafe.As<T, ulong>(ref)` and `Unsafe.Add` | same | same | same |
+| `DateTime` | `Unsafe.As<DateTime, ulong>(ref)` (existing `DateTimeBits`) | same | same | same |
+| `DateTimeOffset` | `.Ticks` and `.Offset.Ticks`, two `long` words | same | same | same |
+| `TimeSpan` | `.Ticks` | same | same | same |
+
+The `BitConverter` methods are JIT intrinsics on every CoreCLR from .NET Core 3.0 on and on Mono, so each is one
+register move. `Unsafe.As` over a `ref` is intrinsic too and the JIT does not spill the local for it; it is the
+only option on netstandard2.0, where `SingleToInt32Bits` does not exist, and the only option for 16-byte types
+on every asset, because `BitConverter` has no overload for them. `Unsafe.BitCast` would be equivalent on net8.0 and
+later but adds nothing over `BitConverter` for 4- and 8-byte values, and it is not in the out-of-band `Unsafe`
+package, so netstandard stays on `Unsafe.As`. `DateTimeOffset` is read through its two tick properties rather than
+reinterpreted, because its 16 bytes include padding whose content is not defined.
+
+Every reinterpretation goes through one `AggressiveInlining` shim in `DeepEqualsHelpers`, selected per asset with
+`#if`, so generated code binds one stable name and the emitter stops probing for `SingleToInt32Bits`:
+
+```csharp
+public static uint  FloatBits(float value);          // the four bytes
+public static ulong DoubleBits(double value);        // the eight bytes
+public static ushort HalfBits(Half value);           // net6.0 and later assets
+public static ulong DecimalLo64(in decimal value);   // words 0 and 1
+public static ulong DecimalHi64(in decimal value);   // words 2 and 3
+public static ulong GuidLo64(in Guid value);
+public static ulong GuidHi64(in Guid value);
+public static ulong DateTimeBits(DateTime value);    // exists today
+```
+
+The 32-bit path adopts the same shims, with `DecimalWord`/`GuidWord` kept for its four-word split. The existing
+`SingleToInt32Bits` shim and the `HasSingleToInt32Bits` capability go away once every emitter path uses `FloatBits`.
+
+**Packages.** None to add. `System.Runtime.CompilerServices.Unsafe` 6.1.2 is already referenced on netstandard2.0
+and netstandard2.1 and provides `Unsafe.As`, `Unsafe.Add` and `Unsafe.AsRef`; net6.0 and later have them in the
+box. `System.Buffers` on netstandard2.0 is unchanged.
+
+**Tests for this rule.** `HelpersTests` gains, on every framework the tests run on: every shim returns the bytes
+`BitConverter.GetBytes` returns for the same value, for a normal value, `-0.0` against `0.0`, two NaNs with different
+payloads, and `float.MaxValue`; the two decimal words together equal `decimal.GetBits`; the Guid words together equal
+`Guid.ToByteArray`. A generator test asserts that no generated hash core contains a cast from `float`, `double`,
+`Half` or `decimal` to an integer type, by scanning the emitted source for those cast forms.
+
+### 2.3 Files
 
 Framework:
 
@@ -202,10 +273,11 @@ Framework:
 - New `DeepEqualsHashCode64.Combine.g.cs`: `ulong Combine(ulong h1 .. hN)` for `N` 1 to 32.
 - `eng/Generate-HashCodeCombine.ps1`: a `-Width 64` switch that emits the 64-bit lane arithmetic and the second
   file; the 32-bit output is byte-identical to today.
-- `DeepEqualsHelpers.cs`: `DecimalLo64`/`DecimalHi64` and `GuidLo64`/`GuidHi64` next to the existing single-word
-  readers; `DateTimeOffsetTicks` is not needed, the emitter reads `.Ticks` and `.Offset.Ticks`.
+- `DeepEqualsHelpers.cs`: the shims of §2.2: `FloatBits`, `DoubleBits`, `HalfBits`, `DecimalLo64`/`DecimalHi64`,
+  `GuidLo64`/`GuidHi64`, each `#if`-selected per asset; `SingleToInt32Bits` removed once unused.
 - `DeepEqualsOps.cs`: `IDeepEqualsHashOps64<T> { ulong GetHashCode64(T x); }`.
 - `DeepEqualsUnordered.cs`: no change; the 64-bit container hash is generated inline, the matching path folds.
+- `DeepEquals.SourceGeneration.Framework.csproj`: no change; no new package and no `AllowUnsafeBlocks`.
 
 Generator:
 
@@ -216,8 +288,11 @@ Generator:
     Under 64-bit a wide leaf adds one or two `ulong` expressions; under 32-bit behaviour is unchanged.
   - `Combine(List<...>)`: under 64-bit, pairs narrow words with `Pack`, casts a lone narrow word, and nests above
     32 words as today.
-  - `LeafHash`: unchanged expressions, all narrow. Wide leaves reached outside a member stream (a list element, a
-    dictionary key) use the 64-bit `Hash` overloads.
+  - `LeafHash`, `LeafEq`, `SingleBits`: every float, double, Half, decimal and Guid read goes through the §2.2
+    shims on both widths; `SingleBits` becomes `FloatBits` and the `HasSingleToInt32Bits` branch is deleted. Wide
+    leaves reached outside a member stream (a list element, a dictionary key) use the 64-bit `Hash` overloads.
+- `Analysis/CapabilityProbe.cs`, `Model/TargetCapabilities.cs`: `HasSingleToInt32Bits` removed; the header's
+  capability list drops that line.
   - `EmitMembersHash`, `EmitDispatchHash`, `CaseHash`, `EmitProductCores`, `EmitValueSequenceCores`,
     `EmitSpanHash`, `EmitEnumerableCores`, `EmitUnorderedCores`, `EntryHash`, `EmitHashOps`: return type `ulong`,
     `ulong sum`, `HashSpan64`, `Streaming64`, and the 64-bit ops struct.
@@ -245,6 +320,11 @@ New `HashCode64Tests.cs`, mirroring `HashCodeTests.cs` with an independent naive
 
 `HelpersTests.cs`, added:
 
+- `Bit_shims_return_the_storage_bytes` (theory per shim): `FloatBits`, `DoubleBits`, `HalfBits` where the asset has
+  it, `DecimalLo64`/`Hi64`, `GuidLo64`/`Hi64` and `DateTimeBits` equal what `BitConverter.GetBytes`,
+  `decimal.GetBits` and `Guid.ToByteArray` say, for a normal value, `float.MaxValue`, `-0.0` against `0.0`, and two
+  NaNs with different payloads. Runs on all five test frameworks, so netstandard2.0's `Unsafe.As` path is covered
+  on net472.
 - `Decimal_and_guid_64_bit_words_match_the_32_bit_words`: the lo/hi readers agree with the single-word readers.
 - `ThrowDepthExceeded_and_ThrowCycle_carry_their_arguments`.
 
@@ -297,6 +377,11 @@ New `Hashing64Tests.cs`:
 - `XxHash64_custom_comparers_and_simple_types_are_narrow_words`.
 - `XxHash64_falls_back_with_DEQ013_on_an_older_framework_asset`: same gating pattern as `SpanGateTests`.
 - `Int128_hashes_as_two_words_under_XxHash64`.
+- `Generated_hash_and_equality_cores_contain_no_numeric_conversion` (theory over both widths): a closure with every
+  floating-point and decimal leaf, including `Half`, `float` aggregates and nullable forms, is generated and the
+  emitted source is scanned for `(int)`, `(uint)`, `(long)`, `(ulong)` applied to a float, double, Half or decimal
+  expression, and for `.GetHashCode()` and `GetBits` on them; every hit fails. Behaviour side: `-0.0` and `0.0`
+  are unequal with different hashes, and two NaNs with different payloads likewise.
 
 Changed:
 
