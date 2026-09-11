@@ -40,8 +40,13 @@ small, and B5 touches the naming table this plan extends.
 | B4 | `ExcludeInterfacesByPrefix = null` throws inside the generator | Null reads as empty | `OptionsReader.ReadPrefixes` |
 | B5 | `HashMembers_T` and `ShallowHashMembers_T` are not reserved, so a user member of that name gives CS0111 instead of DEQ016 | Every emitted identifier is reserved from one table, including the names this plan adds | `Naming.IdentifiersFor` |
 
-Also in this step, because it is cheap and the plan adds header lines: O1, the per-type header rebuilding lists it
-never prints. Context-invariant header values are computed once; a type file gets its own line only.
+Also in this step, because they are cheap and the plan touches the same code:
+
+- O1, the per-type header rebuilding lists it never prints. Context-invariant header values are computed once, a
+  type file gets its own line only, and a file whose body would stay empty is never opened.
+- The cancellation half of O2: `Propagate`, `SelectGuards` and `HasUnguardedCycle` check the token inside their
+  loops, and a test cancels during model construction of a large closure. The algorithmic half of O2 stays
+  deferred behind the generator-scale benchmark in §6.
 
 Regression tests, in `BasicGenerationTests` and `StrategyAndDiagnosticTests`:
 
@@ -554,8 +559,8 @@ New `CycleHandlingTests.cs`:
   `MaxDepth` constant, no `ShallowHashCode_`, depth on every hash ops struct.
 - `Tree_contract` (theory): self-comparison of a cyclic value is true; two roots sharing a cyclic child are true;
   an unequal member before the cycle is false; a cyclic value against a finite one, in both operand orders, is
-  false; a cycle the traversal enters throws with the guarding type named; the same data under `Graph` and `Path`
-  is equal. Equality and hashing both.
+  false; a cycle the traversal enters throws with the guarding type named; a cycle through two mutually recursive
+  types behaves the same; the same data under `Graph` and `Path` is equal. Equality and hashing both.
 - `Tree_max_depth_is_honoured`: a branching model, `TreeNode` with children, of depth 5 with `MaxDepth = 3` throws
   and of depth 3 passes; `MaxDepth = 0` and an undefined enum value each report `DEQ013` and use the default.
 - `Tree_linked_lists_loop_and_detect_cycles_with_brent`: 200,000-node chains equal and unequal without depth
@@ -631,6 +636,8 @@ Changed:
 - `BasicGenerationTests.Output_is_one_context_file_plus_one_file_per_emitted_type`: header shows the four lines and
   the type file's header no longer lists the closure.
 - `IncrementalTests`: `Changing_an_option_reruns_the_output` for each new option.
+- New `Generated_code_compiles_and_runs_under_CheckForOverflowUnderflow`: theory over every mode and width, the
+  consumer compilation set to checked arithmetic, over the collection, dispatch, aliasing and boxed-cycle fixtures.
 - Every test asserting a stack check follows the README wording fixed in §3.5.
 
 ### 3.3 Fixture tests, `tests/DeepEquals.Fixtures.Tests/`
@@ -670,9 +677,11 @@ Changed:
   tier; a spilled state near the default budget holds about 36 MB, the pairs, the index and the cached hashes.
 - `docs/Implementation.md`: §3 (64-bit stream, packing rule, fold rule, fingerprint levels), §6.1 and §6.7 (tail
   loops under `Tree`), §6.8 and §6.9 (depth overloads, fingerprint depth), §7 (the three modes, what `Path` rolls
-  back, the `Tree` contract), §8 (`DeepEqualsHashCode64`, `DeepEqualsBlocks`), §11 (the version policy), §13
-  (decimal row removed, hash-array row added), §14 (the dictionary fast path, partitioned output and vectorized
-  combine entries corrected; the dropped modes listed).
+  back, the `Tree` contract), §8 (`DeepEqualsHashCode64`, `DeepEqualsBlocks`), §11 (the version policy), §12
+  (the per-compilation hint-name step from B2), §13 (decimal row removed, hash-array row added), §14 (the
+  dictionary fast path, partitioned output and vectorized combine entries corrected; the dropped modes listed).
+  §6.9 and every other section are re-read for statements the current code already contradicts, since the audit
+  found the docs describing work as pending that is done.
 - `docs/Diagnostics.md`: `DEQ013` lists the new option names; `DEQ036` and `DEQ037` documented.
 
 ---
@@ -754,8 +763,9 @@ browser table run them too, unless noted. Each names what it is meant to expose.
 - The S1 sets: 65 chains `0 -> 0 -> i -> null`, at `MatchingHashDepth` 1, 2 and 4, with the collision cap at 64,
   65 and 512. Exposes the fingerprint cost against the matching cost it removes; depth 1 at cap 64 is the throwing
   case and is asserted, not timed.
-- Sets of 100 acyclic objects with 0, 10 and 100 elements sharing a fingerprint. Exposes the k-by-k matching
-  matrix the audit's O3 targets; record the deep-comparison count as well as time.
+- Sets of 100 acyclic objects with 0, 10 and 100 elements sharing a fingerprint, with an early match, a late
+  mismatch and expensive elements. Exposes the k-by-k matching matrix the audit's O3 targets; record the
+  deep-comparison count and the pool rentals as well as time.
 - Sets of 63, 64 and 65 equal-fingerprint elements. Exposes behaviour at the cap.
 
 **Hashing**
@@ -810,7 +820,7 @@ to the generator
 | P4 fold to zero | §2.1, `FoldNonZero`; targeted test in §3.1 |
 | P5 representation tests and packing | §2.2 wording, decimal word order, `[SimpleType]` exemption, test rename, fixed seeds, semantic scan |
 | O1 header cost | §0 |
-| O2 graph analysis passes | Deferred; measured by the generator-scale benchmark in §6 |
+| O2 graph analysis passes | Cancellation checks in §0; the worklist rework deferred and measured by the generator-scale benchmark in §6 |
 | O3 stateless matching matrix | Deferred; measured by the fingerprint benchmarks in §6 |
 | O4 bulk span equality | §2.3 item 2 |
 | Stack-safety boundary | README wording fixed in §3.5; small-stack fixture test in §3.3; `Tree` hashing carries the check in its guard |
