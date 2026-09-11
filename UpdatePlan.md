@@ -3,6 +3,26 @@
 Applied on top of the `splitFiles` branch. Revised after the audit in `Astra.md`; the findings it raised are folded
 in where they apply and listed in §7.
 
+## Status
+
+| Step | State | Notes |
+|---|---|---|
+| §0 defects, header, cancellation, version policy | Done | B1 to B5 fixed; `ContextDeclarationTests` holds the regressions and the DEQ036 test. The header is computed once per context and empty type files are never opened. Cancellation is checked inside Tarjan, `Propagate`, `SelectGuards` and `HasUnguardedCycle`. Generator tests: 78 pass on net10.0. |
+| 1 options plumbing | Done | `CycleHandling`, `MaxDepth`, `MatchingHashDepth`, `Hashing` on the attribute, the options record, the reader with DEQ013 and DEQ037, four header lines, incremental and cancellation tests. Generator tests: 89 pass. Nothing is emitted differently yet. |
+| 2 framework 64-bit hashing | Done | `DeepEqualsHashCode64` with `Combine` 1..32 from the generator script (`-Width 64`), `Fold`/`FoldNonZero`/`Pack`/`Narrow`, leaf hashes, `HashSpan`, `Streaming`; the §2.2 shims in `DeepEqualsHelpers`; `IDeepEqualsHashOps64`. `HashCode64Tests` and the helper theories. Framework tests: 81 on net6.0/8.0/10.0, 80 on netcoreapp3.1, 79 on net472. The 32-bit Combine file regenerates byte-identical except its header comment. |
+| 3 emitter 64-bit hashing | Done | Every hash core, ops struct and stream runs at the context width through one `HashWord` model in the emitter; narrow words pack before wide ones; the wrapper returns `DeepEqualsHashCode64.ToInt32`, which keeps null at 0 and folds everything else nonzero. Float, double and Half go through the §2.2 shims on both widths; `HasSingleToInt32Bits` and the old netstandard2.0 shim are gone. `Hashing64Tests` (8 tests incl. the semantic-model conversion scan), both-width theories in `FastPathTests` and `HashLevelTests`, `Hash64FixtureContext`. Generator tests 100 on net8.0 and net10.0; fixtures 8 on all five tiers. The DEQ036 test's override is async-local so it cannot leak into parallel tests. |
+| 4 bit blocks | Done | `DeepEqualsBlocks` (byte compare, XxHash3 over spans, list and enumerable copies, `HasSize`), the model's bit-block classification and padding walk, the byte paths in every ordered core, `BlocksTests` and `BitBlockTests`. Deviations from §2.3, all deliberate: **System.IO.Hashing is pinned to 8.0.0**, the one release that builds without a warning on every runtime the net6.0+ and netstandard2.0 assets serve (10.x warns on net6.0 and net7.0); **the netstandard2.1 asset has no block helpers**, because 8.0.0 warns on the netcoreapp3.1 to net5.0 runtimes it serves, so the generator probes `HasFrameworkBlocks` there, a target-framework capability, not a version one; **System.Memory 4.6.3 is pinned on netstandard2.0**, so .NET Framework consumers now gain `ReadOnlySpan<T>` and the span paths; that exposed a latent gap, fixed with a new `HasImmutableArrayAsSpan` probe, since older immutable-collections releases lack `AsSpan()`; **only source-declared structs qualify**, because Roslyn exposes no layout for metadata structs and drops `[StructLayout]` from `GetAttributes()`, so layout is read from syntax; **the flag is one `static readonly bool` per struct in the context file**, and the fallback test rewrites it in the compiled output rather than through a hook; **`HashEnumerable` hashes what it enumerates**, since the advertised count only sizes the first buffer, and the test is named for that. Generator tests 148 on net8.0/net10.0, framework 88 (86 on net472, 80 on netcoreapp3.1), fixtures 8 on all five tiers. A compiler quirk found on the way: Roslyn folds a decimal constant in `new[] { 1.50m }` converted straight to a span, losing its scale; tests go through locals. |
+| 5 fingerprint levels | Pending | |
+| 6 depth-aware framework | Pending | |
+| 7 `Path` | Pending | |
+| 8 `Tree` | Pending | |
+| 9 downstream | Pending | |
+| 10 docs | Pending | |
+| 11 repack and run | Pending | Not before you say so. |
+| 12 `MaxDepth` without `Tree` | Pending | Added by request: `DEQ037` when `MaxDepth` is set explicitly and `CycleHandling` is not `Tree`, the mirror of the `MatchingHashDepth` rule. |
+
+Steps 0 to 4 went into one commit, because they were finished before per-step commits were asked for and share files; every step from 5 on is its own commit.
+
 New per-context options on `[DeepEqualsSourceGenerationOptions]`:
 
 | Option | Values | Default | What it changes |

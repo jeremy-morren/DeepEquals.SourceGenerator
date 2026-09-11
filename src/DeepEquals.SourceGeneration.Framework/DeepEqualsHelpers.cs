@@ -12,11 +12,60 @@ namespace DeepEquals.SourceGeneration.Framework;
 /// <summary>Pinned shims around APIs whose overload sets vary by language or framework version, so generated code binds one stable form.</summary>
 public static class DeepEqualsHelpers
 {
-#if NETSTANDARD2_0
-    /// <summary>The bits of a <see cref="float"/>; <c>BitConverter.SingleToInt32Bits</c> arrived in netstandard2.1.</summary>
+    // ----- Raw bits -----------------------------------------------------------------------------------------------------
+    //
+    // Equality and hashing of a built-in leaf operate on its storage bits, never on a numeric conversion: a conversion
+    // rounds, saturates, collapses NaN payloads and merges -0.0 with 0.0. Each shim below is the fastest reinterpretation
+    // its asset has without unsafe code: a BitConverter intrinsic where the asset has one, otherwise Unsafe.As over a ref,
+    // which the JIT also lowers to a register move.
+
+    /// <summary>The four bytes of a <see cref="float"/>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static int SingleToInt32Bits(float value) => Unsafe.As<float, int>(ref value);
+    public static uint FloatBits(float value)
+    {
+#if NET6_0_OR_GREATER
+        return BitConverter.SingleToUInt32Bits(value);
+#elif NETSTANDARD2_1
+        return unchecked((uint)BitConverter.SingleToInt32Bits(value));
+#else
+        return Unsafe.As<float, uint>(ref value);
 #endif
+    }
+
+    /// <summary>The eight bytes of a <see cref="double"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong DoubleBits(double value)
+    {
+#if NET6_0_OR_GREATER
+        return BitConverter.DoubleToUInt64Bits(value);
+#elif NETSTANDARD2_1
+        return unchecked((ulong)BitConverter.DoubleToInt64Bits(value));
+#else
+        return Unsafe.As<double, ulong>(ref value);
+#endif
+    }
+
+#if NET6_0_OR_GREATER
+    /// <summary>The two bytes of a <see cref="Half"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ushort HalfBits(Half value) => BitConverter.HalfToUInt16Bits(value);
+#endif
+
+    /// <summary>The first eight bytes of a decimal's storage: words 0 and 1 in storage order, which is not the <c>GetBits</c> order.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong DecimalLo64(in decimal value) => Unsafe.As<decimal, ulong>(ref Unsafe.AsRef(in value));
+
+    /// <summary>The last eight bytes of a decimal's storage: words 2 and 3.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong DecimalHi64(in decimal value) => Unsafe.Add(ref Unsafe.As<decimal, ulong>(ref Unsafe.AsRef(in value)), 1);
+
+    /// <summary>The first eight bytes of a <see cref="Guid"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong GuidLo64(in Guid value) => Unsafe.As<Guid, ulong>(ref Unsafe.AsRef(in value));
+
+    /// <summary>The last eight bytes of a <see cref="Guid"/>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static ulong GuidHi64(in Guid value) => Unsafe.Add(ref Unsafe.As<Guid, ulong>(ref Unsafe.AsRef(in value)), 1);
 
     /// <summary>
     /// The complete 64-bit storage of a <see cref="DateTime"/>: ticks, kind and the hidden ambiguous-daylight-saving state.

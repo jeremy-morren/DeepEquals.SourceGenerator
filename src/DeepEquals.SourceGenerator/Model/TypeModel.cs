@@ -175,6 +175,12 @@ internal sealed record MemberModel(
 /// </summary>
 internal sealed record DispatchCase(int TypeId, bool IsExact, bool IsSameScc, int ResolvedAssignable, bool Hoistable);
 
+/// <summary>
+/// One runtime size check behind a bit-block struct: the struct, or a struct nested in it, must occupy exactly
+/// <paramref name="Size"/> bytes, the sum of its fields, for its bytes to be its value.
+/// </summary>
+internal sealed record BitBlockCheck(string GlobalName, int Size);
+
 /// <summary>The component of a floating-point aggregate leaf.</summary>
 internal sealed record AggregateComponent(string Expression, bool IsDouble);
 
@@ -243,4 +249,11 @@ internal sealed record TypeModel(
     bool BoxedAdapterGuarded,
     int GuardKind,
     int BoxedGuardKind,
-    bool HasShallowHash);
+    bool HasShallowHash,
+    // Bit blocks: a value whose equality is its storage bytes, with no references and no padding. BitBlockSize is its
+    // size in bytes, or 0 when it is not one; a struct also carries the runtime size checks that must hold.
+    int BitBlockSize,
+    EquatableArray<BitBlockCheck> BitBlockChecks)
+{
+    public bool IsBitBlock => BitBlockSize > 0;
+}

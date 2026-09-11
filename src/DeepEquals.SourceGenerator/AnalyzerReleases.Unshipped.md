@@ -40,4 +40,6 @@ DEQ032 | DeepEquals | Error | Fixed buffers and inline arrays are not supported
 DEQ033 | DeepEquals | Warning | Context-level ignore matched no member
 DEQ034 | DeepEquals | Warning | [DeepEqualsIgnore] on a member without storage
 DEQ035 | DeepEquals | Warning | Custom comparer for object
+DEQ036 | DeepEquals | Error | Framework package version does not match the generator
+DEQ037 | DeepEquals | Warning | Generation option has no effect
 DEQ099 | DeepEquals | Error | The generator failed

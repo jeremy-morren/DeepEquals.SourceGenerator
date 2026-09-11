@@ -62,6 +62,73 @@ public sealed class HelpersTests
         DeepEqualsHashCode.Hash(1.5m).Should().NotBe(DeepEqualsHashCode.Hash(1.50m), "the scale is part of the value");
     }
 
+    public static TheoryData<float> Floats => new() { 1.5f, float.MaxValue, float.Epsilon, 0f, -0f, float.NaN, BitConverter.ToSingle(BitConverter.GetBytes(0x7FC00001), 0), float.NegativeInfinity };
+
+    public static TheoryData<double> Doubles => new() { 1.5, double.MaxValue, double.Epsilon, 0.0, -0.0, double.NaN, BitConverter.ToDouble(BitConverter.GetBytes(0x7FF8000000000001L), 0), double.NegativeInfinity };
+
+    [Theory]
+    [MemberData(nameof(Floats))]
+    public void FloatBits_returns_the_storage_bytes(float value)
+    {
+        BitConverter.GetBytes(DeepEqualsHelpers.FloatBits(value)).Should().Equal(BitConverter.GetBytes(value));
+    }
+
+    [Theory]
+    [MemberData(nameof(Doubles))]
+    public void DoubleBits_returns_the_storage_bytes(double value)
+    {
+        BitConverter.GetBytes(DeepEqualsHelpers.DoubleBits(value)).Should().Equal(BitConverter.GetBytes(value));
+    }
+
+    [Fact]
+    public void Bit_shims_keep_negative_zero_and_nan_payloads_apart()
+    {
+        DeepEqualsHelpers.FloatBits(-0f).Should().NotBe(DeepEqualsHelpers.FloatBits(0f));
+        DeepEqualsHelpers.DoubleBits(-0.0).Should().NotBe(DeepEqualsHelpers.DoubleBits(0.0));
+        DeepEqualsHelpers.FloatBits(float.NaN).Should().NotBe(DeepEqualsHelpers.FloatBits(BitConverter.ToSingle(BitConverter.GetBytes(0x7FC00001), 0)));
+        DeepEqualsHelpers.DoubleBits(double.NaN).Should().NotBe(DeepEqualsHelpers.DoubleBits(BitConverter.ToDouble(BitConverter.GetBytes(0x7FF8000000000001L), 0)));
+        DeepEqualsHelpers.FloatBits(float.NaN).Should().Be(DeepEqualsHelpers.FloatBits(float.NaN), "the same payload is the same bits");
+    }
+
+#if NET6_0_OR_GREATER
+    [Fact]
+    public void HalfBits_returns_the_storage_bytes()
+    {
+        foreach (var value in new[] { (Half)1.5, Half.MaxValue, Half.Epsilon, (Half)0, (Half)(-0.0), Half.NaN })
+            BitConverter.GetBytes(DeepEqualsHelpers.HalfBits(value)).Should().Equal(BitConverter.GetBytes(value));
+
+        DeepEqualsHelpers.HalfBits((Half)(-0.0)).Should().NotBe(DeepEqualsHelpers.HalfBits((Half)0));
+    }
+#endif
+
+    [Fact]
+    public void Decimal_and_guid_64_bit_words_match_the_32_bit_words()
+    {
+        var values = new[] { 0m, 1m, -1m, 1.5m, 1.50m, decimal.MaxValue, decimal.MinValue, 0.0000000000000000000000000001m, decimal.Negate(0m) };
+        foreach (var value in values)
+        {
+            var lo = DeepEqualsHelpers.DecimalLo64(value);
+            var hi = DeepEqualsHelpers.DecimalHi64(value);
+            unchecked
+            {
+                ((int)lo).Should().Be(DeepEqualsHelpers.DecimalWord(value, 0));
+                ((int)(lo >> 32)).Should().Be(DeepEqualsHelpers.DecimalWord(value, 1));
+                ((int)hi).Should().Be(DeepEqualsHelpers.DecimalWord(value, 2));
+                ((int)(hi >> 32)).Should().Be(DeepEqualsHelpers.DecimalWord(value, 3));
+            }
+
+            // Storage order is not GetBits order; the set of words is what GetBits returns.
+            var words = new[] { unchecked((int)lo), unchecked((int)(lo >> 32)), unchecked((int)hi), unchecked((int)(hi >> 32)) };
+            words.Should().BeEquivalentTo(decimal.GetBits(value));
+        }
+
+        var guid = new Guid("00112233-4455-6677-8899-aabbccddeeff");
+        var bytes = new byte[16];
+        Buffer.BlockCopy(BitConverter.GetBytes(DeepEqualsHelpers.GuidLo64(guid)), 0, bytes, 0, 8);
+        Buffer.BlockCopy(BitConverter.GetBytes(DeepEqualsHelpers.GuidHi64(guid)), 0, bytes, 8, 8);
+        bytes.Should().Equal(guid.ToByteArray());
+    }
+
     [Fact]
     public void Guid_words_are_its_sixteen_bytes()
     {

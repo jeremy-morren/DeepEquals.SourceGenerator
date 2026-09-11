@@ -44,6 +44,9 @@ internal static class ContextAnalyzer
             return ContextModel.Failed(hintName, symbol.Name, location, EquatableArray.Create(diagnostics));
 
         var contextBase = CapabilityProbe.Find(compilation, KnownTypes.ContextBase)!;
+        if (!FrameworkVersionMatches(contextBase.ContainingAssembly, location, diagnostics))
+            return ContextModel.Failed(hintName, symbol.Name, location, EquatableArray.Create(diagnostics));
+
         var chain = ContextChain(symbol, contextBase);
         var options = OptionsReader.Read(chain, location, diagnostics);
         var languageVersion = ((CSharpParseOptions)context.TargetNode.SyntaxTree.Options).LanguageVersion;
@@ -64,15 +67,48 @@ internal static class ContextAnalyzer
     /// <summary>
     /// The namespace-qualified name of the context, the stem every hint name of the context starts with: the context
     /// file is <c>{stem}.g.cs</c> and each type file <c>{stem}.{TypeName}.g.cs</c>, the layout System.Text.Json uses.
-    /// A context is non-generic and its name is an identifier, so the stem is a valid hint name as it stands.
+    /// Built from the raw symbol names, never a display string: a keyword name such as <c>@class</c> would put an
+    /// <c>@</c> into a hint name, which Roslyn rejects. A context is non-generic, so every segment is an identifier.
     /// </summary>
     public static string HintNamePrefixFor(ISymbol symbol)
     {
-        var full = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-        if (full.StartsWith("global::", StringComparison.Ordinal))
-            full = full["global::".Length..];
+        var segments = new List<string>();
+        for (var type = symbol as INamedTypeSymbol; type is not null; type = type.ContainingType)
+            segments.Add(type.Name);
 
-        return full.Replace('+', '.');
+        for (var ns = symbol.ContainingNamespace; ns is not null && !ns.IsGlobalNamespace; ns = ns.ContainingNamespace)
+            segments.Add(ns.Name);
+
+        segments.Reverse();
+        return string.Join(".", segments);
+    }
+
+    /// <summary>
+    /// The generator and the framework ship at the same version and must be used at the same version; nothing else in
+    /// the generator reasons about older or newer framework assets. The informational version carries the prerelease
+    /// tag, so it is compared when both sides have one; otherwise the three-part assembly version stands in.
+    /// </summary>
+    private static bool FrameworkVersionMatches(IAssemblySymbol framework, LocationInfo? location, List<DiagnosticInfo> diagnostics)
+    {
+        var informational = framework.GetAttributes()
+            .Where(a => a.AttributeClass?.ToDisplayString() == "System.Reflection.AssemblyInformationalVersionAttribute")
+            .Select(a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as string : null)
+            .FirstOrDefault(v => !string.IsNullOrEmpty(v));
+
+        var frameworkVersion = GeneratorInfo.WithoutBuildMetadata(informational) ?? framework.Identity.Version.ToString(3);
+        var generatorVersion = GeneratorInfo.EffectiveVersion;
+        if (informational is null)
+        {
+            // No informational version to compare: fall back to the three-part assembly version on both sides.
+            var dash = generatorVersion.IndexOf('-');
+            generatorVersion = dash < 0 ? generatorVersion : generatorVersion.Substring(0, dash);
+        }
+
+        if (frameworkVersion == generatorVersion)
+            return true;
+
+        diagnostics.Add(DiagnosticInfo.Create(Diagnostics.FrameworkVersionMismatch, location, frameworkVersion, generatorVersion));
+        return false;
     }
 
     private static bool IsCanonical(GeneratorAttributeSyntaxContext context, INamedTypeSymbol symbol, MarkerKind marker)

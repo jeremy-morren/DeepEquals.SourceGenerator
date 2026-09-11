@@ -4,6 +4,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
 using System.Threading;
 using DeepEquals.SourceGenerator.Analysis;
 using DeepEquals.SourceGenerator.Emit;
@@ -38,8 +40,16 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
                 static (ctx, ct) => Transform(ctx, MarkerKind.Options, ct))
             .Where(static m => m is not null)!;
 
-        context.RegisterSourceOutput(registrations, static (spc, model) => Output(spc, model));
-        context.RegisterSourceOutput(optionsOnly, static (spc, model) => Output(spc, model));
+        // Roslyn requires hint names to be unique across the compilation, case-insensitively, and each context
+        // names its files after itself. Two contexts whose names differ only by case would collide, so the set of
+        // colliding stems is computed over every context and each output consults it. The set is small and rarely
+        // changes, so a context's output still reruns only when its own model changes.
+        IncrementalValueProvider<EquatableArray<string>> collisions = registrations.Collect()
+            .Combine(optionsOnly.Collect())
+            .Select(static (pair, _) => CollidingHintNamePrefixes(pair.Left, pair.Right));
+
+        context.RegisterSourceOutput(registrations.Combine(collisions), static (spc, pair) => Output(spc, pair.Left, pair.Right));
+        context.RegisterSourceOutput(optionsOnly.Combine(collisions), static (spc, pair) => Output(spc, pair.Left, pair.Right));
     }
 
     private static ContextModel? Transform(GeneratorAttributeSyntaxContext context, MarkerKind marker, CancellationToken ct)
@@ -63,21 +73,56 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
                 EquatableArray.Create(
                     DiagnosticInfo.Create(
                         Diagnostics.GeneratorFailed,
-                        location, 
+                        location,
                         "analysing",
-                        name, 
+                        name,
                         ex.GetType().FullName,
                         ex.Message)));
         }
     }
 
-    private static void Output(SourceProductionContext context, ContextModel model)
+    /// <summary>The hint-name stems that another context's stem equals case-insensitively, sorted.</summary>
+    private static EquatableArray<string> CollidingHintNamePrefixes(ImmutableArray<ContextModel> registrations, ImmutableArray<ContextModel> optionsOnly)
+    {
+        var prefixes = registrations.Select(m => m.HintNamePrefix)
+            .Concat(optionsOnly.Select(m => m.HintNamePrefix))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var colliding = prefixes
+            .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .SelectMany(g => g)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToArray();
+        return new EquatableArray<string>(colliding);
+    }
+
+    /// <summary>
+    /// A stem that collides case-insensitively with another context's gets a digest of its exact spelling, so the two
+    /// stay distinct however Roslyn compares them.
+    /// </summary>
+    internal static string UniqueHintNamePrefix(string prefix, EquatableArray<string> collisions)
+    {
+        for (var i = 0; i < collisions.Count; i++)
+        {
+            if (collisions[i] == prefix)
+                return $"{prefix}_{Naming.Digest(prefix, 8)}";
+        }
+
+        return prefix;
+    }
+
+    private static void Output(SourceProductionContext context, ContextModel model, EquatableArray<string> collisions)
     {
         foreach (var diagnostic in model.Diagnostics)
             context.ReportDiagnostic(diagnostic.ToDiagnostic(model.CanonicalLocation));
 
         if (model.HasErrors)
             return;
+
+        var prefix = UniqueHintNamePrefix(model.HintNamePrefix, collisions);
+        if (prefix != model.HintNamePrefix)
+            model = model with { HintNamePrefix = prefix };
 
         IReadOnlyList<GeneratedFile> files;
         try

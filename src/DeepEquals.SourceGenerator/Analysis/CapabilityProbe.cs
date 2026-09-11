@@ -30,7 +30,6 @@ internal static class CapabilityProbe
         // so framework overloads are probed on the asset, never inferred from the BCL.
         var hasHash128 = hashCode is not null &&
                          hashCode.GetMembers("Hash").OfType<IMethodSymbol>().Any(m => m.Parameters is [{ Type.Name: "Int128" }]);
-        var bitConverter = Find(compilation, "System.BitConverter");
         var nullable = Find(compilation, "System.Nullable");
         var @decimal = Find(compilation, "System.Decimal");
 
@@ -42,16 +41,19 @@ internal static class CapabilityProbe
             HasMemoryMarshal: HasMethod(Find(compilation, KnownTypes.MemoryMarshal), "Cast"),
             HasIReadOnlySet: Find(compilation, KnownTypes.IReadOnlySet) is not null,
             HasImmutableArray: Find(compilation, KnownTypes.ImmutableArray) is not null,
+            // Older System.Collections.Immutable releases, which .NET Framework consumers can resolve, predate AsSpan().
+            HasImmutableArrayAsSpan: HasMethod(Find(compilation, KnownTypes.ImmutableArray), "AsSpan"),
             HasUnsafeAccessor: hasUnsafeAccessor,
             HasGenericUnsafeAccessor: hasGenericUnsafeAccessor,
             HasFrameworkSpanHelpers: HasMethod(collections, "TryGetSpan"),
             HasFrameworkHash128: hasHash128,
             HasNullableGetValueRefOrDefaultRef: HasMethod(nullable, "GetValueRefOrDefaultRef"),
-            HasSingleToInt32Bits: HasMethod(bitConverter, "SingleToInt32Bits"),
             HasDecimalGetBitsSpan: @decimal is not null && @decimal.GetMembers("GetBits").OfType<IMethodSymbol>().Any(m => m.Parameters.Length == 2),
             HasRequiresUnreferencedCode: Find(compilation, KnownTypes.RequiresUnreferencedCode) is not null,
             HasRequiresDynamicCode: Find(compilation, KnownTypes.RequiresDynamicCode) is not null,
-            HasUnconditionalSuppressMessage: Find(compilation, KnownTypes.UnconditionalSuppressMessage) is not null);
+            HasUnconditionalSuppressMessage: Find(compilation, KnownTypes.UnconditionalSuppressMessage) is not null,
+            // The netstandard2.1 asset has no block helpers: System.IO.Hashing warns on the runtimes it serves.
+            HasFrameworkBlocks: Find(compilation, KnownTypes.Blocks) is not null);
     }
 
     /// <summary>

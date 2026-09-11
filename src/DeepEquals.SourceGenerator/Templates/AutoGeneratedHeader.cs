@@ -42,6 +42,10 @@ Options in effect
     MaxBinaryExpressionArity     = {{MaxBinaryExpressionArity}}
     StructPassByValueMaxByteSize = {{StructPassByValueMaxByteSize}}
     ExcludeInterfacesByPrefix    = {{ExcludeInterfacesByPrefix}}
+    CycleHandling                = {{CycleHandling}}
+    MaxDepth                     = {{MaxDepth}}
+    MatchingHashDepth            = {{MatchingHashDepth}}
+    Hashing                      = {{Hashing}}
 
 Target
     Language version:    C# {{LanguageVersion}}

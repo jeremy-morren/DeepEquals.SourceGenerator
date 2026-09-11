@@ -101,12 +101,17 @@ internal sealed class ModelBuilder
                 EquatableArray.Create(members)));
         }
 
-        var ns = _context.ContainingNamespace is null || _context.ContainingNamespace.IsGlobalNamespace 
-            ? string.Empty 
-            : _context.ContainingNamespace.ToDisplayString();
+        // The namespace and the containing declarations as the emitter writes them: every segment escaped, and each
+        // container with the keyword its own declaration uses, so a context inside a struct or record reopens it as one.
+        var segments = new List<string>();
+        for (var space = _context.ContainingNamespace; space is not null && !space.IsGlobalNamespace; space = space.ContainingNamespace)
+            segments.Add(Naming.Identifier(space.Name));
+
+        segments.Reverse();
+        var ns = string.Join(".", segments);
         var containing = new List<string>();
-        for (var outer = _context.ContainingType; outer is not null; outer = outer.ContainingType) 
-            containing.Add(outer.Name);
+        for (var outer = _context.ContainingType; outer is not null; outer = outer.ContainingType)
+            containing.Add($"{DeclarationKeyword(outer)} {Naming.Identifier(outer.Name)}");
 
         containing.Reverse();
 
@@ -125,6 +130,20 @@ internal sealed class ModelBuilder
             EquatableArray.Create(CollectSuppressedIds()),
             anyUnsafe,
             EquatableArray.Create(_diagnostics));
+    }
+
+    /// <summary>The keyword a partial declaration of <paramref name="type"/> must repeat: class, struct, interface, record or record struct.</summary>
+    private static string DeclarationKeyword(INamedTypeSymbol type)
+    {
+        if (type.IsRecord)
+            return type.IsValueType ? "record struct" : "record";
+
+        return type.TypeKind switch
+        {
+            RoslynTypeKind.Struct => "struct",
+            RoslynTypeKind.Interface => "interface",
+            _ => "class",
+        };
     }
 
     // ----- naming -----------------------------------------------------------------------------------------------------
@@ -361,8 +380,10 @@ internal sealed class ModelBuilder
         // Iterative Tarjan so a large closure cannot overflow the generator's stack.
         for (var root = 0; root < n; root++)
         {
-            if (index[root] != -1) 
+            if (index[root] != -1)
                 continue;
+
+            _cancellationToken.ThrowIfCancellationRequested();
 
             Stack<(int Node, int Next)> frames = new();
             frames.Push((root, 0));
@@ -442,6 +463,7 @@ internal sealed class ModelBuilder
         var changed = true;
         while (changed)
         {
+            _cancellationToken.ThrowIfCancellationRequested();
             changed = false;
             for (var v = 0; v < n; v++)
             {
@@ -505,6 +527,7 @@ internal sealed class ModelBuilder
         var order = Enumerable.Range(0, n).Where(v => _guarded[v]).OrderBy(Rank).ThenBy(v => v).ToList();
         foreach (var v in order)
         {
+            _cancellationToken.ThrowIfCancellationRequested();
             _guarded[v] = false;
             if (HasUnguardedCycle(_scc[v]))
                 _guarded[v] = true;
@@ -520,6 +543,8 @@ internal sealed class ModelBuilder
         {
             if (_scc[root] != component || _guarded[root] || colour[root] != 0)
                 continue;
+
+            _cancellationToken.ThrowIfCancellationRequested();
 
             var frames = new Stack<(int Node, int Next)>();
             frames.Push((root, 0));
@@ -696,7 +721,150 @@ internal sealed class ModelBuilder
             BoxedAdapterGuarded: _boxedGuardKinds.ContainsKey(type),
             GuardKind: _guardKinds.TryGetValue(type, out var kind) ? kind : 0,
             BoxedGuardKind: _boxedGuardKinds.TryGetValue(type, out var boxedKind) ? boxedKind : 0,
-            HasShallowHash: cyclic);
+            HasShallowHash: cyclic,
+            BitBlockSize: BitBlock(type)?.Size ?? 0,
+            BitBlockChecks: EquatableArray.Create(BitBlockChecks(type)));
+    }
+
+    // ----- bit blocks ---------------------------------------------------------------------------------------------------
+    //
+    // A bit block is a value whose equality under this context is exactly the equality of its storage bytes, with no
+    // references and no padding, so a sequence of them is one contiguous block of bytes. Leaves come from a fixed list.
+    // A struct qualifies when every field is a bit block, every field is compared, and a declaration-order walk at
+    // natural alignment leaves no gap; the emitted code checks the runtime size once more, since the runtime owns layout.
+
+    private readonly Dictionary<ClosureType, (int Size, int Align)?> _bitBlocks = new();
+
+    private (int Size, int Align)? BitBlock(ClosureType type)
+    {
+        if (_bitBlocks.TryGetValue(type, out var known))
+            return known;
+
+        _bitBlocks[type] = null;   // provisional, guards recursion
+        var result = type.Kind switch
+        {
+            TypeKind.Leaf => BitBlockLeaf(type),
+            TypeKind.Struct => BitBlockStruct(type),
+            _ => null,
+        };
+        _bitBlocks[type] = result;
+        return result;
+    }
+
+    private static (int Size, int Align)? BitBlockLeaf(ClosureType type)
+    {
+        var symbol = type.Symbol;
+        switch (type.LeafRule)
+        {
+            case LeafRule.Primitive:
+                // bool is excluded: the runtime does not normalize its byte, so two true values can differ in storage.
+                return symbol.SpecialType == SpecialType.System_Boolean ? null : (type.Width, type.Width);
+
+            case LeafRule.WideInteger:
+                return symbol.SpecialType switch
+                {
+                    SpecialType.System_Int64 or SpecialType.System_UInt64 => (8, 8),
+                    // nint and nuint change size with the process, so their bytes are not one definition everywhere.
+                    SpecialType.System_IntPtr or SpecialType.System_UIntPtr => null,
+                    _ => symbol.Name is "Int128" or "UInt128" ? (16, 16) : null,
+                };
+
+            case LeafRule.Enum:
+                return (type.Width, type.Width);
+
+            case LeafRule.Single:
+                return (4, 4);
+            case LeafRule.Double:
+                return (8, 8);
+            case LeafRule.Half:
+                return (2, 2);
+            case LeafRule.DateTime:
+                return (8, 8);
+            case LeafRule.Guid:
+                return (16, 4);
+            case LeafRule.Decimal:
+                return (16, 8);   // 8 is the widest alignment any runtime gives it; a narrower one only rejects more
+
+            case LeafRule.Default:
+                // TimeSpan is one long of ticks, and its default equality is the equality of those ticks.
+                return symbol is INamedTypeSymbol named && BuiltInLeaves.FullMetadataName(named) == "System.TimeSpan" ? (8, 8) : null;
+
+            default:
+                // DateTimeOffset has padding; strings, custom comparers, [SimpleType] and every default rule are not bytes.
+                return null;
+        }
+    }
+
+    private (int Size, int Align)? BitBlockStruct(ClosureType type)
+    {
+        if (type.Symbol is not INamedTypeSymbol named || named.IsGenericType || !named.Locations.Any(l => l.IsInSource))
+            return null;   // a referenced assembly's struct layout is not visible to the generator
+
+        for (var outer = named.ContainingType; outer is not null; outer = outer.ContainingType)
+            if (outer.IsGenericType)
+                return null;
+
+        // Roslyn decodes [StructLayout] into the type's layout and leaves it out of GetAttributes(), so it is read from the
+        // declarations. Only plain sequential layout is walked: Explicit, Auto, Pack and Size move bytes the walk cannot see.
+        foreach (var reference in named.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax(_cancellationToken) is not Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax declaration)
+                continue;
+
+            foreach (var attribute in declaration.AttributeLists.SelectMany(l => l.Attributes))
+            {
+                var name = attribute.Name.ToString();
+                if (!name.EndsWith("StructLayout", StringComparison.Ordinal) && !name.EndsWith("StructLayoutAttribute", StringComparison.Ordinal))
+                    continue;
+
+                var arguments = attribute.ArgumentList?.Arguments;
+                var sequential = arguments is { Count: 1 } list && list[0].NameEquals is null && list[0].ToString().EndsWith("LayoutKind.Sequential", StringComparison.Ordinal);
+                if (!sequential)
+                    return null;
+            }
+        }
+
+        var fields = named.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic && !f.IsConst).ToList();
+        if (fields.Count == 0 || fields.Count != type.Members.Count || fields.Any(f => f.IsFixedSizeBuffer))
+            return null;
+
+        // Every field must be compared: an ignored field would still take part in a byte comparison.
+        var compared = new HashSet<IFieldSymbol>(type.Members.Select(m => m.Field), SymbolEqualityComparer.Default);
+        if (!fields.All(compared.Contains))
+            return null;
+
+        var byField = type.Members.ToDictionary(m => m.Field, m => m.Type, (IEqualityComparer<IFieldSymbol>)SymbolEqualityComparer.Default);
+        var offset = 0;
+        var align = 1;
+        foreach (var field in fields)
+        {
+            if (BitBlock(byField[field]) is not { } member)
+                return null;
+
+            if (offset % member.Align != 0)
+                return null;   // the runtime would pad before this field
+
+            offset += member.Size;
+            align = Math.Max(align, member.Align);
+        }
+
+        return offset % align == 0 ? (offset, align) : null;
+    }
+
+    /// <summary>The runtime size checks a bit-block struct depends on: its own and every nested struct's, outermost first.</summary>
+    private List<BitBlockCheck> BitBlockChecks(ClosureType type)
+    {
+        var checks = new List<BitBlockCheck>();
+        if (type.Kind != TypeKind.Struct || BitBlock(type) is not { } block)
+            return checks;
+
+        checks.Add(new BitBlockCheck(type.Symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), block.Size));
+        foreach (var member in type.Members.Where(m => m.Type.Kind == TypeKind.Struct))
+            foreach (var nested in BitBlockChecks(member.Type))
+                if (!checks.Contains(nested))
+                    checks.Add(nested);
+
+        return checks;
     }
 
     private MemberModel BuildMember(ClosureType owner, ClosureMember member)

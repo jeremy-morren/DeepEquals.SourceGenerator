@@ -24,11 +24,15 @@ internal static class KnownTypes
     public const string ContextBase = $"{UserNamespace}.DeepEqualsContextBase";
     public const string Collections = $"{FrameworkNamespace}.DeepEqualsCollections";
     public const string HashCode = $"{FrameworkNamespace}.DeepEqualsHashCode";
+    public const string Blocks = $"{FrameworkNamespace}.DeepEqualsBlocks";
+    public const string GlobalBlocks = $"global::{Blocks}";
 
     // Emitted, global::-qualified.
     public const string GlobalFramework = $"global::{FrameworkNamespace}";
     public const string GlobalState = $"{GlobalFramework}.DeepEqualsState";
     public const string GlobalHashCode = $"{GlobalFramework}.DeepEqualsHashCode";
+    public const string GlobalHashCode64 = $"{GlobalFramework}.DeepEqualsHashCode64";
+    public const string GlobalHashOps64 = $"{GlobalFramework}.IDeepEqualsHashOps64";
     public const string GlobalHelpers = $"{GlobalFramework}.DeepEqualsHelpers";
     public const string GlobalCollections = $"{GlobalFramework}.DeepEqualsCollections";
     public const string GlobalUnordered = $"{GlobalFramework}.DeepEqualsUnordered";

@@ -10,6 +10,12 @@ public interface IDeepEqualsHashOps<in T>
     int GetHashCode(T x);
 }
 
+/// <summary>Hash-only callback into a generated 64-bit core.</summary>
+public interface IDeepEqualsHashOps64<in T>
+{
+    ulong GetHashCode64(T x);
+}
+
 /// <summary>Equality and hash callbacks into generated cores whose element closure needs comparison state.</summary>
 public interface IDeepEqualsElementOps<in T> : IDeepEqualsHashOps<T>
 {

@@ -87,7 +87,14 @@ Silence a warning with `<NoWarn>DEQ004</NoWarn>` in the project file or `dotnet_
 
 | Id | Severity | When | Effect | Fix |
 |---|---|---|---|---|
-| DEQ013 | warning | An option is out of range: `MaxSwitchCases` or `MaxBinaryExpressionArity` below 1, `MaxComparisonPairs` outside 1..2^29, `MaxUnorderedCollisionRun` outside 1..512, `StructPassByValueMaxByteSize` below 0, or a null/empty interface prefix. | The default is used for that option; an invalid prefix is ignored. | Use a value in range. |
+| DEQ013 | warning | An option is out of range: `MaxSwitchCases` or `MaxBinaryExpressionArity` below 1, `MaxComparisonPairs` outside 1..2^29, `MaxUnorderedCollisionRun` outside 1..512, `StructPassByValueMaxByteSize` below 0, `MaxDepth` outside 1..1,000,000, `MatchingHashDepth` outside 1..16, a `CycleHandling` or `Hashing` value the enum does not define, or a null/empty interface prefix. | The default is used for that option; an invalid prefix is ignored. | Use a value in range. |
+| DEQ037 | warning | `MatchingHashDepth` is set explicitly on a context whose `CycleHandling` is `Tree`, where the fingerprint is the full depth-bounded hash and the option has no effect. | The value is ignored and left as written. | Remove it, or switch `CycleHandling`. |
+
+## Package versions
+
+| Id | Severity | When | Effect | Fix |
+|---|---|---|---|---|
+| DEQ036 | error | The referenced `DeepEquals.SourceGeneration.Framework` assembly's version differs from the `DeepEquals.SourceGenerator` package's. The two ship together and generated code binds the framework surface of its own version. | Nothing generated. | Reference both packages at the same version. |
 
 ## Generator failure
 

@@ -29,6 +29,9 @@ internal sealed class Emitter
     private readonly CancellationToken _cancellationToken;
     private readonly TypeModel[] _types;
     private readonly HashSet<int> _spanCores = [];
+
+    /// <summary>Bit-block structs whose runtime size flag some emitted path reads; the flags go in the context file.</summary>
+    private readonly SortedSet<int> _blockGuards = [];
     private readonly List<(TypeModel Type, List<DispatchCase> Exact)> _pendingDispatchHolders = [];
 
     /// <summary>The writer of the file being emitted; every emit method writes here, and the file loop swaps it.</summary>
@@ -58,24 +61,8 @@ internal sealed class Emitter
 
     // ----- file ---------------------------------------------------------------------------------------------------------
 
-    /// <summary>The package version of the generator, read once from the assembly's informational version without its build metadata.</summary>
-    private static readonly string GeneratorVersion = ReadGeneratorVersion();
-
-    private static string ReadGeneratorVersion()
-    {
-        var assembly = typeof(Emitter).Assembly;
-        var informational = assembly
-            .GetCustomAttributes<AssemblyInformationalVersionAttribute>()
-            .Select(x => x.InformationalVersion)
-            .FirstOrDefault();
-        if (!string.IsNullOrEmpty(informational))
-        {
-            var plus = informational.IndexOf('+');
-            return plus < 0 ? informational : informational[..plus];
-        }
-
-        return assembly.GetName().Version?.ToString(3) ?? "1.0.0";
-    }
+    /// <summary>The package version of the generator, as the header states it.</summary>
+    private static string GeneratorVersion => GeneratorInfo.Version;
 
     /// <summary>The header template, an embedded resource with <c>{{placeholders}}</c>, read once and split into lines.</summary>
     private static readonly string[] HeaderTemplate = ReadHeaderTemplate();
@@ -114,13 +101,28 @@ internal sealed class Emitter
     /// Every value the header template can ask for, computed from the model alone so output stays deterministic.
     /// The context file lists the whole closure; a type file lists the one type it holds.
     /// </summary>
+    /// <summary>The header values every file of the context shares, computed once; a type file overrides the closure lines.</summary>
+    private Dictionary<string, string>? _sharedHeaderValues;
+
+    /// <summary>
+    /// The header values of the context file, or of one type's file. Everything but the closure lines is computed once
+    /// and shared, so a closure of thousands of types does not rebuild the wrapper list once per file.
+    /// </summary>
     private Dictionary<string, string> HeaderValues(TypeModel? single)
     {
-        var contextName = _model.Namespace.Length > 0 ? $"{_model.Namespace}.{_model.Name}" : _model.Name;
-        var c = _model.Capabilities;
-        var o = _model.Options;
+        var shared = _sharedHeaderValues ??= SharedHeaderValues();
+        if (single is null)
+            return shared;
 
-        string KindLabel(TypeModel t) => t.Kind switch
+        var typeCount = shared["TypeCount"];
+        return new Dictionary<string, string>(shared, StringComparer.Ordinal)
+        {
+            ["ClosureHeading"] = $"Type (one of {typeCount} in the closure; {_model.HintNamePrefix}.g.cs lists them all)",
+            ["Closure"] = CommentList([TypeLine(single)]),
+        };
+    }
+
+    private string KindLabel(TypeModel t) => t.Kind switch
         {
             TypeKind.Leaf => t.LeafRule switch
             {
@@ -143,19 +145,24 @@ internal sealed class Emitter
             _ => t.Kind.ToString().ToLowerInvariant(),
         };
 
+    private string TypeLine(TypeModel t)
+    {
+        var note = !t.EmitWrapper ? "; no public comparer" : !t.EmitConvenienceProperty ? "; convenience property omitted" : string.Empty;
+        return $"{Display(t.GlobalName)}  ({KindLabel(t)}{note})";
+    }
+
+    private Dictionary<string, string> SharedHeaderValues()
+    {
+        // The comment shows the names as written, without the escaping the declarations need.
+        var contextName = (_model.Namespace.Length > 0 ? $"{_model.Namespace}.{_model.Name}" : _model.Name).Replace("@", string.Empty);
+        var c = _model.Capabilities;
+        var o = _model.Options;
+
         var wrappers = _types.Where(t => t.EmitWrapper).ToList();
         var typeCount = _types.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var wrapperCount = wrappers.Count.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        string TypeLine(TypeModel t)
-        {
-            var note = !t.EmitWrapper ? "; no public comparer" : !t.EmitConvenienceProperty ? "; convenience property omitted" : string.Empty;
-            return $"{Display(t.GlobalName)}  ({KindLabel(t)}{note})";
-        }
-
-        var closureHeading = single is null
-            ? $"Closure ({typeCount} types, {wrapperCount} public comparers)"
-            : $"Type (one of {typeCount} in the closure; {_model.HintNamePrefix}.g.cs lists them all)";
-        var closure = single is null ? CommentList(wrappers.Select(TypeLine)) : CommentList([TypeLine(single)]);
+        var closureHeading = $"Closure ({typeCount} types, {wrapperCount} public comparers)";
+        var closure = CommentList(wrappers.Select(TypeLine));
 
         (string Name, bool Present)[] capabilities =
         [
@@ -165,13 +172,14 @@ internal sealed class Emitter
             ("MemoryMarshal", c.HasMemoryMarshal),
             ("IReadOnlySet<T>", c.HasIReadOnlySet),
             ("ImmutableArray<T>", c.HasImmutableArray),
+            ("ImmutableArray<T>.AsSpan", c.HasImmutableArrayAsSpan),
             ("[UnsafeAccessor]", c.HasUnsafeAccessor),
             ("[UnsafeAccessor] on generic types", c.HasGenericUnsafeAccessor),
             ("framework TryGetSpan/HashSpan", c.HasFrameworkSpanHelpers),
             ("framework Hash(Int128)", c.HasFrameworkHash128),
             ("Nullable.GetValueRefOrDefaultRef", c.HasNullableGetValueRefOrDefaultRef),
-            ("BitConverter.SingleToInt32Bits", c.HasSingleToInt32Bits),
             ("decimal.GetBits(Span<int>)", c.HasDecimalGetBitsSpan),
+            ("framework bit blocks", c.BitBlocks),
             ("[RequiresUnreferencedCode]", c.HasRequiresUnreferencedCode),
             ("[RequiresDynamicCode]", c.HasRequiresDynamicCode),
             ("[UnconditionalSuppressMessage]", c.HasUnconditionalSuppressMessage)
@@ -199,6 +207,10 @@ internal sealed class Emitter
             ["MaxBinaryExpressionArity"] = o.MaxBinaryExpressionArity.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["StructPassByValueMaxByteSize"] = o.StructPassByValueMaxByteSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["ExcludeInterfacesByPrefix"] = o.ExcludeInterfacesByPrefix.Count == 0 ? "(none)" : string.Join(", ", o.ExcludeInterfacesByPrefix),
+            ["CycleHandling"] = o.CycleHandling.ToString(),
+            ["MaxDepth"] = o.IsTree ? o.MaxDepth.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) : $"{o.MaxDepth.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} (not used under {o.CycleHandling})",
+            ["MatchingHashDepth"] = o.IsTree ? $"{o.MatchingHashDepth} (not used under Tree: the fingerprint is the full hash)" : o.MatchingHashDepth.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Hashing"] = o.Hashing.ToString(),
             ["LanguageVersion"] = $"{c.LanguageVersion / 100}.{c.LanguageVersion % 100}",
             ["CapabilitiesPresent"] = string.Join(", ", capabilities.Where(x => x.Present).Select(x => x.Name)).OrDefault("(none)"),
             ["CapabilitiesAbsent"] = string.Join(", ", capabilities.Where(x => !x.Present).Select(x => x.Name)).OrDefault("(none)"),
@@ -228,35 +240,33 @@ internal sealed class Emitter
     }
 
     /// <summary>
-    /// One file being written. Its writer stays open until every body is complete, because a span core lands in
-    /// its element's file only once the containers that call it have been emitted.
+    /// One file being written: its class body only, at the body's indentation. The header and the skeleton around
+    /// it are written when the file closes, and only for a body that received something, so a type with nothing to
+    /// emit costs neither a header nor a file. The body stays open until every body is complete, because a span core
+    /// lands in its element's file only once the containers that call it have been emitted.
     /// </summary>
     private sealed class OpenFile
     {
-        public OpenFile(string hintName, CodeWriter writer, int bodyStart, int closes)
+        public OpenFile(string hintName, TypeModel? type, CodeWriter body)
         {
             HintName = hintName;
-            Writer = writer;
-            BodyStart = bodyStart;
-            Closes = closes;
+            Type = type;
+            Body = body;
         }
 
         public string HintName { get; }
 
-        public CodeWriter Writer { get; }
+        /// <summary>The type whose file this is, or null for the context file.</summary>
+        public TypeModel? Type { get; }
 
-        /// <summary>The writer's length once the skeleton is open; a file whose body never grew past it is not emitted.</summary>
-        public int BodyStart { get; }
-
-        /// <summary>The blocks opened above the class body: namespace, containing types and the context class itself.</summary>
-        public int Closes { get; }
+        public CodeWriter Body { get; }
     }
 
     private List<GeneratedFile> EmitFiles()
     {
         // Roslyn compares hint names case-insensitively, so two types differing only by case share a stem.
         var hintNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var contextFile = Open($"{_model.HintNamePrefix}.g.cs", HeaderValues(null), 4096 + _types.Length * 256);
+        var contextFile = Open($"{_model.HintNamePrefix}.g.cs", null, 4096 + _types.Length * 256);
         hintNames.Add(contextFile.HintName);
 
         var typeFiles = new OpenFile[_types.Length];
@@ -268,8 +278,8 @@ internal sealed class Emitter
             for (var n = 2; !hintNames.Add(hintName); n++)
                 hintName = $"{stem}_{n}.g.cs";
 
-            var file = typeFiles[type.Id] = Open(hintName, HeaderValues(type), 4096 + 2048);
-            _w = file.Writer;
+            var file = typeFiles[type.Id] = Open(hintName, type, 2048);
+            _w = file.Body;
             EmitKinds(type);
             EmitConvenienceProperty(type);
             if (type.EmitWrapper)
@@ -282,12 +292,13 @@ internal sealed class Emitter
         // Span cores are requested by the containers emitted above and belong to the element they compare.
         foreach (var element in _spanCores.OrderBy(i => i))
         {
-            _w = typeFiles[element].Writer;
+            _w = typeFiles[element].Body;
             EmitSpanCores(Type(element));
         }
 
-        _w = contextFile.Writer;
+        _w = contextFile.Body;
         EmitConstants();
+        EmitBlockGuards();
         EmitLookup();
         EmitAccessors();
         EmitAccessorHolders();
@@ -303,40 +314,39 @@ internal sealed class Emitter
         return files;
     }
 
-    /// <summary>The header and the skeleton down to the context's partial class, with the writer left inside it.</summary>
-    private OpenFile Open(string hintName, Dictionary<string, string> headerValues, int capacity)
+    /// <summary>The blocks around a class body: namespace, containing types and the context class itself.</summary>
+    private int SkeletonDepth => (_model.Namespace.Length > 0 ? 1 : 0) + _model.ContainingTypes.Count + 1;
+
+    /// <summary>A body writer for a file, positioned at the class body's indentation.</summary>
+    private OpenFile Open(string hintName, TypeModel? type, int capacity) =>
+        new(hintName, type, new CodeWriter(capacity, SkeletonDepth));
+
+    /// <summary>
+    /// Wraps a body that received something in its header and skeleton and returns the file; null for an empty body.
+    /// The context file is always emitted, since the lookup lives there.
+    /// </summary>
+    private GeneratedFile? Close(OpenFile file)
     {
-        _w = new CodeWriter(capacity);
-        EmitHeader(headerValues);
-        _w.Line();
-
-        var closes = 0;
-        if (_model.Namespace.Length > 0)
-        {
-            _w.Open($"namespace {_model.Namespace}");
-            closes++;
-        }
-
-        foreach (var containing in _model.ContainingTypes)
-        {
-            _w.Open($"partial class {containing}");
-            closes++;
-        }
-
-        _w.Open($"{_model.Accessibility} partial class {_model.Name}");
-        return new OpenFile(hintName, _w, _w.Length, closes + 1);
-    }
-
-    /// <summary>Closes the skeleton and returns the file, or null when nothing was written into the class.</summary>
-    private static GeneratedFile? Close(OpenFile file)
-    {
-        if (file.Writer.Length == file.BodyStart)
+        if (file.Body.Length == 0 && file.Type is not null)
             return null;
 
-        for (var i = 0; i < file.Closes; i++)
-            file.Writer.Close();
+        var body = file.Body.ToString();
+        _w = new CodeWriter(body.Length + 4096);
+        EmitHeader(HeaderValues(file.Type));
+        _w.Line();
 
-        return new GeneratedFile(file.HintName, file.Writer.ToString());
+        if (_model.Namespace.Length > 0)
+            _w.Open($"namespace {_model.Namespace}");
+
+        foreach (var containing in _model.ContainingTypes)
+            _w.Open($"partial {containing}");
+
+        _w.Open($"{_model.Accessibility} partial class {Identifier(_model.Name)}");
+        _w.AppendRaw(body);
+        for (var i = 0; i < SkeletonDepth; i++)
+            _w.Close();
+
+        return new GeneratedFile(file.HintName, _w.ToString());
     }
 
     private void EmitConstants()
@@ -470,8 +480,7 @@ internal sealed class Emitter
     /// <summary>
     /// Returns csharp-safe identifier for a name (@ prefixed if it is a keyword).
     /// </summary>
-    private static string Identifier(string name) => 
-        SyntaxFacts.GetKeywordKind(name) != SyntaxKind.None ? $"@{name}" : name;
+    private static string Identifier(string name) => Analysis.Naming.Identifier(name);
 
     private static string StateParam(TypeModel type) =>
         type.NeedsState ? $", ref {KnownTypes.GlobalState} state" : string.Empty;
@@ -481,32 +490,88 @@ internal sealed class Emitter
     /// <summary>Call <see cref="object.ReferenceEquals"/></summary>
     private static string RefEq(string x, string y) => $"{KnownTypes.GlobalObject}.ReferenceEquals({x}, {y})";
 
-    private static string Combine<T>(IEnumerable<T> inputs, Func<T, string> selector) => 
-        Combine(inputs.Select(selector).ToList());
-    
-    private static string Combine(List<string> inputs)
-    {
-        while (true)
-            switch (inputs.Count)
-            {
-                case 0:
-                    return "1";
-                case <= MaxCombineArity:
-                    return ItemList($"{KnownTypes.GlobalHashCode}.Combine(", inputs, ",", ")");
-                default:
-                    inputs = Chunk(inputs);
-                    break;
-            }
-        
-        // 1 round of grouping: each group of at most MaxCombineArity inputs becomes a nested call
-        static List<string> Chunk(List<string> inputs)
-        {
-            var nested = new List<string>(capacity: inputs.Count);
-            for (var i = 0; i < inputs.Count; i += MaxCombineArity) 
-                nested.Add(Combine(inputs.GetRange(i, Math.Min(MaxCombineArity, inputs.Count - i))));
+    // ----- hash width ---------------------------------------------------------------------------------------------------
+    //
+    // Every hash core, ops struct and stream runs at the context's width. Under XxHash32 a word is an int and a leaf
+    // wider than 32 bits is split into its 32-bit words. Under XxHash64 a word is a ulong: a 64-bit leaf is one word,
+    // a 128-bit leaf two, a nested hash one carrying all its bits, and two narrow hashes pack into one word. The
+    // public GetHashCode folds at the end. The helpers below are the only place the two widths differ.
 
-            return nested;
+    /// <summary>
+    /// One input to a hash stream. <paramref name="Wide"/> marks an expression already of the stream's word type; a
+    /// narrow one is an <c>int</c> hash that the 64-bit stream must widen or pack. Under the 32-bit width every word is
+    /// narrow, and no distinction is made.
+    /// </summary>
+    private readonly record struct HashWord(string Expr, bool Wide);
+
+    private bool Hash64 => _model.Options.Is64;
+
+    /// <summary>The word type of the context's hash stream: the return type of every hash core.</summary>
+    private string HashType => Hash64 ? "ulong" : "int";
+
+    private string HashClass => Hash64 ? KnownTypes.GlobalHashCode64 : KnownTypes.GlobalHashCode;
+
+    private string HashOpsInterface => Hash64 ? KnownTypes.GlobalHashOps64 : KnownTypes.GlobalHashOps;
+
+    /// <summary>The hash method of an ordered-container ops struct: the 64-bit interface names its own.</summary>
+    private string HashOpsMethod => Hash64 ? "GetHashCode64" : "GetHashCode";
+
+    /// <summary>A narrow word that is already an <c>int</c> expression.</summary>
+    private static HashWord Narrow(string expr) => new(expr, false);
+
+    /// <summary>A word of the stream's own type: a ulong under XxHash64, an int otherwise.</summary>
+    private HashWord Wide(string expr) => new(expr, Hash64);
+
+    /// <summary>An integer literal, which converts to either word type on its own.</summary>
+    private HashWord Const(string literal) => new(literal, Hash64);
+
+    /// <summary>The expression of <paramref name="word"/> as a value of the stream's word type.</summary>
+    private string WordExpr(HashWord word) => Hash64 && !word.Wide ? $"{HashClass}.Narrow({word.Expr})" : word.Expr;
+
+    /// <summary>A count as a word: the shallow hash of a collection is its count, 1 when empty.</summary>
+    private string CountHash(string count) => Hash64 ? $"({count} == 0 ? 1UL : (ulong){count})" : $"({count} == 0 ? 1 : {count})";
+
+    /// <summary>The public 32-bit value of a stream word: null's 0 stays 0, everything else folds and stays nonzero.</summary>
+    private string ToPublic(string word) => Hash64 ? $"{HashClass}.ToInt32({word})" : word;
+
+    private string Combine<T>(IEnumerable<T> inputs, Func<T, HashWord> selector) =>
+        Combine(inputs.Select(selector).ToList());
+
+    /// <summary>
+    /// One <c>Combine</c> stream over the words, nested above the arity cap. Under XxHash64 the narrow words are paired
+    /// first, in order, then the wide words follow, so no half-empty word sits between two narrow ones.
+    /// </summary>
+    private string Combine(List<HashWord> words)
+    {
+        if (words.Count == 0)
+            return "1";
+
+        List<string> inputs;
+        if (Hash64)
+        {
+            var narrow = words.Where(w => !w.Wide).ToList();
+            inputs = new List<string>((narrow.Count + 1) / 2 + words.Count - narrow.Count);
+            for (var i = 0; i < narrow.Count; i += 2)
+                inputs.Add(i + 1 < narrow.Count
+                    ? $"{HashClass}.Pack({narrow[i].Expr}, {narrow[i + 1].Expr})"
+                    : $"{HashClass}.Narrow({narrow[i].Expr})");
+
+            inputs.AddRange(words.Where(w => w.Wide).Select(w => w.Expr));
         }
+        else
+            inputs = words.Select(w => w.Expr).ToList();
+
+        while (inputs.Count > MaxCombineArity)
+        {
+            // One round of grouping: each group of at most MaxCombineArity inputs becomes a nested call.
+            var nested = new List<string>(capacity: inputs.Count / MaxCombineArity + 1);
+            for (var i = 0; i < inputs.Count; i += MaxCombineArity)
+                nested.Add(ItemList($"{HashClass}.Combine(", inputs.GetRange(i, Math.Min(MaxCombineArity, inputs.Count - i)), ",", ")"));
+
+            inputs = nested;
+        }
+
+        return ItemList($"{HashClass}.Combine(", inputs, ",", ")");
     }
 
     private void EmitPredicates<T>(IEnumerable<T> items, Func<T, string> selector, bool terminalReturnTrue) => 
@@ -626,13 +691,13 @@ internal sealed class Emitter
                 return $"{x} == {y}";
             
             case LeafRule.Single:
-                return $"{SingleBits(x)} == {SingleBits(y)}";
-            
+                return $"{FloatBits(x)} == {FloatBits(y)}";
+
             case LeafRule.Double:
-                return $"{KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({x}) == {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({y})";
-            
+                return $"{DoubleBits(x)} == {DoubleBits(y)}";
+
             case LeafRule.Half:
-                return $"{KnownTypes.GlobalBitConverter}.HalfToInt16Bits({x}) == {KnownTypes.GlobalBitConverter}.HalfToInt16Bits({y})";
+                return $"{HalfBits(x)} == {HalfBits(y)}";
             
                         case LeafRule.Decimal:
                 return $"{KnownTypes.GlobalHelpers}.DecimalEquals({x}, {y})";
@@ -646,8 +711,8 @@ internal sealed class Emitter
             case LeafRule.FloatAggregate:
                 // Matrix4x4 is sixteen of these; a component is as much a member as a property is.
                 return ItemList("(", type.AggregateComponents.Select(c => c.IsDouble
-                    ? $"{KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({x}.{c.Expression}) == {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({y}.{c.Expression})"
-                    : $"{SingleBits($"{x}.{c.Expression}")} == {SingleBits($"{y}.{c.Expression}")}").ToList(), " &&", ")");
+                    ? $"{DoubleBits($"{x}.{c.Expression}")} == {DoubleBits($"{y}.{c.Expression}")}"
+                    : $"{FloatBits($"{x}.{c.Expression}")} == {FloatBits($"{y}.{c.Expression}")}").ToList(), " &&", ")");
             
             case LeafRule.Uri:
                 return RefLeaf(x, y, 
@@ -686,10 +751,102 @@ internal sealed class Emitter
     private static string RefLeaf(string x, string y, string rule) => 
         $"({RefEq(x, y)} || (!({x} is null) && !({y} is null) && {rule}))";
 
-    private string SingleBits(string value) => 
-        _model.Capabilities.HasSingleToInt32Bits
-            ? $"{KnownTypes.GlobalBitConverter}.SingleToInt32Bits({value})"
-            : $"{KnownTypes.GlobalHelpers}.SingleToInt32Bits({value})";
+    // ----- bit blocks -----------------------------------------------------------------------------------------------------
+    //
+    // A sequence of bit-block elements is one block of bytes: it compares with the runtime's vectorized memory compare
+    // and hashes with seeded XxHash3. The hash of such a sequence is defined that way for every container shape of its
+    // declared type, so every path of a core that hashes one goes through the block helpers. A bit-block struct is one
+    // only when the runtime lays it out without padding, which a flag computed once per process confirms; the flag is a
+    // constant for the process, so the paths it selects never mix.
+
+    /// <summary>True when sequences of <paramref name="element"/> take the byte paths.</summary>
+    private bool BlockElement(TypeModel element) => _model.Capabilities.BitBlocks && element.IsBitBlock;
+
+    /// <summary>The flag a struct's byte paths depend on, or null for a leaf, which needs none.</summary>
+    private string? BlockGuard(TypeModel element)
+    {
+        if (element.BitBlockChecks.Count == 0)
+            return null;
+
+        _blockGuards.Add(element.Id);
+        return $"{element.ShortName}_IsBitBlock";
+    }
+
+    private string BlockWidth => Hash64 ? "64" : "32";
+
+    /// <summary>
+    /// Emits <paramref name="body"/>, the byte path of a hash or comparison, ahead of the per-element path. Returns true
+    /// when the byte path is unconditional and nothing after it may be emitted; a struct's path runs under its flag and
+    /// falls through to the per-element path when the flag is false.
+    /// </summary>
+    private bool EmitBlockPath(TypeModel element, Action body)
+    {
+        var guard = BlockGuard(element);
+        if (guard is null)
+        {
+            body();
+            return true;
+        }
+
+        using (_w.Block($"if ({guard})"))
+            body();
+
+        return false;
+    }
+
+    /// <summary>One flag per bit-block struct some path reads: the runtime size of it and of every struct nested in it.</summary>
+    private void EmitBlockGuards()
+    {
+        foreach (var id in _blockGuards)
+        {
+            var type = Type(id);
+            var checks = type.BitBlockChecks.Select(c => $"{KnownTypes.GlobalBlocks}.HasSize<{c.GlobalName}>({c.Size})");
+            _w.Line($"private static readonly bool {type.ShortName}_IsBitBlock = {string.Join(" && ", checks)};");
+        }
+
+        if (_blockGuards.Count > 0)
+            _w.Line();
+    }
+
+    /// <summary>The block-hash helper call over <paramref name="argument"/>: <c>HashBlock</c>, <c>HashReadOnlyList</c>, <c>HashList</c> or <c>HashEnumerable</c>.</summary>
+    private string BlockHash(string helper, TypeModel element, string argument) =>
+        $"{KnownTypes.GlobalBlocks}.{helper}{BlockWidth}<{element.GlobalName}>({argument})";
+
+    /// <summary>
+    /// The byte path of an interface-typed sequence's hash: an immutable array through its span, anything else through
+    /// the helper for its interface, which takes an array's or a list's span itself and copies everything else.
+    /// </summary>
+    private void EmitInterfaceBlockHash(TypeModel type, TypeModel element, string iface)
+    {
+        if (_model.Capabilities.HasImmutableArray)
+        {
+            var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
+            // Named apart from the per-element path's local, which a struct's guarded byte path sits in front of.
+            _w.Line(ImmutableSpans
+                ? $"if (o is {immutable} ib) return ib.IsDefault ? 0 : {BlockHash("HashBlock", element, "ib.AsSpan()")};"
+                : $"if (o is {immutable} ib && ib.IsDefault) return 0;");
+        }
+
+        var generic = "global::System.Collections.Generic.";
+        if (iface.StartsWith($"{generic}IReadOnlyList<", StringComparison.Ordinal))
+            _w.Return(BlockHash("HashReadOnlyList", element, $"({iface})o"));
+        else if (iface.StartsWith($"{generic}IList<", StringComparison.Ordinal))
+            _w.Return(BlockHash("HashList", element, $"({iface})o"));
+        else
+            _w.Return(BlockHash("HashEnumerable", element, $"({generic}IEnumerable<{element.GlobalName}>)o"));
+    }
+
+    // The storage bits of a floating-point value, through the framework shims that pick the fastest reinterpretation
+    // each asset has. Never a numeric conversion: NaN payloads and the sign of zero stay distinct.
+
+    private static string FloatBits(string value) => $"{KnownTypes.GlobalHelpers}.FloatBits({value})";
+
+    private static string DoubleBits(string value) => $"{KnownTypes.GlobalHelpers}.DoubleBits({value})";
+
+    private static string HalfBits(string value) => $"{KnownTypes.GlobalHelpers}.HalfBits({value})";
+
+    /// <summary>The four bytes of a float as a narrow hash word.</summary>
+    private static string FloatWord(string value) => $"unchecked((int){FloatBits(value)})";
 
     private string CustomEq(TypeModel type, string x, string y)
     {
@@ -711,21 +868,21 @@ internal sealed class Emitter
     // ----- hash expressions ------------------------------------------------------------------------------------------------
 
     /// <summary>The hash of a value reached through an edge; null means the edge is omitted at this level.</summary>
-    private string? HashOrOmit(TypeModel type, string value, int level, bool sameScc)
+    private HashWord? HashOrOmit(TypeModel type, string value, int level, bool sameScc)
     {
         switch (type.Kind)
         {
             case TypeKind.Leaf:
-                return LeafHash(type, value);
-            
+                return LeafWord(type, value);
+
             case TypeKind.Nullable:
                 var payload = HashOrOmit(Type(type.PayloadTypeId), $"{value}.GetValueOrDefault()", level, sameScc);
-                return payload is null ? null : $"({value}.HasValue ? {payload} : 0)";
-            
+                return payload is { } p ? new HashWord($"({value}.HasValue ? {p.Expr} : 0)", p.Wide) : null;
+
             case TypeKind.Struct:
-                if (type.InlineAsSmallStruct) 
-                    return Combine(type.Members,
-                        m => LeafHash(Type(m.TypeId), Read(m, value, false)));
+                if (type.InlineAsSmallStruct)
+                    return Wide(Combine(type.Members,
+                        m => LeafWord(Type(m.TypeId), Read(m, value, false))));
 
                 break;
         }
@@ -733,24 +890,28 @@ internal sealed class Emitter
         var container = IsContainerOrProduct(type);
         if (level == 1)
         {
-            if (container) 
-                return $"GetHashCode_{type.ShortName}({value})";
-            return sameScc ? $"ShallowHashCode_{type.ShortName}({value})" : $"GetHashCode_{type.ShortName}({value})";
+            if (container)
+                return Wide($"GetHashCode_{type.ShortName}({value})");
+            return Wide(sameScc ? $"ShallowHashCode_{type.ShortName}({value})" : $"GetHashCode_{type.ShortName}({value})");
         }
 
-        if (sameScc) 
-            return container ? $"ShallowHashCode_{type.ShortName}({value})" : null;
+        if (sameScc)
+            return container ? Wide($"ShallowHashCode_{type.ShortName}({value})") : null;
 
-        return $"GetHashCode_{type.ShortName}({value})";
+        return Wide($"GetHashCode_{type.ShortName}({value})");
     }
 
-        /// <summary>
-    /// The words a member contributes to its owner's hash stream, in statement context. A leaf wider than 32 bits is
+    /// <summary>The hash of a value reached through an edge as a word of the stream's type; <c>0</c> when the edge is omitted.</summary>
+    private string HashWordExpr(TypeModel type, string value, int level, bool sameScc) =>
+        HashOrOmit(type, value, level, sameScc) is { } word ? WordExpr(word) : "0";
+
+    /// <summary>
+    /// The words a member contributes to its owner's hash stream, in statement context. A leaf wider than a word is
     /// read once into a local named <paramref name="local"/> and split into its words, so the owner mixes them into one
     /// seeded stream instead of finishing a nested hash per member; an inlined struct contributes its members' words.
     /// Everything else contributes the single word of its own hash, or nothing when the level omits it.
     /// </summary>
-    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<string> words)
+    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<HashWord> words)
     {
         switch (type.Kind)
         {
@@ -766,12 +927,15 @@ internal sealed class Emitter
         }
 
         var single = HashOrOmit(type, value, level, sameScc);
-        if (single is not null)
-            words.Add(single);
+        if (single is { } word)
+            words.Add(word);
     }
 
-    /// <summary>Reads a wide leaf into <paramref name="local"/> and appends its 32-bit words; false when the leaf is not wide.</summary>
-    private bool WideLeafWords(TypeModel type, string value, string local, List<string> words)
+    /// <summary>
+    /// Reads a wide leaf into <paramref name="local"/> and appends its words: 32-bit halves under XxHash32, whole 64-bit
+    /// words under XxHash64, always the storage bits and never a numeric conversion. False when the leaf is not wide.
+    /// </summary>
+    private bool WideLeafWords(TypeModel type, string value, string local, List<HashWord> words)
     {
         switch (type.LeafRule)
         {
@@ -780,48 +944,38 @@ internal sealed class Emitter
                     return false;   // keeps its own seeded hash
 
                 var unsigned = type.GlobalName is "ulong" or "nuint" || type.GlobalName.EndsWith("UIntPtr", StringComparison.Ordinal);
-                _w.Line(unsigned ? $"ulong {local} = (ulong){value};" : $"long {local} = (long){value};");
-                Words64(local, words);
+                Bits64(local, unsigned ? $"(ulong){value}" : $"unchecked((ulong)(long){value})", words);
                 return true;
 
             case LeafRule.Enum:
                 if (type.EnumUnderlyingWidth != 8)
                     return false;
 
-                _w.Line(type.EnumUnderlyingUnsigned ? $"ulong {local} = (ulong){value};" : $"long {local} = (long){value};");
-                Words64(local, words);
+                Bits64(local, type.EnumUnderlyingUnsigned ? $"(ulong){value}" : $"unchecked((ulong)(long){value})", words);
                 return true;
 
             case LeafRule.Double:
-                _w.Line($"long {local} = {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({value});");
-                Words64(local, words);
+                Bits64(local, DoubleBits(value), words);
                 return true;
 
             case LeafRule.DateTime:
-                _w.Line($"ulong {local} = {KnownTypes.GlobalHelpers}.DateTimeBits({value});");
-                Words64(local, words);
+                Bits64(local, $"{KnownTypes.GlobalHelpers}.DateTimeBits({value})", words);
                 return true;
 
             case LeafRule.DateTimeOffset:
                 _w.Line($"global::System.DateTimeOffset {local} = {value};");
-                _w.Line($"long {local}t = {local}.Ticks;");
-                _w.Line($"long {local}o = {local}.Offset.Ticks;");
-                Words64($"{local}t", words);
-                Words64($"{local}o", words);
+                Bits64($"{local}t", $"unchecked((ulong){local}.Ticks)", words);
+                Bits64($"{local}o", $"unchecked((ulong){local}.Offset.Ticks)", words);
                 return true;
 
             case LeafRule.Guid:
                 _w.Line($"global::System.Guid {local} = {value};");
-                for (var i = 0; i < 4; i++)
-                    words.Add($"{KnownTypes.GlobalHelpers}.GuidWord({local}, {i})");
-
+                Bits128(local, "Guid", words);
                 return true;
 
             case LeafRule.Decimal:
                 _w.Line($"decimal {local} = {value};");
-                for (var i = 0; i < 4; i++)
-                    words.Add($"{KnownTypes.GlobalHelpers}.DecimalWord({local}, {i})");
-
+                Bits128(local, "Decimal", words);
                 return true;
 
             case LeafRule.FloatAggregate:
@@ -830,14 +984,9 @@ internal sealed class Emitter
                 foreach (var component in type.AggregateComponents)
                 {
                     if (component.IsDouble)
-                    {
-                        _w.Line($"long {local}_{k} = {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({local}.{component.Expression});");
-                        Words64($"{local}_{k}", words);
-                    }
+                        Bits64($"{local}_{k}", DoubleBits($"{local}.{component.Expression}"), words);
                     else
-                    {
-                        words.Add(SingleBits($"{local}.{component.Expression}"));
-                    }
+                        words.Add(Narrow(FloatWord($"{local}.{component.Expression}")));
 
                     k++;
                 }
@@ -849,10 +998,32 @@ internal sealed class Emitter
         }
     }
 
-    private static void Words64(string local, List<string> words)
+    /// <summary>Sixty-four bits of storage, given as a <c>ulong</c> expression: one wide word, or two narrow halves read from a local.</summary>
+    private void Bits64(string local, string bits, List<HashWord> words)
     {
-        words.Add($"unchecked((int){local})");
-        words.Add($"unchecked((int)({local} >> 32))");
+        if (Hash64)
+        {
+            words.Add(Wide(bits));
+            return;
+        }
+
+        _w.Line($"ulong {local} = {bits};");
+        words.Add(Narrow($"unchecked((int){local})"));
+        words.Add(Narrow($"unchecked((int)({local} >> 32))"));
+    }
+
+    /// <summary>A 16-byte leaf already read into <paramref name="local"/>: two wide words, or four narrow ones, through the helper readers named <paramref name="prefix"/>.</summary>
+    private void Bits128(string local, string prefix, List<HashWord> words)
+    {
+        if (Hash64)
+        {
+            words.Add(Wide($"{KnownTypes.GlobalHelpers}.{prefix}Lo64({local})"));
+            words.Add(Wide($"{KnownTypes.GlobalHelpers}.{prefix}Hi64({local})"));
+            return;
+        }
+
+        for (var i = 0; i < 4; i++)
+            words.Add(Narrow($"{KnownTypes.GlobalHelpers}.{prefix}Word({local}, {i})"));
     }
 
     private static bool IsContainerOrProduct(TypeModel type) => type.Kind is  
@@ -860,6 +1031,53 @@ internal sealed class Emitter
         TypeKind.ListInterface or TypeKind.EnumerableInterface or TypeKind.Set or TypeKind.Dictionary or 
         TypeKind.KeyValuePair or TypeKind.ValueTuple or TypeKind.Tuple;
 
+    /// <summary>
+    /// The hash of a leaf as one word. Under XxHash64 a wide leaf is hashed as its 64-bit words through the 64-bit
+    /// overloads and comes back wide; a narrow leaf comes back as its <c>int</c> hash under either width.
+    /// </summary>
+    private HashWord LeafWord(TypeModel type, string value)
+    {
+        if (!Hash64)
+            return Narrow(LeafHash(type, value));
+
+        var h = HashClass;
+        switch (type.LeafRule)
+        {
+            case LeafRule.WideInteger:
+                if (type.GlobalName.EndsWith("IntPtr", StringComparison.Ordinal))
+                    return Wide(type.GlobalName.EndsWith("UIntPtr", StringComparison.Ordinal) ? $"{h}.Hash((ulong){value})" : $"{h}.Hash((long){value})");
+
+                if (type.GlobalName.EndsWith("Int128", StringComparison.Ordinal) && !_model.Capabilities.HasFrameworkHash128)
+                    return Wide($"{h}.Combine(unchecked((ulong){value}), unchecked((ulong)({value} >> 64)))");
+
+                return Wide($"{h}.Hash({value})");
+
+            case LeafRule.Guid:
+            case LeafRule.Decimal:
+                return Wide($"{h}.Hash({value})");
+
+            case LeafRule.Enum when type.EnumUnderlyingWidth == 8:
+                return Wide(type.EnumUnderlyingUnsigned ? $"{h}.Hash((ulong){value})" : $"{h}.Hash((long){value})");
+
+            case LeafRule.Double:
+                return Wide($"{h}.Hash({value})");
+
+            case LeafRule.DateTime:
+                return Wide($"{h}.Hash({KnownTypes.GlobalHelpers}.DateTimeBits({value}))");
+
+            case LeafRule.DateTimeOffset:
+                return Wide($"{h}.Combine(unchecked((ulong){value}.Ticks), unchecked((ulong){value}.Offset.Ticks))");
+
+            case LeafRule.FloatAggregate:
+                return Wide(Combine(type.AggregateComponents,
+                    c => c.IsDouble ? Wide(DoubleBits($"{value}.{c.Expression}")) : Narrow(FloatWord($"{value}.{c.Expression}"))));
+
+            default:
+                return Narrow(LeafHash(type, value));
+        }
+    }
+
+    /// <summary>The 32-bit hash of a leaf: the rule of the documented representation, never a numeric conversion.</summary>
     private string LeafHash(TypeModel type, string value)
     {
         switch (type.LeafRule)
@@ -867,9 +1085,9 @@ internal sealed class Emitter
             case LeafRule.Primitive:
                 return PrimitiveHash(type, value);
             case LeafRule.WideInteger:
-                if (type.GlobalName.EndsWith("IntPtr", StringComparison.Ordinal)) 
-                    return type.GlobalName.EndsWith("UIntPtr", StringComparison.Ordinal) 
-                        ? $"{KnownTypes.GlobalHashCode}.Hash((ulong){value})" 
+                if (type.GlobalName.EndsWith("IntPtr", StringComparison.Ordinal))
+                    return type.GlobalName.EndsWith("UIntPtr", StringComparison.Ordinal)
+                        ? $"{KnownTypes.GlobalHashCode}.Hash((ulong){value})"
                         : $"{KnownTypes.GlobalHashCode}.Hash((long){value})";
 
                 if (type.GlobalName.EndsWith("Int128", StringComparison.Ordinal) && !_model.Capabilities.HasFrameworkHash128)
@@ -877,10 +1095,10 @@ internal sealed class Emitter
                     return $"{KnownTypes.GlobalHashCode}.Combine({KnownTypes.GlobalHashCode}.Hash(unchecked((long){value})), {KnownTypes.GlobalHashCode}.Hash(unchecked((long)({value} >> 64))))";
 
                 return $"{KnownTypes.GlobalHashCode}.Hash({value})";
-            
+
             case LeafRule.Guid:
                 return $"{KnownTypes.GlobalHashCode}.Hash({value})";
-            
+
             case LeafRule.Enum:
                 return type.EnumUnderlyingWidth switch
                 {
@@ -888,43 +1106,42 @@ internal sealed class Emitter
                     4 => type.EnumUnderlyingUnsigned ? $"unchecked((int)(uint){value})" : $"(int){value}",
                     _ => $"(int)({type.EnumUnderlyingGlobalName}){value}",
                 };
-            
+
             case LeafRule.String:
                 return $"{KnownTypes.GlobalHashCode}.Hash({value})";
-            
+
             case LeafRule.Single:
-                return SingleBits(value);
-            
+                return FloatWord(value);
+
             case LeafRule.Double:
-                return $"{KnownTypes.GlobalHashCode}.Hash({KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({value}))";
-            
+                return $"{KnownTypes.GlobalHashCode}.Hash({DoubleBits(value)})";
+
             case LeafRule.Half:
-                return $"(int){KnownTypes.GlobalBitConverter}.HalfToInt16Bits({value})";
-            
-                        case LeafRule.Decimal:
+                return $"(int){HalfBits(value)}";
+
+            case LeafRule.Decimal:
                 return $"{KnownTypes.GlobalHashCode}.Hash({value})";
-            
+
             case LeafRule.DateTime:
                 return $"{KnownTypes.GlobalHashCode}.Hash({KnownTypes.GlobalHelpers}.DateTimeBits({value}))";
-            
+
             case LeafRule.DateTimeOffset:
                 return $"{KnownTypes.GlobalHashCode}.Combine({KnownTypes.GlobalHashCode}.Hash({value}.Ticks), {KnownTypes.GlobalHashCode}.Hash({value}.Offset.Ticks))";
-            
+
             case LeafRule.FloatAggregate:
-                return Combine(type.AggregateComponents,
-                    c => c.IsDouble
-                        ? $"{KnownTypes.GlobalHashCode}.Hash({KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({value}.{c.Expression}))"
-                        : SingleBits($"{value}.{c.Expression}"));
-            
+                return ItemList($"{KnownTypes.GlobalHashCode}.Combine(", type.AggregateComponents.Select(c => c.IsDouble
+                        ? $"{KnownTypes.GlobalHashCode}.Hash({DoubleBits($"{value}.{c.Expression}")})"
+                        : FloatWord($"{value}.{c.Expression}")).ToList(), ",", ")");
+
             case LeafRule.Uri:
                 return $"({value} is null ? 0 : {KnownTypes.GlobalHashCode}.Combine({KnownTypes.GlobalHashCode}.Hash({value}.OriginalString), {value}.IsAbsoluteUri ? 1 : 0))";
-            
+
             case LeafRule.Regex:
                 return $"{KnownTypes.GlobalRuntimeHelpers}.GetHashCode({value})";
-            
+
             case LeafRule.Custom:
                 return CustomHash(type, value);
-            
+
             case LeafRule.UserSimple:
             case LeafRule.Default:
             default:
@@ -1009,7 +1226,7 @@ internal sealed class Emitter
     private string WrapperHashBody(TypeModel type)
     {
         var hash = HashOrOmit(type, "o", 1, sameScc: false);
-        return hash ?? "1";
+        return hash is { } word ? ToPublic(WordExpr(word)) : "1";
     }
 
     // ----- cores per kind ----------------------------------------------------------------------------------------------------
@@ -1095,7 +1312,8 @@ internal sealed class Emitter
     {
         var element = Type(type.ElementTypeId);
         var p = type.GlobalName;
-        var spans = _model.Capabilities.HasReadOnlySpan;
+        // An immutable array needs AsSpan() as well as the span type; older immutable-collections releases lack it.
+        var spans = type.Kind == TypeKind.ImmutableArray ? ImmutableSpans : _model.Capabilities.HasReadOnlySpan;
         var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
 
         using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
@@ -1146,9 +1364,10 @@ internal sealed class Emitter
         }
 
         // Level 1 hash over the represented sequence; ImmutableArray default hashes to 0.
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
+        var valueBlockOnly = false;
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
         {
-            if (type.Kind == TypeKind.ImmutableArray) 
+            if (type.Kind == TypeKind.ImmutableArray)
                 _w.Line("if (o.IsDefault) return 0;");
 
             var spanOf = type.Kind switch
@@ -1157,12 +1376,18 @@ internal sealed class Emitter
                 TypeKind.ImmutableArray => "o.AsSpan()",
                 _ => $"({span})o",
             };
-            if (spans && _model.Capabilities.HasFrameworkSpanHelpers)
+            if (BlockElement(element) && EmitBlockPath(element, () => _w.Return(spans
+                    ? BlockHash("HashBlock", element, spanOf)
+                    : BlockHash("HashReadOnlyList", element, "o"))))
             {
-                if (type.Kind == TypeKind.ArraySegment) 
+                valueBlockOnly = true;
+            }
+            else if (spans && _model.Capabilities.HasFrameworkSpanHelpers)
+            {
+                if (type.Kind == TypeKind.ArraySegment)
                     _w.Line("if (o.Count == 0) return 1;");
                 var ops = type.ElementIsSameScc ? $"{type.ShortName}ShallowOps" : $"{type.ShortName}Ops";
-                _w.Return($"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>({spanOf})");
+                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({spanOf})");
             }
             else
             {
@@ -1172,9 +1397,9 @@ internal sealed class Emitter
                     : spans
                         ? ($"{span} s = {spanOf};", "s.Length", "s[i]")
                         : ("int n = o.Length;", "n", "o[i]");
-                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
+                _w.Line($"{HashClass}.Streaming h = default;");
                 _w.Line(local);
-                using (_w.For(limit)) 
+                using (_w.For(limit))
                     _w.Line($"h.Add({ElementHashForContainer(type, element, item)});");
                 _w.Return("h.ToHashCode()");
             }
@@ -1185,11 +1410,11 @@ internal sealed class Emitter
             var count = type.Kind == TypeKind.ArraySegment ? "o.Count" : "o.Length";
             var guard = type.Kind == TypeKind.ImmutableArray ? "o.IsDefault ? 0 : " : string.Empty;
             _w.Arrow(
-                $"private static int ShallowHashCode_{type.ShortName}({p} o)", 
-                $"{guard}({count} == 0 ? 1 : {count})");
+                $"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)",
+                $"{guard}{CountHash(count)}");
         }
 
-        if (spans && _model.Capabilities.HasFrameworkSpanHelpers) 
+        if (!valueBlockOnly && spans && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
         _w.Line();
@@ -1310,12 +1535,12 @@ internal sealed class Emitter
         var param = type.Kind == TypeKind.Struct 
             ? inReceiver ? $"in {type.GlobalName} o" : $"{type.GlobalName} o" 
             : membersOnly ? $"{type.GlobalName} o" : $"{Param(type)} o";
-        using (Method(type, $"private static int {name}({param})"))
+        using (Method(type, $"private static {HashType} {name}({param})"))
         {
-            if (!membersOnly && type.Kind == TypeKind.Class) 
+            if (!membersOnly && type.Kind == TypeKind.Class)
                 _w.Line("if (o is null) return 0;");
 
-                        var inputs = new List<string>(type.Members.Count);
+            var inputs = new List<HashWord>(type.Members.Count);
             foreach (var member in type.Members)
                 HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), level, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
 
@@ -1576,10 +1801,10 @@ internal sealed class Emitter
     private void EmitDispatchHash(TypeModel type, int level)
     {
         var name = (level == 1 ? "GetHashCode_" : "ShallowHashCode_") + type.ShortName;
-        using (_w.Block($"private static int {name}({Param(type)} o)"))
+        using (_w.Block($"private static {HashType} {name}({Param(type)} o)"))
         {
             _w.Line("if (o is null) return 0;");
-                        var assignable = type.Cases.Where(c => !c.IsExact).ToList();
+            var assignable = type.Cases.Where(c => !c.IsExact).ToList();
             var exact = type.Cases.Where(c => c.IsExact).ToList();
 
             foreach (var c in assignable.Where(c => c.Hoistable))
@@ -1611,7 +1836,7 @@ internal sealed class Emitter
         }
     }
 
-        private void EmitAssignableCaseHash(TypeModel type, DispatchCase c, int level)
+    private void EmitAssignableCaseHash(TypeModel type, DispatchCase c, int level)
     {
         var target = Type(c.TypeId);
         var local = $"c{c.TypeId}";
@@ -1631,10 +1856,13 @@ internal sealed class Emitter
         return CaseHash(type, Type(c.TypeId), "o", level, c.IsSameScc, isExact: true);
     }
 
-    /// <summary>The hash of a dispatch case at the level the dispatch preserves: a same-SCC case keeps the level, any other is full.</summary>
+    /// <summary>
+    /// The hash of a dispatch case at the level the dispatch preserves, as a word of the stream's type: a same-SCC case
+    /// keeps the level, any other is full.
+    /// </summary>
     private string CaseHash(TypeModel dispatch, TypeModel target, string value, int level, bool sameScc, bool isExact)
     {
-        if (target.IsObject) 
+        if (target.IsObject)
             return "1";
 
         var caseLevel = sameScc ? level : 1;
@@ -1642,29 +1870,29 @@ internal sealed class Emitter
         {
             case TypeKind.Leaf:
                 var typed = isExact ? $"(({target.GlobalName}){value})" : value;
-                return target.LeafRule == LeafRule.Custom 
-                    ? $"{_model.CustomComparers[target.CustomComparerIndex].HolderName}.Value.GetHashCode({typed})" 
-                    
+                return target.LeafRule == LeafRule.Custom
+                    ? WordExpr(Narrow($"{_model.CustomComparers[target.CustomComparerIndex].HolderName}.Value.GetHashCode({typed})"))
+
                     // UserSimple and Default hash through LeafHash's direct GetHashCode() call, which is all the default comparer does.
-                    : LeafHash(target, typed);
+                    : WordExpr(LeafWord(target, typed));
 
             case TypeKind.Class:
                 if (target.Id == dispatch.Id) return $"{(caseLevel == 1 ? "HashMembers_" : "ShallowHashMembers_")}{target.ShortName}(o)";
 
                 var cast = $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value})";
                 return target.IsSealed
-                    ? $"{(caseLevel == 1 ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({cast})" 
+                    ? $"{(caseLevel == 1 ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({cast})"
                     : $"{(caseLevel == 1 ? "HashMembers_" : "ShallowHashMembers_")}{target.ShortName}({cast})";
 
             case TypeKind.Struct:
                 var unboxed = Unbox(target, value);
                 return
                     $"{(caseLevel == 1 || !target.HasShallowHash ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({unboxed})";
-            
+
             case TypeKind.Tuple:
                 return
                     $"{(caseLevel == 1 || !target.HasShallowHash ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value}))";
-            
+
             default:
                 var operand = isExact ? target.IsValueType ? Unbox(target, value) : $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value})" : value;
                 return
@@ -1686,8 +1914,9 @@ internal sealed class Emitter
             ? $"global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan({value})"
             : value;
 
+    /// <summary>The hash of one element at the container's level, as a word of the stream's type.</summary>
     private string ElementHashForContainer(TypeModel container, TypeModel element, string value)
-        => HashOrOmit(element, value, 1, container.ElementIsSameScc) ?? "0";
+        => HashWordExpr(element, value, 1, container.ElementIsSameScc);
 
     private void EmitArrayOrListCores(TypeModel type)
     {
@@ -1716,17 +1945,26 @@ internal sealed class Emitter
         }
 
         // Level 1 hash.
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
+        var blockOnly = false;
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            if (SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
+            if (BlockElement(element))
+                blockOnly = EmitBlockPath(element, () => _w.Return(SpanAvailable(type)
+                    ? BlockHash("HashBlock", element, SpanOf(type, "o"))
+                    : BlockHash("HashReadOnlyList", element, "o")));
+
+            if (blockOnly)
+            {
+            }
+            else if (SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
             {
                 var ops = type.ElementIsSameScc ? $"{type.ShortName}ShallowOps" : $"{type.ShortName}Ops";
-                _w.Return($"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>({SpanOf(type, "o")})");
+                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({SpanOf(type, "o")})");
             }
             else
             {
-                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
+                _w.Line($"{HashClass}.Streaming h = default;");
                 _w.Line($"int n = o.{count};");
                 using (_w.For("n")) _w.Line($"h.Add({ElementHashForContainer(type, element, "o[i]")});");
                 _w.Return("h.ToHashCode()");
@@ -1735,20 +1973,21 @@ internal sealed class Emitter
         }
 
         if (type.HasShallowHash)
-            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : (o.{count} == 0 ? 1 : o.{count})");
+            _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"o.{count}")}");
 
-        if (SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
+        if (!blockOnly && SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
         _w.Line();
     }
 
+    /// <summary>The ops struct a span hash calls back into for each element: the element's hash at the container's level.</summary>
     private void EmitHashOps(TypeModel container, TypeModel element)
     {
         var name = container.ElementIsSameScc ? $"{container.ShortName}ShallowOps" : $"{container.ShortName}Ops";
-        using (_w.Block($"private struct {name} : {KnownTypes.GlobalHashOps}<{element.GlobalName}>"))
+        using (_w.Block($"private struct {name} : {HashOpsInterface}<{element.GlobalName}>"))
         {
-            _w.Arrow($"public int GetHashCode({element.GlobalName} value)", ElementHashForContainer(container, element, "value"));
+            _w.Arrow($"public {HashType} {HashOpsMethod}({element.GlobalName} value)", ElementHashForContainer(container, element, "value"));
         }
     }
 
@@ -1760,7 +1999,13 @@ internal sealed class Emitter
         using (_w.Block($"private static bool Equals_SpanOf{element.ShortName}({span} xs, {span} ys{stateParam})"))
         {
             _w.Line("if (xs.Length != ys.Length) return false;");
-            if (element is { Kind: TypeKind.Leaf, DefaultCompatible: true, ImplementsIEquatable: true } && 
+
+            // A bit-block element's rule is the equality of its bytes, so the whole span is one memory compare: exactly the
+            // bitwise relation, NaN payloads and the sign of zero included.
+            if (BlockElement(element) && EmitBlockPath(element, () => _w.Return($"{KnownTypes.GlobalBlocks}.BlockEquals<{element.GlobalName}>(xs, ys)")))
+            {
+            }
+            else if (element is { Kind: TypeKind.Leaf, DefaultCompatible: true, ImplementsIEquatable: true } &&
                 element.LeafRule != LeafRule.Custom && element.LeafRule != LeafRule.Enum) _w.Return("global::System.MemoryExtensions.SequenceEqual(xs, ys)");
             else
             {
@@ -1772,7 +2017,7 @@ internal sealed class Emitter
         _w.Line();
     }
 
-    private bool ImmutableSpans => _model.Capabilities is { HasImmutableArray: true, HasReadOnlySpan: true };
+    private bool ImmutableSpans => _model.Capabilities is { HasImmutableArray: true, HasImmutableArrayAsSpan: true, HasReadOnlySpan: true };
 
     private void EmitListInterfaceCores(TypeModel type)
     {
@@ -1795,21 +2040,28 @@ internal sealed class Emitter
             _w.Return("true");
         }
 
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
+        var listBlockOnly = false;
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            EmitSpanHash(type, element, "o");
-            _w.Line($"{iface} oi = o;");
-            _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
-            _w.Line("int n = oi.Count;");
-            using (_w.For("n")) _w.Line($"h.Add({ElementHashForContainer(type, element, "oi[i]")});");
-            _w.Return("h.ToHashCode()");
+            if (BlockElement(element))
+                listBlockOnly = EmitBlockPath(element, () => EmitInterfaceBlockHash(type, element, iface));
+
+            if (!listBlockOnly)
+            {
+                EmitSpanHash(type, element, "o");
+                _w.Line($"{iface} oi = o;");
+                _w.Line($"{HashClass}.Streaming h = default;");
+                _w.Line("int n = oi.Count;");
+                using (_w.For("n")) _w.Line($"h.Add({ElementHashForContainer(type, element, "oi[i]")});");
+                _w.Return("h.ToHashCode()");
+            }
         }
 
         if (type.HasShallowHash)
-            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : ((({iface})o).Count == 0 ? 1 : (({iface})o).Count)");
+            _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"(({iface})o).Count")}");
 
-        if (_model.Capabilities.HasFrameworkSpanHelpers)
+        if (!listBlockOnly && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
         _w.Line();
@@ -1878,7 +2130,7 @@ internal sealed class Emitter
     {
         var helpers = _model.Capabilities.HasFrameworkSpanHelpers;
         var ops = container.ElementIsSameScc ? $"{container.ShortName}ShallowOps" : $"{container.ShortName}Ops";
-        var hashSpan = $"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>";
+        var hashSpan = $"{HashClass}.HashSpan<{element.GlobalName}, {ops}>";
         if (_model.Capabilities.HasImmutableArray)
         {
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
@@ -1935,18 +2187,25 @@ internal sealed class Emitter
             _w.Return("true");
         }
 
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
+        var enumerableBlockOnly = false;
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            EmitSpanHash(type, element, "o");
-            _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
-            using (_w.Block($"foreach ({element.GlobalName} e in ({enumerable})o)")) _w.Line($"h.Add({ElementHashForContainer(type, element, "e")});");
-            _w.Return("h.ToHashCode()");
+            if (BlockElement(element))
+                enumerableBlockOnly = EmitBlockPath(element, () => EmitInterfaceBlockHash(type, element, enumerable));
+
+            if (!enumerableBlockOnly)
+            {
+                EmitSpanHash(type, element, "o");
+                _w.Line($"{HashClass}.Streaming h = default;");
+                using (_w.Block($"foreach ({element.GlobalName} e in ({enumerable})o)")) _w.Line($"h.Add({ElementHashForContainer(type, element, "e")});");
+                _w.Return("h.ToHashCode()");
+            }
         }
 
         if (type.HasShallowHash)
         {
-            using (_w.Block($"private static int ShallowHashCode_{type.ShortName}({p} o)"))
+            using (_w.Block($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)"))
             {
                 _w.Line("if (o is null) return 0;");
                 _w.Line($"int count = o is global::System.Collections.Generic.ICollection<{element.GlobalName}> c ? c.Count : (o is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> r ? r.Count : -1);");
@@ -1955,11 +2214,11 @@ internal sealed class Emitter
                     _w.Line("count = 0;");
                     _w.Line($"foreach ({element.GlobalName} e in ({enumerable})o) count++;");
                 }
-                _w.Return("count == 0 ? 1 : count");
+                _w.Return(CountHash("count"));
             }
         }
 
-        if (_model.Capabilities.HasFrameworkSpanHelpers)
+        if (!enumerableBlockOnly && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
         _w.Line();
@@ -2050,15 +2309,17 @@ internal sealed class Emitter
                 ? $"{Eq(key, "a.Key", "b.Key")} && {Eq(value!, "a.Value", "b.Value")}"
                 : Eq(key, "a", "b");
             _w.Arrow($"public bool Equals({elementName} a, {elementName} b{stateParam})", entryEq);
-            _w.Arrow($"public int GetHashCode({elementName} a)", EntryHash(type, key, value, "a", forMatching: true));
+            // The matching fingerprint stays 32-bit: it keys the packed (hash, index) entries of the unordered runtime.
+            var fingerprint = WordExpr(EntryHash(type, key, value, "a", forMatching: true));
+            _w.Arrow($"public int GetHashCode({elementName} a)", Hash64 ? $"{HashClass}.Fold({fingerprint})" : fingerprint);
         }
 
         // Level 1 hash: Combine(Count, sum of entry hashes) with empty-zero finalization.
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            _w.Line("int sum = 0;");
-            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {EntryHash(type, key, value, "e", forMatching: false)}; }}}} }}}}";
+            _w.Line($"{HashType} sum = 0;");
+            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {WordExpr(EntryHash(type, key, value, "e", forMatching: false))}; }}}} }}}}";
             if (isConcrete)
             {
                 _w.Line("int count = o.Count;");
@@ -2074,14 +2335,14 @@ internal sealed class Emitter
                     _w.Line(string.Format(entry, $"(global::System.Collections.Generic.IEnumerable<{elementName}>)o"));
             }
 
-            _w.Line($"int h = {KnownTypes.GlobalHashCode}.Combine(count, sum);");
+            _w.Line($"{HashType} h = {HashClass}.Combine({(Hash64 ? "(ulong)count" : "count")}, sum);");
             _w.Return("count == 0 && h == 0 ? 1 : h");
         }
 
         if (type.HasShallowHash)
-            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", isConcrete
-                ? "o is null ? 0 : (o.Count == 0 ? 1 : o.Count)"
-                : $"o is null ? 0 : ((({iface})o).Count == 0 ? 1 : (({iface})o).Count)");
+            _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", isConcrete
+                ? $"o is null ? 0 : {CountHash("o.Count")}"
+                : $"o is null ? 0 : {CountHash($"(({iface})o).Count")}");
 
         _w.Line();
     }
@@ -2102,15 +2363,14 @@ internal sealed class Emitter
     /// The hash of one set element or dictionary pair.
     /// Matching uses full element hashes; the container hash uses the SCC level.
     /// </summary>
-    private string EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching)
+    private HashWord EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching)
     {
-        if (value is null) return forMatching ? HashOrOmit(key, entry, 1, sameScc: false) ?? "0" : ElementHashForContainer(container, key, entry);
+        if (value is null)
+            return HashOrOmit(key, entry, 1, forMatching ? false : container.ElementIsSameScc) ?? Const("0");
 
-        var k = forMatching ? HashOrOmit(key, $"{entry}.Key", 1, sameScc: false) ?? "0" : HashOrOmit(key,
-            $"{entry}.Key", 1, container.KeyIsSameScc) ?? "0";
-        var v = forMatching ? HashOrOmit(value, $"{entry}.Value", 1, sameScc: false) ?? "0" : HashOrOmit(value,
-            $"{entry}.Value", 1, container.ValueIsSameScc) ?? "0";
-        return $"{KnownTypes.GlobalHashCode}.Combine({k}, {v})";
+        var k = HashOrOmit(key, $"{entry}.Key", 1, forMatching ? false : container.KeyIsSameScc) ?? Const("0");
+        var v = HashOrOmit(value, $"{entry}.Value", 1, forMatching ? false : container.ValueIsSameScc) ?? Const("0");
+        return Wide(Combine([k, v]));
     }
 
     // ----- products -------------------------------------------------------------------------------------------------------------
@@ -2154,11 +2414,11 @@ internal sealed class Emitter
         for (var level = 1; level >= (type.HasShallowHash ? 0 : 1); level--)
         {
             var name = (level == 1 ? "GetHashCode_" : "ShallowHashCode_") + type.ShortName;
-            using (_w.Block($"private static int {name}({p} o)"))
+            using (_w.Block($"private static {HashType} {name}({p} o)"))
             {
                 if (reference) _w.Line("if (o is null) return 0;");
 
-                                var inputs = new List<string>(items.Count);
+                var inputs = new List<HashWord>(items.Count);
                 var k = 0;
                 foreach (var (itemType, path, sameScc) in items)
                     HashWords(itemType, $"o.{path}", level, sameScc, $"w{k++}", inputs);

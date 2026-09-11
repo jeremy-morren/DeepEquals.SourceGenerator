@@ -22,6 +22,20 @@ internal sealed class CodeWriter
         _builder = new StringBuilder(capacity);
     }
 
+    /// <summary>A writer that starts <paramref name="indent"/> levels in, for a body written before the blocks around it.</summary>
+    public CodeWriter(int capacity, int indent)
+        : this(capacity)
+    {
+        _indent = indent;
+    }
+
+    /// <summary>Appends text that already carries its own indentation and line breaks, such as another writer's output.</summary>
+    public void AppendRaw(string text)
+    {
+        _builder.Append(text);
+        _atLineStart = text.Length == 0 || text[text.Length - 1] == '\n';
+    }
+
     public void Line()
     {
         _builder.Append('\n');

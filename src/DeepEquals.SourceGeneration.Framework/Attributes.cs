@@ -63,6 +63,84 @@ public sealed class DeepEqualsSourceGenerationOptionsAttribute : Attribute
 
     /// <summary>Namespace prefixes whose interfaces the upward crawl skips; a prefix matches a namespace equal to it or starting with it plus a dot.</summary>
     public string[] ExcludeInterfacesByPrefix { get; set; } = [];
+
+    /// <summary>Default value for <see cref="MaxDepth"/></summary>
+    public const int DefaultMaxDepth = 512;
+
+    /// <summary>Maximum value for <see cref="MaxDepth"/></summary>
+    public const int MaximumMaxDepth = 1_000_000;
+
+    /// <summary>Default value for <see cref="MatchingHashDepth"/></summary>
+    public const int DefaultMatchingHashDepth = 4;
+
+    /// <summary>Maximum value for <see cref="MatchingHashDepth"/></summary>
+    public const int MaximumMatchingHashDepth = 16;
+
+    /// <summary>
+    /// How a comparison remembers where it has been, and therefore what a cyclic type costs. See
+    /// <see cref="DeepEqualsCycleHandling"/> for what each value promises.
+    /// </summary>
+    public DeepEqualsCycleHandling CycleHandling { get; set; } = DeepEqualsCycleHandling.Graph;
+
+    /// <summary>
+    /// Under <see cref="DeepEqualsCycleHandling.Tree"/>: the guarded nesting depth past which a comparison or hash throws
+    /// <c>DeepEqualsComplexityException</c>. A cycle detector, not a stack bound; linked lists are walked in a loop and do not
+    /// count against it. Ignored under the other modes.
+    /// </summary>
+    public int MaxDepth { get; set; } = DefaultMaxDepth;
+
+    /// <summary>
+    /// Under <see cref="DeepEqualsCycleHandling.Graph"/> and <see cref="DeepEqualsCycleHandling.Path"/>: how many payload
+    /// edges into a cycle the fingerprint used inside unordered matching follows, where the public hash follows one.
+    /// A deeper fingerprint separates set entries that differ further into a recursive type, at a cost linear in the
+    /// depth for chains and exponential for branching. Under <see cref="DeepEqualsCycleHandling.Tree"/> the fingerprint
+    /// is the full hash and this option has no effect; setting it there reports <c>DEQ037</c>.
+    /// </summary>
+    public int MatchingHashDepth { get; set; } = DefaultMatchingHashDepth;
+
+    /// <summary>The width of the hash stream every generated hash core runs. See <see cref="DeepEqualsHashing"/>.</summary>
+    public DeepEqualsHashing Hashing { get; set; } = DeepEqualsHashing.XxHash32;
+}
+
+/// <summary>How a generated comparison remembers where it has been.</summary>
+public enum DeepEqualsCycleHandling
+{
+    /// <summary>
+    /// Every pair of objects entered at a cycle guard is retained for the whole comparison: a pair met again is taken as
+    /// equal, and a shared subgraph is compared once. Handles real cycles and heavily shared graphs; each guarded pair costs
+    /// a table probe. The default.
+    /// </summary>
+    Graph = 0,
+
+    /// <summary>
+    /// Only the ancestors of the current pair are retained: a pair leaves the table when its core returns. Handles real
+    /// cycles; a shared subgraph is compared once per path that reaches it, which can be exponential on heavily shared
+    /// graphs. The table stays small, so it rarely spills its inline slots.
+    /// </summary>
+    Path = 1,
+
+    /// <summary>
+    /// Nothing is retained: one depth counter bounds the traversal. No pair table, no pool rentals, no pair budget, and the
+    /// hash walks the whole value instead of one level into a cycle. The traversal is bounded, not the input validated: a
+    /// cycle the traversal enters throws once the depth passes <c>MaxDepth</c>, or at once from a linked-list loop; a cycle
+    /// the traversal never reaches, because the roots are the same reference, a shared cyclic child is met, or an earlier
+    /// member is unequal, does not. For deserialized data, which cannot hold cycles.
+    /// </summary>
+    Tree = 2,
+}
+
+/// <summary>The width of the hash stream generated hash cores run.</summary>
+public enum DeepEqualsHashing
+{
+    /// <summary>xxHash32 over 32-bit words, the stream <c>System.HashCode</c> uses. For 32-bit processes. The default.</summary>
+    XxHash32 = 0,
+
+    /// <summary>
+    /// xxHash64 over 64-bit words: a 64-bit leaf is one word, a 128-bit leaf two, and two 32-bit leaves pack into one, so
+    /// a value takes about half the rounds. Nested hashes carry 64 bits; only the public result folds to 32. Its rounds
+    /// are single instructions on 64-bit processors and in WebAssembly.
+    /// </summary>
+    XxHash64 = 1,
 }
 
 /// <summary>Treats the type, and every type assignable to it, as a leaf compared with <c>EqualityComparer&lt;T&gt;.Default</c> for the static type in use.</summary>

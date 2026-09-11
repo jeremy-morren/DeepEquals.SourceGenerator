@@ -173,4 +173,17 @@ namespace DeepEquals.Fixtures
     public partial class FixtureContext : DeepEqualsContextBase
     {
     }
+
+    /// <summary>The same closure under the 64-bit hash stream.</summary>
+    [GenerateDeepEquals(typeof(Person))]
+    [GenerateDeepEquals(typeof(Node))]
+    [GenerateDeepEquals(typeof(Circle))]
+    [GenerateDeepEquals(typeof(Cube))]
+    [GenerateDeepEquals(typeof(Holder))]
+    [GenerateDeepEquals(typeof(Empty))]
+    [GenerateDeepEquals(typeof(Boxes))]
+    [DeepEqualsSourceGenerationOptions(Hashing = DeepEqualsHashing.XxHash64)]
+    public partial class Hash64FixtureContext : DeepEqualsContextBase
+    {
+    }
 }

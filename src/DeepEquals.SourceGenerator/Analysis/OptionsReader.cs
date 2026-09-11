@@ -24,12 +24,17 @@ internal static class OptionsReader
         var maxArity = ContextOptions.DefaultMaxBinaryExpressionArity;
         var structBytes = ContextOptions.DefaultStructPassByValueMaxByteSize;
         var prefixes = Array.Empty<string>();
+        var cycleHandling = CycleHandling.Graph;
+        var maxDepth = ContextOptions.DefaultMaxDepth;
+        var matchingHashDepth = ContextOptions.DefaultMatchingHashDepth;
+        var hashing = Hashing.XxHash32;
+        LocationInfo? matchingHashDepthLocation = null;
 
         foreach (var type in chain)
         {
             foreach (var attribute in type.GetAttributes())
             {
-                if (attribute.AttributeClass?.ToDisplayString() != KnownTypes.OptionsAttribute) 
+                if (attribute.AttributeClass?.ToDisplayString() != KnownTypes.OptionsAttribute)
                     continue;
 
                 // Only explicitly written named arguments participate, so "unset" differs from "set to the default".
@@ -56,17 +61,49 @@ internal static class OptionsReader
                         case "ExcludeInterfacesByPrefix":
                             prefixes = ReadPrefixes(argument, location, diagnostics);
                             break;
+                        case "CycleHandling":
+                            cycleHandling = (CycleHandling)ReadInt(argument, (int)CycleHandling.Graph, (int)CycleHandling.Tree, (int)CycleHandling.Graph, location, diagnostics);
+                            break;
+                        case "MaxDepth":
+                            maxDepth = ReadInt(argument, 1, ContextOptions.MaximumMaxDepth, ContextOptions.DefaultMaxDepth, location, diagnostics);
+                            break;
+                        case "MatchingHashDepth":
+                            matchingHashDepth = ReadInt(argument, 1, ContextOptions.MaximumMatchingHashDepth, ContextOptions.DefaultMatchingHashDepth, location, diagnostics);
+                            matchingHashDepthLocation = location;
+                            break;
+                        case "Hashing":
+                            hashing = (Hashing)ReadInt(argument, (int)Hashing.XxHash32, (int)Hashing.XxHash64, (int)Hashing.XxHash32, location, diagnostics);
+                            break;
                     }
                 }
             }
         }
 
-        return new ContextOptions(maxSwitchCases, maxCollisionRun, maxPairs, maxArity, structBytes, new EquatableArray<string>(prefixes));
+        // The fingerprint under Tree is the full depth-bounded hash, so the depth has nothing to act on. The value is
+        // kept as written, so switching the mode back needs no edit.
+        if (cycleHandling == CycleHandling.Tree && matchingHashDepthLocation is not null)
+            diagnostics.Add(DiagnosticInfo.Create(
+                Diagnostics.OptionWithoutEffect,
+                matchingHashDepthLocation,
+                "MatchingHashDepth has no effect under CycleHandling = Tree, where the matching fingerprint is the full hash; the value is ignored"));
+
+        return new ContextOptions(
+            maxSwitchCases,
+            maxCollisionRun,
+            maxPairs,
+            maxArity,
+            structBytes,
+            new EquatableArray<string>(prefixes),
+            cycleHandling,
+            maxDepth,
+            matchingHashDepth,
+            hashing);
     }
 
+    /// <summary>An integer or enum argument; an enum constant arrives as its underlying value, so one reader serves both.</summary>
     private static int ReadInt(KeyValuePair<string, TypedConstant> argument, int min, int max, int fallback, LocationInfo? location, List<DiagnosticInfo> diagnostics)
     {
-        if (argument.Value.Value is int value && value >= min && value <= max) 
+        if (argument.Value.Value is int value && value >= min && value <= max)
             return value;
 
         diagnostics.Add(DiagnosticInfo.Create(
@@ -78,7 +115,8 @@ internal static class OptionsReader
 
     private static string[] ReadPrefixes(KeyValuePair<string, TypedConstant> argument, LocationInfo? location, List<DiagnosticInfo> diagnostics)
     {
-        if (argument.Value.Kind != TypedConstantKind.Array) 
+        // A null array reads as empty: its Values are a default immutable array, which throws on every access.
+        if (argument.Value.Kind != TypedConstantKind.Array || argument.Value.IsNull || argument.Value.Values.IsDefault)
             return [];
 
         var result = new List<string>(argument.Value.Values.Length);
@@ -86,7 +124,7 @@ internal static class OptionsReader
         {
             if (element.Value is string { Length: > 0 } prefix)
                 result.Add(prefix);
-            else 
+            else
                 diagnostics.Add(DiagnosticInfo.Create(Diagnostics.InvalidOption, location, "ExcludeInterfacesByPrefix contains a null or empty prefix, which is ignored"));
         }
 

@@ -63,6 +63,39 @@ public sealed class IncrementalTests
             "an unchanged model must not re-emit");
     }
 
+    [Theory]
+    [InlineData("CycleHandling = DeepEqualsCycleHandling.Tree")]
+    [InlineData("CycleHandling = DeepEqualsCycleHandling.Path")]
+    [InlineData("Hashing = DeepEqualsHashing.XxHash64")]
+    [InlineData("MatchingHashDepth = 2")]
+    [InlineData("MaxDepth = 64")]
+    public void Changing_an_option_reruns_the_output(string option)
+    {
+        var (driver, first) = Create(Unrelated);
+        driver = driver.RunGenerators(first);
+
+        var second = first.ReplaceSyntaxTree(
+            first.SyntaxTrees.Single(t => t.FilePath == "Models.cs"),
+            CSharpSyntaxTree.ParseText(Models.Replace("[GenerateDeepEquals(typeof(Person))]", $"[GenerateDeepEquals(typeof(Person))] [DeepEqualsSourceGenerationOptions({option})]"), (CSharpParseOptions)first.SyntaxTrees[0].Options, path: "Models.cs"));
+        driver = driver.RunGenerators(second);
+
+        var result = driver.GetRunResult().Results.Single();
+        result.TrackedOutputSteps.SelectMany(kv => kv.Value).SelectMany(s => s.Outputs)
+            .Should().Contain(o => o.Reason == IncrementalStepRunReason.Modified || o.Reason == IncrementalStepRunReason.New);
+        var header = result.GeneratedSources.First().SourceText.ToString();
+        header.Should().Contain(option.Split('=')[0].Trim() + " ");
+    }
+
+    [Fact]
+    public void Cancellation_during_generation_propagates_instead_of_failing_the_context()
+    {
+        var (driver, compilation) = Create(Unrelated);
+        using var source = new System.Threading.CancellationTokenSource();
+        source.Cancel();
+        var act = () => driver.RunGenerators(compilation, source.Token);
+        act.Should().Throw<System.OperationCanceledException>();
+    }
+
     [Fact]
     public void Editing_a_reachable_member_reruns_the_output()
     {

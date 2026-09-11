@@ -31,10 +31,12 @@ public sealed class HashLevelTests
 
     private static void Set(object target, string member, object? value) => target.GetType().GetField(member)!.SetValue(target, value);
 
-    [Fact]
-    public void Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently()
+    [Theory]
+    [InlineData("")]
+    [InlineData(Hashing64Tests.Options64)]
+    public void Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently(string options)
     {
-        var run = Clean("""
+        var run = Clean($$"""
                         public sealed class N
                         {
                             public int V;
@@ -45,6 +47,7 @@ public sealed class HashLevelTests
                             public object? Any;
                         }
 
+                        {{options}}
                         [GenerateDeepEquals(typeof(N))]
                         public partial class Ctx : DeepEqualsContextBase { }
                         """);
