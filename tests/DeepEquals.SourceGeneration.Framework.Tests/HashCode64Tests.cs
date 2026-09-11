@@ -153,7 +153,13 @@ public sealed class HashCode64Tests : IDisposable
             var viaSpan = DeepEqualsHashCode64.HashSpan<ulong, IdentityOps>(inputs);
             viaSpan.Should().Be(Streaming(inputs));
             if (length is >= 1 and <= 32) viaSpan.Should().Be(Combine(inputs));
+            DeepEqualsHashCode64.HashSpan<ulong, DepthIdentityOps>(inputs, 3).Should().Be(viaSpan, "the depth overload is the same stream");
         }
+    }
+
+    private struct DepthIdentityOps : IDeepEqualsDepthHashOps64<ulong>
+    {
+        public ulong GetHashCode64(ulong x, int depth) => depth == 3 ? x : throw new InvalidOperationException($"depth {depth}");
     }
 #endif
 

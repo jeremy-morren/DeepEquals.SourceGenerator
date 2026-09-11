@@ -177,6 +177,43 @@ public static partial class DeepEqualsHashCode
             return FinalizeEmptyZero(MixFinal(hash), length);
         }
     }
+
+    /// <summary>
+    /// <see cref="HashSpan{T, TOps}(ReadOnlySpan{T})"/> under <c>CycleHandling.Tree</c>: every element is hashed at the
+    /// caller's <paramref name="depth"/>. The same stream, so equal to <see cref="Streaming"/> fed the same hashes.
+    /// </summary>
+    public static int HashSpan<T, TOps>(ReadOnlySpan<T> items, int depth)
+        where TOps : struct, IDeepEqualsDepthHashOps<T>
+    {
+        unchecked
+        {
+            var seed = s_seed;
+            var length = items.Length;
+            uint hash;
+            var i = 0;
+            if (length >= 4)
+            {
+                var v1 = seed + Prime1 + Prime2;
+                var v2 = seed + Prime2;
+                var v3 = seed;
+                var v4 = seed - Prime1;
+                for (; i + 4 <= length; i += 4)
+                {
+                    v1 = Round(v1, (uint)default(TOps).GetHashCode(items[i], depth));
+                    v2 = Round(v2, (uint)default(TOps).GetHashCode(items[i + 1], depth));
+                    v3 = Round(v3, (uint)default(TOps).GetHashCode(items[i + 2], depth));
+                    v4 = Round(v4, (uint)default(TOps).GetHashCode(items[i + 3], depth));
+                }
+                hash = MixState(v1, v2, v3, v4);
+            }
+            else hash = seed + Prime5;
+
+            hash += (uint)length * 4;
+            for (; i < length; i++) hash = QueueRound(hash, (uint)default(TOps).GetHashCode(items[i], depth));
+
+            return FinalizeEmptyZero(MixFinal(hash), length);
+        }
+    }
 #endif
 
     /// <summary>

@@ -334,6 +334,139 @@ public sealed class UnorderedTests
         public int GetHashCode(Node x) => 0;
     }
 
+    // ----- CycleHandling.Tree: depth instead of state -------------------------------------------------------------------
+
+    private const int MaxDepth = 8;
+
+    /// <summary>A hand-written Tree core over the node chain: a depth guard, recursion instead of a pair table.</summary>
+    private static bool EqualsNodeAtDepth(Node? x, Node? y, int depth)
+    {
+        if (ReferenceEquals(x, y)) return true;
+        if (x is null || y is null) return false;
+        if (++depth > MaxDepth) DeepEqualsHelpers.ThrowDepthExceeded(typeof(Node), MaxDepth);
+        return x.Value == y.Value && EqualsNodeAtDepth(x.Next, y.Next, depth);
+    }
+
+    private static int HashNodeAtDepth(Node? o, int depth)
+    {
+        if (o is null) return 0;
+        if (++depth > MaxDepth) DeepEqualsHelpers.ThrowDepthExceeded(typeof(Node), MaxDepth);
+        return DeepEqualsHashCode.Combine(o.Value, HashNodeAtDepth(o.Next, depth));
+    }
+
+    private struct DepthNodeOps : IDeepEqualsDepthElementOps<Node>
+    {
+        public bool Equals(Node x, Node y, int depth) => EqualsNodeAtDepth(x, y, depth);
+        public int GetHashCode(Node x, int depth) => HashNodeAtDepth(x, depth);
+    }
+
+    private static Node Chain(params int[] values)
+    {
+        Node? head = null;
+        for (var i = values.Length - 1; i >= 0; i--) head = new Node(values[i]) { Next = head };
+        return head!;
+    }
+
+    [Fact]
+    public void Depth_sets_of_cyclic_typed_elements_compare_equal()
+    {
+        // The element type is recursive, the data is not: finite chains, as deserialized data always is.
+        var a = new HashSet<Node> { Chain(1, 2), Chain(3), Chain(1, 2, 1) };
+        var b = new HashSet<Node> { Chain(3), Chain(1, 2, 1), Chain(1, 2) };
+        DeepEqualsUnordered.SetEquals<Node, DepthNodeOps>(a, b, 3, 64, 0).Should().BeTrue();
+        var c = new HashSet<Node> { Chain(3), Chain(1, 2, 1), Chain(2, 1) };
+        DeepEqualsUnordered.SetEquals<Node, DepthNodeOps>(a, c, 3, 64, 0).Should().BeFalse();
+    }
+
+    /// <summary>Records every depth it is called with.</summary>
+    private struct RecordingOps : IDeepEqualsDepthElementOps<int>
+    {
+        public static readonly List<int> Depths = [];
+        public bool Equals(int x, int y, int depth) { Depths.Add(depth); return x == y; }
+        public int GetHashCode(int x, int depth) { Depths.Add(depth); return 0; }
+    }
+
+    private struct RecordingPairOps : IDeepEqualsDepthElementOps<KeyValuePair<string, int>>
+    {
+        public static readonly List<int> Depths = [];
+        public bool Equals(KeyValuePair<string, int> x, KeyValuePair<string, int> y, int depth) { Depths.Add(depth); return x.Key == y.Key && x.Value == y.Value; }
+        public int GetHashCode(KeyValuePair<string, int> x, int depth) { Depths.Add(depth); return 0; }
+    }
+
+    [Fact]
+    public void Depth_overloads_forward_the_caller_depth_to_the_fingerprint_and_every_trial()
+    {
+        RecordingOps.Depths.Clear();
+        DeepEqualsUnordered.SetEquals<int, RecordingOps>([1, 2, 3], [3, 2, 1], 3, 64, 17).Should().BeTrue();
+        RecordingOps.Depths.Should().NotBeEmpty().And.OnlyContain(d => d == 17, "fingerprints and matching trials run at the caller's depth");
+
+        RecordingPairOps.Depths.Clear();
+        var x = new Dictionary<string, int> { ["a"] = 1, ["b"] = 2 };
+        var y = new Dictionary<string, int> { ["b"] = 2, ["a"] = 1 };
+        DeepEqualsUnordered.DictionaryEquals<string, int, RecordingPairOps>(x, y, 2, 64, 5).Should().BeTrue();
+        RecordingPairOps.Depths.Should().NotBeEmpty().And.OnlyContain(d => d == 5);
+    }
+
+    [Fact]
+    public void Depth_overloads_throw_past_the_bound()
+    {
+        // Each chain is deeper than MaxDepth, so both the fingerprint and the comparison would have to go past it.
+        var deep = Enumerable.Range(0, MaxDepth + 2).ToArray();
+        var a = new HashSet<Node> { Chain(deep) };
+        var b = new HashSet<Node> { Chain(deep) };
+        Action act = () => DeepEqualsUnordered.SetEquals<Node, DepthNodeOps>(a, b, 1, 64, 0);
+        var ex = act.Should().Throw<DeepEqualsComplexityException>().Which;
+        ex.MaxDepth.Should().Be(MaxDepth);
+        ex.TypeAtLimit.Should().Be(typeof(Node));
+        ex.IsCycle.Should().BeFalse();
+
+        // A caller already near the bound passes its depth in, and the budget does not restart at the set.
+        var shallow = new HashSet<Node> { Chain(1, 2) };
+        DeepEqualsUnordered.SetEquals<Node, DepthNodeOps>(shallow, new HashSet<Node> { Chain(1, 2) }, 1, 64, 0).Should().BeTrue();
+        Action nearBound = () => DeepEqualsUnordered.SetEquals<Node, DepthNodeOps>(shallow, new HashSet<Node> { Chain(1, 2) }, 1, 64, MaxDepth - 1);
+        nearBound.Should().Throw<DeepEqualsComplexityException>("two more levels from depth MaxDepth - 1 pass the bound");
+    }
+
+    private struct DepthMatrixOps : IDeepEqualsDepthElementOps<Cell>
+    {
+        public bool Equals(Cell x, Cell y, int depth) => default(MatrixOps).Equals(x, y);
+        public int GetHashCode(Cell x, int depth) => 0;
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Exact_matching_through_the_depth_overloads_agrees_with_brute_force(int k)
+    {
+        var cells = k * k;
+        for (var mask = 0; mask < 1 << cells; mask++)
+        {
+            var matrix = new bool[k, k];
+            for (var c = 0; c < cells; c++) matrix[c / k, c % k] = (mask & (1 << c)) != 0;
+            var expected = BruteForcePerfectMatching(matrix, k);
+            var left = Enumerable.Range(0, k).Select(i => new Cell(i, matrix, left: true)).ToArray();
+            var right = Enumerable.Range(0, k).Reverse().Select(j => new Cell(j, matrix, left: false)).ToArray();
+            DeepEqualsUnordered.SetEquals<Cell, DepthMatrixOps>(left, right, k, 64, 0).Should().Be(expected, $"k={k} mask={mask}");
+        }
+    }
+
+    [Fact]
+    public void Tree_exceptions_carry_their_arguments()
+    {
+        Action depth = () => DeepEqualsHelpers.ThrowDepthExceeded(typeof(Node), 12);
+        var d = depth.Should().Throw<DeepEqualsComplexityException>().Which;
+        d.TypeAtLimit.Should().Be(typeof(Node));
+        d.MaxDepth.Should().Be(12);
+        d.IsCycle.Should().BeFalse();
+        d.Message.Should().Contain("MaxDepth 12").And.Contain("not the input validated");
+
+        Action cycle = () => DeepEqualsHelpers.ThrowCycle(typeof(Node));
+        var c = cycle.Should().Throw<DeepEqualsComplexityException>().Which;
+        c.TypeAtLimit.Should().Be(typeof(Node));
+        c.IsCycle.Should().BeTrue();
+        c.CollectionType.Should().BeNull();
+    }
+
     private sealed class ThrowingEnumerable<T> : IEnumerable<T>
     {
         public IEnumerator<T> GetEnumerator() => throw new InvalidOperationException("must not enumerate");

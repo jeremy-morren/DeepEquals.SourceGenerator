@@ -23,21 +23,21 @@ public static class DeepEqualsUnordered
     /// <summary>Set equality for elements whose closure is cyclic; trials mark and roll back <paramref name="state"/>.</summary>
     public static bool SetEquals<T, TOps>(IEnumerable<T> x, IEnumerable<T> y, int count, int maxCollisionRun, ref DeepEqualsState state)
         where TOps : struct, IDeepEqualsElementOps<T>
-        => SetEqualsCore<T, StatefulOps<T, TOps>>(x, y, count, maxCollisionRun, ref state);
+        => SetEqualsCore<T, StatefulOps<T, TOps>>(x, y, count, maxCollisionRun, ref state, 0);
 
     /// <summary>Set equality for elements whose closure is wholly acyclic; no state, mark or rollback.</summary>
     public static bool SetEquals<T, TOps>(IEnumerable<T> x, IEnumerable<T> y, int count, int maxCollisionRun)
         where TOps : struct, IDeepEqualsStatelessElementOps<T>
     {
         DeepEqualsState none = default;
-        return SetEqualsCore<T, StatelessOps<T, TOps>>(x, y, count, maxCollisionRun, ref none);
+        return SetEqualsCore<T, StatelessOps<T, TOps>>(x, y, count, maxCollisionRun, ref none, 0);
     }
 
     /// <summary>Dictionary equality over key-value pairs whose closure is cyclic.</summary>
     public static bool DictionaryEquals<TKey, TValue, TOps>(IEnumerable<KeyValuePair<TKey, TValue>> x, IEnumerable<KeyValuePair<TKey, TValue>> y, int count, int maxCollisionRun, ref DeepEqualsState state)
         where TKey : notnull
         where TOps : struct, IDeepEqualsElementOps<KeyValuePair<TKey, TValue>>
-        => DictionaryEqualsCore<TKey, TValue, StatefulOps<KeyValuePair<TKey, TValue>, TOps>>(x, y, count, maxCollisionRun, ref state);
+        => DictionaryEqualsCore<TKey, TValue, StatefulOps<KeyValuePair<TKey, TValue>, TOps>>(x, y, count, maxCollisionRun, ref state, 0);
 
     /// <summary>Dictionary equality over key-value pairs whose closure is wholly acyclic.</summary>
     public static bool DictionaryEquals<TKey, TValue, TOps>(IEnumerable<KeyValuePair<TKey, TValue>> x, IEnumerable<KeyValuePair<TKey, TValue>> y, int count, int maxCollisionRun)
@@ -45,7 +45,27 @@ public static class DeepEqualsUnordered
         where TOps : struct, IDeepEqualsStatelessElementOps<KeyValuePair<TKey, TValue>>
     {
         DeepEqualsState none = default;
-        return DictionaryEqualsCore<TKey, TValue, StatelessOps<KeyValuePair<TKey, TValue>, TOps>>(x, y, count, maxCollisionRun, ref none);
+        return DictionaryEqualsCore<TKey, TValue, StatelessOps<KeyValuePair<TKey, TValue>, TOps>>(x, y, count, maxCollisionRun, ref none, 0);
+    }
+
+    /// <summary>
+    /// Set equality under <c>CycleHandling.Tree</c>: no state, and every element comparison and fingerprint runs at the
+    /// caller's <paramref name="depth"/>, so a cycle through the set cannot restart its depth budget.
+    /// </summary>
+    public static bool SetEquals<T, TOps>(IEnumerable<T> x, IEnumerable<T> y, int count, int maxCollisionRun, int depth)
+        where TOps : struct, IDeepEqualsDepthElementOps<T>
+    {
+        DeepEqualsState none = default;
+        return SetEqualsCore<T, DepthOps<T, TOps>>(x, y, count, maxCollisionRun, ref none, depth);
+    }
+
+    /// <summary>Dictionary equality under <c>CycleHandling.Tree</c>, at the caller's <paramref name="depth"/>.</summary>
+    public static bool DictionaryEquals<TKey, TValue, TOps>(IEnumerable<KeyValuePair<TKey, TValue>> x, IEnumerable<KeyValuePair<TKey, TValue>> y, int count, int maxCollisionRun, int depth)
+        where TKey : notnull
+        where TOps : struct, IDeepEqualsDepthElementOps<KeyValuePair<TKey, TValue>>
+    {
+        DeepEqualsState none = default;
+        return DictionaryEqualsCore<TKey, TValue, DepthOps<KeyValuePair<TKey, TValue>, TOps>>(x, y, count, maxCollisionRun, ref none, depth);
     }
 
     // ----- ops adapters -----------------------------------------------------------------------------------------------
@@ -53,8 +73,8 @@ public static class DeepEqualsUnordered
     private interface IUnorderedOps<in T>
     {
         bool IsStateful { get; }
-        bool Equals(T x, T y, ref DeepEqualsState state);
-        int GetHashCode(T x);
+        bool Equals(T x, T y, ref DeepEqualsState state, int depth);
+        int GetHashCode(T x, int depth);
     }
 
     private readonly struct StatefulOps<T, TOps> : IUnorderedOps<T>
@@ -63,10 +83,10 @@ public static class DeepEqualsUnordered
         public bool IsStateful => true;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Equals(T x, T y, ref DeepEqualsState state) => default(TOps).Equals(x, y, ref state);
+        public bool Equals(T x, T y, ref DeepEqualsState state, int depth) => default(TOps).Equals(x, y, ref state);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetHashCode(T x) => default(TOps).GetHashCode(x);
+        public int GetHashCode(T x, int depth) => default(TOps).GetHashCode(x);
     }
 
     private readonly struct StatelessOps<T, TOps> : IUnorderedOps<T>
@@ -75,15 +95,28 @@ public static class DeepEqualsUnordered
         public bool IsStateful => false;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Equals(T x, T y, ref DeepEqualsState state) => default(TOps).Equals(x, y);
+        public bool Equals(T x, T y, ref DeepEqualsState state, int depth) => default(TOps).Equals(x, y);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int GetHashCode(T x) => default(TOps).GetHashCode(x);
+        public int GetHashCode(T x, int depth) => default(TOps).GetHashCode(x);
+    }
+
+    /// <summary>The Tree adapter: no state to mark or roll back, the caller's depth forwarded to every callback.</summary>
+    private readonly struct DepthOps<T, TOps> : IUnorderedOps<T>
+        where TOps : struct, IDeepEqualsDepthElementOps<T>
+    {
+        public bool IsStateful => false;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Equals(T x, T y, ref DeepEqualsState state, int depth) => default(TOps).Equals(x, y, depth);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetHashCode(T x, int depth) => default(TOps).GetHashCode(x, depth);
     }
 
     // ----- materialization --------------------------------------------------------------------------------------------
 
-    private static bool SetEqualsCore<T, TW>(IEnumerable<T> x, IEnumerable<T> y, int count, int maxCollisionRun, ref DeepEqualsState state)
+    private static bool SetEqualsCore<T, TW>(IEnumerable<T> x, IEnumerable<T> y, int count, int maxCollisionRun, ref DeepEqualsState state, int depth)
         where TW : struct, IUnorderedOps<T>
     {
         if (x is null) throw new ArgumentNullException(nameof(x));
@@ -103,11 +136,11 @@ public static class DeepEqualsUnordered
             xk = keyPool.Rent(count);
             ys = entryPool.Rent(count);
             yk = keyPool.Rent(count);
-            var xSum = FillSet<T, TW>(x, xs, xk, count);
-            var ySum = FillSet<T, TW>(y, ys, yk, count);
+            var xSum = FillSet<T, TW>(x, xs, xk, count, depth);
+            var ySum = FillSet<T, TW>(y, ys, yk, count, depth);
             if (xSum != ySum) return false;
 
-            return Match<T, TW>(xs, xk, ys, yk, count, maxCollisionRun, x.GetType(), ref state);
+            return Match<T, TW>(xs, xk, ys, yk, count, maxCollisionRun, x.GetType(), ref state, depth);
         }
         finally
         {
@@ -118,7 +151,7 @@ public static class DeepEqualsUnordered
         }
     }
 
-    private static bool DictionaryEqualsCore<TKey, TValue, TW>(IEnumerable<KeyValuePair<TKey, TValue>> x, IEnumerable<KeyValuePair<TKey, TValue>> y, int count, int maxCollisionRun, ref DeepEqualsState state)
+    private static bool DictionaryEqualsCore<TKey, TValue, TW>(IEnumerable<KeyValuePair<TKey, TValue>> x, IEnumerable<KeyValuePair<TKey, TValue>> y, int count, int maxCollisionRun, ref DeepEqualsState state, int depth)
         where TKey : notnull
         where TW : struct, IUnorderedOps<KeyValuePair<TKey, TValue>>
     {
@@ -139,11 +172,11 @@ public static class DeepEqualsUnordered
             xk = keyPool.Rent(count);
             ys = entryPool.Rent(count);
             yk = keyPool.Rent(count);
-            var xSum = FillDictionary<TKey, TValue, TW>(x, xs, xk, count);
-            var ySum = FillDictionary<TKey, TValue, TW>(y, ys, yk, count);
+            var xSum = FillDictionary<TKey, TValue, TW>(x, xs, xk, count, depth);
+            var ySum = FillDictionary<TKey, TValue, TW>(y, ys, yk, count, depth);
             if (xSum != ySum) return false;
 
-            return Match<KeyValuePair<TKey, TValue>, TW>(xs, xk, ys, yk, count, maxCollisionRun, x.GetType(), ref state);
+            return Match<KeyValuePair<TKey, TValue>, TW>(xs, xk, ys, yk, count, maxCollisionRun, x.GetType(), ref state, depth);
         }
         finally
         {
@@ -162,7 +195,7 @@ public static class DeepEqualsUnordered
     }
 
     /// <summary>Materializes a set side: entries, packed <c>(hash, index)</c> keys, and the unchecked hash sum.</summary>
-    private static int FillSet<T, TW>(IEnumerable<T> source, T[] entries, long[] keys, int count)
+    private static int FillSet<T, TW>(IEnumerable<T> source, T[] entries, long[] keys, int count, int depth)
         where TW : struct, IUnorderedOps<T>
     {
         var n = 0;
@@ -172,7 +205,7 @@ public static class DeepEqualsUnordered
             foreach (var element in set)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                var hash = default(TW).GetHashCode(element);
+                var hash = default(TW).GetHashCode(element, depth);
                 entries[n] = element;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -184,7 +217,7 @@ public static class DeepEqualsUnordered
             foreach (var element in source)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                var hash = default(TW).GetHashCode(element);
+                var hash = default(TW).GetHashCode(element, depth);
                 entries[n] = element;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -197,7 +230,7 @@ public static class DeepEqualsUnordered
     }
 
     /// <summary>Materializes a dictionary side through the struct enumerator when the instance is a <see cref="Dictionary{TKey, TValue}"/>.</summary>
-    private static int FillDictionary<TKey, TValue, TW>(IEnumerable<KeyValuePair<TKey, TValue>> source, KeyValuePair<TKey, TValue>[] entries, long[] keys, int count)
+    private static int FillDictionary<TKey, TValue, TW>(IEnumerable<KeyValuePair<TKey, TValue>> source, KeyValuePair<TKey, TValue>[] entries, long[] keys, int count, int depth)
         where TKey : notnull
         where TW : struct, IUnorderedOps<KeyValuePair<TKey, TValue>>
     {
@@ -208,7 +241,7 @@ public static class DeepEqualsUnordered
             foreach (var entry in dictionary)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                var hash = default(TW).GetHashCode(entry);
+                var hash = default(TW).GetHashCode(entry, depth);
                 entries[n] = entry;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -220,7 +253,7 @@ public static class DeepEqualsUnordered
             foreach (var entry in source)
             {
                 if (n == count) ThrowCountMismatch(source, count, tooMany: true);
-                var hash = default(TW).GetHashCode(entry);
+                var hash = default(TW).GetHashCode(entry, depth);
                 entries[n] = entry;
                 keys[n] = Pack(hash, n);
                 unchecked { sum += hash; }
@@ -259,7 +292,7 @@ public static class DeepEqualsUnordered
 
     // ----- matching ---------------------------------------------------------------------------------------------------
 
-    private static bool Match<T, TW>(T[] xs, long[] xk, T[] ys, long[] yk, int count, int maxCollisionRun, Type collectionType, ref DeepEqualsState state)
+    private static bool Match<T, TW>(T[] xs, long[] xk, T[] ys, long[] yk, int count, int maxCollisionRun, Type collectionType, ref DeepEqualsState state, int depth)
         where TW : struct, IUnorderedOps<T>
     {
         Array.Sort(xk, 0, count);
@@ -281,13 +314,13 @@ public static class DeepEqualsUnordered
             if (k == 1)
             {
                 // The common case: one direct comparison decides. True keeps whatever pairs it entered; false is terminal.
-                if (!default(TW).Equals(xs[IndexOf(xk[i])], ys[IndexOf(yk[i])], ref state)) return false;
+                if (!default(TW).Equals(xs[IndexOf(xk[i])], ys[IndexOf(yk[i])], ref state, depth)) return false;
             }
             else
             {
                 if (k > maxCollisionRun) throw new DeepEqualsComplexityException(collectionType, k, maxCollisionRun);
 
-                if (!MatchRun<T, TW>(xs, xk, ys, yk, i, k, ref state)) return false;
+                if (!MatchRun<T, TW>(xs, xk, ys, yk, i, k, ref state, depth)) return false;
             }
 
             i = xEnd;
@@ -297,7 +330,7 @@ public static class DeepEqualsUnordered
     }
 
     /// <summary>Exact multiset matching inside one hash-collision run of length <paramref name="k"/> on both sides.</summary>
-    private static bool MatchRun<T, TW>(T[] xs, long[] xk, T[] ys, long[] yk, int start, int k, ref DeepEqualsState state)
+    private static bool MatchRun<T, TW>(T[] xs, long[] xk, T[] ys, long[] yk, int start, int k, ref DeepEqualsState state, int depth)
         where TW : struct, IUnorderedOps<T>
     {
         var bitPool = DeepEqualsPools<ulong>.Shared;
@@ -322,10 +355,10 @@ public static class DeepEqualsUnordered
                     {
                         // Every trial rolls back, whether it returned true or false, so no trial's assumptions leak into another.
                         var mark = state.Mark();
-                        equal = default(TW).Equals(xa, yb, ref state);
+                        equal = default(TW).Equals(xa, yb, ref state, depth);
                         state.Rollback(mark);
                     }
-                    else equal = default(TW).Equals(xa, yb, ref state);
+                    else equal = default(TW).Equals(xa, yb, ref state, depth);
 
                     if (equal)
                     {
@@ -354,7 +387,7 @@ public static class DeepEqualsUnordered
                 for (var r = 0; r < k; r++)
                 {
                     var l = workspace[r];
-                    if (!default(TW).Equals(xs[IndexOf(xk[start + l])], ys[IndexOf(yk[start + r])], ref state))
+                    if (!default(TW).Equals(xs[IndexOf(xk[start + l])], ys[IndexOf(yk[start + r])], ref state, depth))
                     {
                         return false;   // defensive: an unstable comparer changed its answer on commit
                     }

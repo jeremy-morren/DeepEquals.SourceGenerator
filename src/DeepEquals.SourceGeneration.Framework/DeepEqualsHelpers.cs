@@ -12,6 +12,16 @@ namespace DeepEquals.SourceGeneration.Framework;
 /// <summary>Pinned shims around APIs whose overload sets vary by language or framework version, so generated code binds one stable form.</summary>
 public static class DeepEqualsHelpers
 {
+    // ----- CycleHandling.Tree -------------------------------------------------------------------------------------------
+
+    /// <summary>Throws the depth-bound failure; out of line, so a guard stays one compare and one branch.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void ThrowDepthExceeded(Type type, int maxDepth) => throw new DeepEqualsComplexityException(type, maxDepth);
+
+    /// <summary>Throws the failure for a linked-list loop that came back to a node it had passed.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    public static void ThrowCycle(Type type) => throw new DeepEqualsComplexityException(type);
+
     // ----- Raw bits -----------------------------------------------------------------------------------------------------
     //
     // Equality and hashing of a built-in leaf operate on its storage bits, never on a numeric conversion: a conversion

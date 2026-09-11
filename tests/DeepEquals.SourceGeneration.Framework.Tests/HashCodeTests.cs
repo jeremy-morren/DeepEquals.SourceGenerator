@@ -135,7 +135,14 @@ public sealed class HashCodeTests : IDisposable
             var viaSpan = DeepEqualsHashCode.HashSpan<int, IdentityOps>(inputs);
             viaSpan.Should().Be(Streaming(inputs));
             if (length is >= 1 and <= 32) viaSpan.Should().Be(Combine(inputs));
+            DeepEqualsHashCode.HashSpan<int, DepthIdentityOps>(inputs, 3).Should().Be(viaSpan, "the depth overload is the same stream");
         }
+    }
+
+    /// <summary>Hashes as the identity, and fails if the depth it was given is not the caller's.</summary>
+    private struct DepthIdentityOps : IDeepEqualsDepthHashOps<int>
+    {
+        public int GetHashCode(int x, int depth) => depth == 3 ? x : throw new InvalidOperationException($"depth {depth}");
     }
 #endif
 
