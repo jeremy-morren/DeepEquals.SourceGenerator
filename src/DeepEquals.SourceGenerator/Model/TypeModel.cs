@@ -250,6 +250,9 @@ internal sealed record TypeModel(
     int GuardKind,
     int BoxedGuardKind,
     bool HasShallowHash,
+    // The highest hash level emitted: 1 for the public hash alone, k when the matching fingerprint of an unordered
+    // collection reaches this type and follows payload edges k deep. Levels 2..k are MatchHashCode_T_L{n}.
+    int MatchHashLevels,
     // Bit blocks: a value whose equality is its storage bytes, with no references and no padding. BitBlockSize is its
     // size in bytes, or 0 when it is not one; a struct also carries the runtime size checks that must hold.
     int BitBlockSize,

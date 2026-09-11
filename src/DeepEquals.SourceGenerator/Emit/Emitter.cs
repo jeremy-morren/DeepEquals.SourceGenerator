@@ -887,18 +887,65 @@ internal sealed class Emitter
                 break;
         }
 
-        var container = IsContainerOrProduct(type);
-        if (level == 1)
+        // An edge that leaves the component calls the full hash. Inside it, a structural edge keeps the caller's level
+        // and a payload edge steps one level down, and is left out entirely at level 0.
+        if (!sameScc)
+            return Wide($"{HashName(type, 1)}({value})");
+
+        if (IsContainerOrProduct(type))
+            return Wide($"{HashName(type, level)}({value})");
+
+        return level == 0 ? null : Wide($"{HashName(type, level - 1)}({value})");
+    }
+
+    /// <summary>
+    /// The hash core of <paramref name="type"/> at <paramref name="level"/>: <c>GetHashCode_T</c> at level 1, the public
+    /// one; <c>ShallowHashCode_T</c> at level 0; <c>MatchHashCode_T_L{n}</c> for the deeper levels the matching
+    /// fingerprint uses. A type without levels has only the first.
+    /// </summary>
+    private static string HashName(TypeModel type, int level) =>
+        !type.HasShallowHash || level == 1 ? $"GetHashCode_{type.ShortName}"
+        : level == 0 ? $"ShallowHashCode_{type.ShortName}"
+        : $"MatchHashCode_{type.ShortName}_L{level}";
+
+    /// <summary>The members-only hash of a class at <paramref name="level"/>, which dispatch calls after it has tested the runtime type.</summary>
+    private static string MembersHashName(TypeModel type, int level) =>
+        level == 1 ? $"HashMembers_{type.ShortName}"
+        : level == 0 ? $"ShallowHashMembers_{type.ShortName}"
+        : $"MatchHashMembers_{type.ShortName}_L{level}";
+
+    /// <summary>The levels a type's hash cores exist at: 1, then 0 for a cyclic type, then 2..k where the fingerprint reaches.</summary>
+    private static IEnumerable<int> HashLevels(TypeModel type)
+    {
+        yield return 1;
+        if (!type.HasShallowHash)
+            yield break;
+
+        yield return 0;
+        for (var level = 2; level <= type.MatchHashLevels; level++)
+            yield return level;
+    }
+
+    /// <summary>The levels above 1 a type's hash cores exist at, for the containers whose deeper cores are a plain walk.</summary>
+    private static IEnumerable<int> MatchLevels(TypeModel type) => HashLevels(type).Where(l => l > 1);
+
+    /// <summary>
+    /// The fingerprint of one set element, dictionary key or dictionary value for unordered matching: the level-k hash,
+    /// which follows payload edges k deep into a cycle where the public hash follows one. An acyclic type's full hash
+    /// already sees everything.
+    /// </summary>
+    private HashWord FingerprintWord(TypeModel type, string value)
+    {
+        if (type.Kind == TypeKind.Nullable)
         {
-            if (container)
-                return Wide($"GetHashCode_{type.ShortName}({value})");
-            return Wide(sameScc ? $"ShallowHashCode_{type.ShortName}({value})" : $"GetHashCode_{type.ShortName}({value})");
+            var payload = FingerprintWord(Type(type.PayloadTypeId), $"{value}.GetValueOrDefault()");
+            return new HashWord($"({value}.HasValue ? {payload.Expr} : 0)", payload.Wide);
         }
 
-        if (sameScc)
-            return container ? Wide($"ShallowHashCode_{type.ShortName}({value})") : null;
+        if (type.HasShallowHash && type.MatchHashLevels > 1)
+            return Wide($"{HashName(type, type.MatchHashLevels)}({value})");
 
-        return Wide($"GetHashCode_{type.ShortName}({value})");
+        return HashOrOmit(type, value, 1, sameScc: false) ?? Const("0");
     }
 
     /// <summary>The hash of a value reached through an edge as a word of the stream's type; <c>0</c> when the edge is omitted.</summary>
@@ -1414,6 +1461,8 @@ internal sealed class Emitter
                 $"{guard}{CountHash(count)}");
         }
 
+        EmitMatchSequenceHashes(type, element, p, p);
+
         if (!valueBlockOnly && spans && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
@@ -1480,19 +1529,16 @@ internal sealed class Emitter
         // Hashes.
         if (dispatch)
         {
-            EmitDispatchHash(type, level: 1);
-            if (type.HasShallowHash) 
-                EmitDispatchHash(type, level: 0);
+            foreach (var level in HashLevels(type))
+                EmitDispatchHash(type, level);
 
-            EmitMembersHash(type, level: 1, membersOnly: true);
-            if (type.HasShallowHash) 
-                EmitMembersHash(type, level: 0, membersOnly: true);
+            foreach (var level in HashLevels(type))
+                EmitMembersHash(type, level, membersOnly: true);
         }
         else
         {
-            EmitMembersHash(type, level: 1, membersOnly: false);
-            if (type.HasShallowHash) 
-                EmitMembersHash(type, level: 0, membersOnly: false);
+            foreach (var level in HashLevels(type))
+                EmitMembersHash(type, level, membersOnly: false);
         }
 
         _w.Line();
@@ -1528,9 +1574,7 @@ internal sealed class Emitter
     /// </summary>
     private void EmitMembersHash(TypeModel type, int level, bool membersOnly)
     {
-        var name = membersOnly
-            ? (level == 1 ? "HashMembers_" : "ShallowHashMembers_") + type.ShortName
-            : (level == 1 ? "GetHashCode_" : "ShallowHashCode_") + type.ShortName;
+        var name = membersOnly ? MembersHashName(type, level) : HashName(type, level);
         var inReceiver = type is { Kind: TypeKind.Struct, PassByValue: false };
         var param = type.Kind == TypeKind.Struct 
             ? inReceiver ? $"in {type.GlobalName} o" : $"{type.GlobalName} o" 
@@ -1559,9 +1603,8 @@ internal sealed class Emitter
         if (type.HasBoxedAdapter) 
             EmitBoxedAdapter(type);
 
-        EmitMembersHash(type, level: 1, membersOnly: false);
-        if (type.HasShallowHash) 
-            EmitMembersHash(type, level: 0, membersOnly: false);
+        foreach (var level in HashLevels(type))
+            EmitMembersHash(type, level, membersOnly: false);
 
         _w.Line();
     }
@@ -1573,9 +1616,8 @@ internal sealed class Emitter
         var p = Param(type);
         using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})")) EmitDispatchEqualsBody(type);
         
-        EmitDispatchHash(type, level: 1);
-        if (type.HasShallowHash) 
-            EmitDispatchHash(type, level: 0);
+        foreach (var level in HashLevels(type))
+            EmitDispatchHash(type, level);
         
         _w.Line();
     }
@@ -1800,8 +1842,7 @@ internal sealed class Emitter
 
     private void EmitDispatchHash(TypeModel type, int level)
     {
-        var name = (level == 1 ? "GetHashCode_" : "ShallowHashCode_") + type.ShortName;
-        using (_w.Block($"private static {HashType} {name}({Param(type)} o)"))
+        using (_w.Block($"private static {HashType} {HashName(type, level)}({Param(type)} o)"))
         {
             _w.Line("if (o is null) return 0;");
             var assignable = type.Cases.Where(c => !c.IsExact).ToList();
@@ -1877,26 +1918,22 @@ internal sealed class Emitter
                     : WordExpr(LeafWord(target, typed));
 
             case TypeKind.Class:
-                if (target.Id == dispatch.Id) return $"{(caseLevel == 1 ? "HashMembers_" : "ShallowHashMembers_")}{target.ShortName}(o)";
+                if (target.Id == dispatch.Id) return $"{MembersHashName(target, caseLevel)}(o)";
 
                 var cast = $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value})";
                 return target.IsSealed
-                    ? $"{(caseLevel == 1 ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({cast})"
-                    : $"{(caseLevel == 1 ? "HashMembers_" : "ShallowHashMembers_")}{target.ShortName}({cast})";
+                    ? $"{HashName(target, caseLevel)}({cast})"
+                    : $"{MembersHashName(target, caseLevel)}({cast})";
 
             case TypeKind.Struct:
-                var unboxed = Unbox(target, value);
-                return
-                    $"{(caseLevel == 1 || !target.HasShallowHash ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({unboxed})";
+                return $"{HashName(target, caseLevel)}({Unbox(target, value)})";
 
             case TypeKind.Tuple:
-                return
-                    $"{(caseLevel == 1 || !target.HasShallowHash ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value}))";
+                return $"{HashName(target, caseLevel)}({KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value}))";
 
             default:
                 var operand = isExact ? target.IsValueType ? Unbox(target, value) : $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value})" : value;
-                return
-                    $"{(caseLevel == 1 || !target.HasShallowHash ? "GetHashCode_" : "ShallowHashCode_")}{target.ShortName}({operand})";
+                return $"{HashName(target, caseLevel)}({operand})";
         }
     }
 
@@ -1975,10 +2012,70 @@ internal sealed class Emitter
         if (type.HasShallowHash)
             _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"o.{count}")}");
 
+        EmitMatchSequenceHashes(type, element, p, p);
+
         if (!blockOnly && SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
         _w.Line();
+    }
+
+    /// <summary>
+    /// The deeper hash levels of an ordered container that a matching fingerprint reaches: one stream over the elements
+    /// at that level, walked the same way for every runtime shape, so every shape agrees. Only a cyclic container has
+    /// them, and its element is then in its component, so no span or bit-block shortcut applies.
+    /// </summary>
+    private void EmitMatchSequenceHashes(TypeModel type, TypeModel element, string p, string iface)
+    {
+        foreach (var level in MatchLevels(type))
+        {
+            string Item(string value) => HashWordExpr(element, value, level, type.ElementIsSameScc);
+            var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
+            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o)"))
+            {
+                switch (type.Kind)
+                {
+                    case TypeKind.ImmutableArray:
+                        _w.Line("if (o.IsDefault) return 0;");
+                        break;
+                    case TypeKind.Memory:
+                    case TypeKind.ArraySegment:
+                        break;
+                    default:
+                        _w.Line("if (o is null) return 0;");
+                        if (type.Kind is TypeKind.ListInterface or TypeKind.EnumerableInterface && _model.Capabilities.HasImmutableArray)
+                            _w.Line($"if (o is {immutable} io && io.IsDefault) return 0;");
+                        break;
+                }
+
+                _w.Line($"{HashClass}.Streaming h = default;");
+                switch (type.Kind)
+                {
+                    case TypeKind.EnumerableInterface:
+                        using (_w.Block($"foreach ({element.GlobalName} e in ({iface})o)")) _w.Line($"h.Add({Item("e")});");
+                        break;
+                    case TypeKind.ListInterface:
+                        _w.Line($"{iface} oi = o;");
+                        _w.Line("int n = oi.Count;");
+                        using (_w.For("n")) _w.Line($"h.Add({Item("oi[i]")});");
+                        break;
+                    case TypeKind.Memory:
+                        _w.Line($"global::System.ReadOnlySpan<{element.GlobalName}> s = o.Span;");
+                        using (_w.For("s.Length")) _w.Line($"h.Add({Item("s[i]")});");
+                        break;
+                    case TypeKind.ArraySegment:
+                        _w.Line("int n = o.Count;");
+                        using (_w.For("n")) _w.Line($"h.Add({Item(Annotations ? "o.Array![o.Offset + i]" : "o.Array[o.Offset + i]")});");
+                        break;
+                    default:
+                        _w.Line($"int n = o.{(type.Kind == TypeKind.List ? "Count" : "Length")};");
+                        using (_w.For("n")) _w.Line($"h.Add({Item("o[i]")});");
+                        break;
+                }
+
+                _w.Return("h.ToHashCode()");
+            }
+        }
     }
 
     /// <summary>The ops struct a span hash calls back into for each element: the element's hash at the container's level.</summary>
@@ -2060,6 +2157,8 @@ internal sealed class Emitter
 
         if (type.HasShallowHash)
             _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"(({iface})o).Count")}");
+
+        EmitMatchSequenceHashes(type, element, p, iface);
 
         if (!listBlockOnly && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
@@ -2218,6 +2317,8 @@ internal sealed class Emitter
             }
         }
 
+        EmitMatchSequenceHashes(type, element, p, enumerable);
+
         if (!enumerableBlockOnly && _model.Capabilities.HasFrameworkSpanHelpers)
             EmitHashOps(type, element);
 
@@ -2314,12 +2415,13 @@ internal sealed class Emitter
             _w.Arrow($"public int GetHashCode({elementName} a)", Hash64 ? $"{HashClass}.Fold({fingerprint})" : fingerprint);
         }
 
-        // Level 1 hash: Combine(Count, sum of entry hashes) with empty-zero finalization.
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
+        // Level 1 hash, and the deeper levels a fingerprint reaches: Combine(Count, sum of entry hashes) with empty-zero finalization.
+        foreach (var level in HashLevels(type).Where(l => l != 0))
+        using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
             _w.Line($"{HashType} sum = 0;");
-            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {WordExpr(EntryHash(type, key, value, "e", forMatching: false))}; }}}} }}}}";
+            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {WordExpr(EntryHash(type, key, value, "e", forMatching: false, level))}; }}}} }}}}";
             if (isConcrete)
             {
                 _w.Line("int count = o.Count;");
@@ -2360,16 +2462,16 @@ internal sealed class Emitter
     }
 
     /// <summary>
-    /// The hash of one set element or dictionary pair.
-    /// Matching uses full element hashes; the container hash uses the SCC level.
+    /// The hash of one set element or dictionary pair. Matching uses the fingerprint of each part; the container's own
+    /// hash at <paramref name="level"/> uses the component rule, like every other edge.
     /// </summary>
-    private HashWord EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching)
+    private HashWord EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching, int level = 1)
     {
         if (value is null)
-            return HashOrOmit(key, entry, 1, forMatching ? false : container.ElementIsSameScc) ?? Const("0");
+            return forMatching ? FingerprintWord(key, entry) : HashOrOmit(key, entry, level, container.ElementIsSameScc) ?? Const("0");
 
-        var k = HashOrOmit(key, $"{entry}.Key", 1, forMatching ? false : container.KeyIsSameScc) ?? Const("0");
-        var v = HashOrOmit(value, $"{entry}.Value", 1, forMatching ? false : container.ValueIsSameScc) ?? Const("0");
+        var k = forMatching ? FingerprintWord(key, $"{entry}.Key") : HashOrOmit(key, $"{entry}.Key", level, container.KeyIsSameScc) ?? Const("0");
+        var v = forMatching ? FingerprintWord(value, $"{entry}.Value") : HashOrOmit(value, $"{entry}.Value", level, container.ValueIsSameScc) ?? Const("0");
         return Wide(Combine([k, v]));
     }
 
@@ -2411,10 +2513,9 @@ internal sealed class Emitter
             EmitPredicates(items, i => Eq(i.Type, $"x.{i.Path}", $"y.{i.Path}"), terminalReturnTrue: true);
         }
 
-        for (var level = 1; level >= (type.HasShallowHash ? 0 : 1); level--)
+        foreach (var level in HashLevels(type))
         {
-            var name = (level == 1 ? "GetHashCode_" : "ShallowHashCode_") + type.ShortName;
-            using (_w.Block($"private static {HashType} {name}({p} o)"))
+            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o)"))
             {
                 if (reference) _w.Line("if (o is null) return 0;");
 

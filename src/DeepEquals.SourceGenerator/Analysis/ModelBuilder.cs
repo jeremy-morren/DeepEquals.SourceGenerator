@@ -722,8 +722,47 @@ internal sealed class ModelBuilder
             GuardKind: _guardKinds.TryGetValue(type, out var kind) ? kind : 0,
             BoxedGuardKind: _boxedGuardKinds.TryGetValue(type, out var boxedKind) ? boxedKind : 0,
             HasShallowHash: cyclic,
+            MatchHashLevels: MatchHashLevels(cyclic, semantic, dispatch),
             BitBlockSize: BitBlock(type)?.Size ?? 0,
             BitBlockChecks: EquatableArray.Create(BitBlockChecks(type)));
+    }
+
+    // ----- matching fingerprint levels ------------------------------------------------------------------------------------
+    //
+    // Unordered matching buckets the entries of a set or dictionary by a fingerprint. It is never observed, so it can
+    // look further into a recursive type than the public hash, which follows one payload edge into a cycle. At
+    // MatchingHashDepth k the fingerprint is the level-k hash, and every type in a component some entry type belongs
+    // to gets levels 2..k. A level-k hash depends only on the k-deep unrolling of a value, which a rolled cycle and its
+    // unrolling share, so equal values still fingerprint alike.
+
+    private HashSet<int>? _matchComponents;
+
+    private int MatchHashLevels(bool cyclic, int? semantic, int? dispatch)
+    {
+        var depth = _options.IsTree ? 1 : _options.MatchingHashDepth;
+        if (depth <= 1 || !cyclic)
+            return 1;
+
+        _matchComponents ??= MatchComponents();
+        return (semantic is { } s && _matchComponents.Contains(_scc[s])) || (dispatch is { } d && _matchComponents.Contains(_scc[d]))
+            ? depth
+            : 1;
+    }
+
+    /// <summary>The components holding a cyclic entry type of some set or dictionary: the key, the value or the element.</summary>
+    private HashSet<int> MatchComponents()
+    {
+        var components = new HashSet<int>();
+        foreach (var type in _types.Where(t => t.Kind is TypeKind.Set or TypeKind.Dictionary))
+        {
+            foreach (var entry in type.Kind == TypeKind.Dictionary ? [type.Key, type.Value] : new[] { type.Element })
+            {
+                if (entry is not null && Entry(entry) is { } node && _cyclic[node])
+                    components.Add(_scc[node]);
+            }
+        }
+
+        return components;
     }
 
     // ----- bit blocks ---------------------------------------------------------------------------------------------------

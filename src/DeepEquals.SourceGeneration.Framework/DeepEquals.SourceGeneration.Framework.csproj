@@ -31,14 +31,18 @@
     </PropertyGroup>
 
     <!--
-      XxHash3 for sequences of bit-block elements. 8.0.0 is the version that supports every runtime the net6.0 and later
-      assets serve and .NET Framework through netstandard2.0; later versions warn on net6.0 and net7.0 consumers. The
-      netstandard2.1 asset serves netcoreapp3.1 to net5.0, where 8.0.0 warns too, so that asset does without it and the
-      generator keeps the per-element path there. On netstandard2.0 the package brings System.Memory, pinned below to the
-      release built against the Unsafe version this asset already uses, so a .NET Framework consumer gains
-      ReadOnlySpan<T> and the generated span paths with it.
+      XxHash3 for sequences of bit-block elements: on each asset, the newest release that builds without a warning on
+      every runtime that asset serves. 9.x and 10.x warn below net8.0, so the net6.0 asset, which also serves net7.0,
+      takes 8.0.0. netstandard2.0 serves .NET Framework, which 10.x supports from 4.6.2. The netstandard2.1 asset serves
+      netcoreapp3.1 to net5.0, where every release warns, so it does without, and the generator keeps the per-element
+      path there. On netstandard2.0 the package also brings System.Memory, referenced directly because the block helpers
+      use MemoryMarshal, so a .NET Framework consumer gains ReadOnlySpan<T> and the generated span paths with it.
     -->
-    <ItemGroup Condition="'$(TargetFramework)' != 'netstandard2.1'">
+    <ItemGroup Condition="'$(TargetFramework)' == 'net8.0' or '$(TargetFramework)' == 'net10.0' or '$(TargetFramework)' == 'netstandard2.0'">
+        <PackageReference Include="System.IO.Hashing" Version="10.0.12" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' == 'net6.0'">
         <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
     </ItemGroup>
 
