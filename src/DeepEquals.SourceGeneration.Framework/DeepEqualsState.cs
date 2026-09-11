@@ -46,7 +46,7 @@ public ref struct DeepEqualsState
     private readonly ArrayPool<ReferencePair> _pairPool;
     private readonly ArrayPool<int> _indexPool;
     private readonly int _pairBudget;
-        private ReferencePair[]? _pairs;     // rented; insertion order, so it is the journal
+    private ReferencePair[]? _pairs;     // rented; insertion order, so it is the journal
     private int[]? _hashes;              // rented; the identity hash of each journal entry, computed once
     private int[]? _index;               // rented; slot value = pair index + 1, 0 = empty; only the logical prefix participates
     private int _pairsCapacity;          // logical capacity, <= _pairs.Length and <= _pairBudget
@@ -102,7 +102,7 @@ public ref struct DeepEqualsState
         if (_pairs is null) 
             Spill();
 
-                var pair = new ReferencePair(kind, x, y);
+        var pair = new ReferencePair(kind, x, y);
         var hash = pair.GetHashCode();
         var slot = Probe(pair, hash, out var found);
         if (found)
