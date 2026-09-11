@@ -186,4 +186,15 @@ namespace DeepEquals.Fixtures
     public partial class Hash64FixtureContext : DeepEqualsContextBase
     {
     }
+
+    /// <summary>The same closure retaining only the ancestors of the pair being compared.</summary>
+    [GenerateDeepEquals(typeof(Person))]
+    [GenerateDeepEquals(typeof(Node))]
+    [GenerateDeepEquals(typeof(Circle))]
+    [GenerateDeepEquals(typeof(Cube))]
+    [GenerateDeepEquals(typeof(Holder))]
+    [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path)]
+    public partial class PathFixtureContext : DeepEqualsContextBase
+    {
+    }
 }

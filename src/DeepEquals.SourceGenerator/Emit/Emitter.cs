@@ -203,7 +203,12 @@ internal sealed class Emitter
             ["UnsafeTypes"] = CommentList(_types.Where(t => t.IsUnsafe && t.EmitWrapper).Select(t => Display(t.GlobalName))),
             ["MaxSwitchCases"] = o.MaxSwitchCases.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["MaxUnorderedCollisionRun"] = o.MaxUnorderedCollisionRun.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["MaxComparisonPairs"] = o.MaxComparisonPairs.ToString("N0", System.Globalization.CultureInfo.InvariantCulture),
+            ["MaxComparisonPairs"] = o.MaxComparisonPairs.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + (o.CycleHandling switch
+            {
+                CycleHandling.Path => " (under Path: the ancestors of the pair being compared)",
+                CycleHandling.Tree => " (not used under Tree)",
+                _ => string.Empty,
+            }),
             ["MaxBinaryExpressionArity"] = o.MaxBinaryExpressionArity.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["StructPassByValueMaxByteSize"] = o.StructPassByValueMaxByteSize.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["ExcludeInterfacesByPrefix"] = o.ExcludeInterfacesByPrefix.Count == 0 ? "(none)" : string.Join(", ", o.ExcludeInterfacesByPrefix),
@@ -462,12 +467,63 @@ internal sealed class Emitter
     /// The cycle guard, for the types that need one: a pair already being compared is taken as equal, which is what
     /// bounds the recursion. The boxed adapter has its own kind, and its own reason to be guarded.
     /// </summary>
-    private void EmitCycleGuard(TypeModel type, bool boxed = false)
+    private IDisposable GuardScope(TypeModel type, bool boxed = false)
     {
-        if (!(boxed ? type.BoxedAdapterGuarded : type.IsGuarded)) 
-            return;
+        if (!(boxed ? type.BoxedAdapterGuarded : type.IsGuarded))
+            return NoScope.Instance;
 
+        if (!_model.Options.IsPath)
+        {
+            EmitTryEnter(type, boxed);
+            return NoScope.Instance;
+        }
+
+        // Path: the pair is an ancestor only while this core runs, so it leaves the state on every return.
+        _w.Line("int pathMark = state.Mark();");
+        EmitTryEnter(type, boxed);
+        var body = _w.Block("try");
+        return new ActionScope(() =>
+        {
+            body.Dispose();
+            using (_w.Block("finally"))
+                _w.Line("state.Rollback(pathMark);");
+        });
+    }
+
+    private void EmitTryEnter(TypeModel type, bool boxed = false) =>
         _w.Line($"if (!state.TryEnter(Kind_{(boxed ? "Boxed_" : string.Empty)}{type.ShortName}, x, y)) return true;");
+
+    /// <summary>
+    /// Under Path, a tail loop is the chain of its ancestors: every node's pair stays entered while the loop walks on,
+    /// exactly as nested calls would keep them, and all of them leave together when the loop ends, however it ends.
+    /// </summary>
+    private IDisposable TailLoopScope(TypeModel type)
+    {
+        if (!type.IsGuarded || !_model.Options.IsPath)
+            return NoScope.Instance;
+
+        _w.Line("int pathMark = state.Mark();");
+        var body = _w.Block("try");
+        return new ActionScope(() =>
+        {
+            body.Dispose();
+            using (_w.Block("finally"))
+                _w.Line("state.Rollback(pathMark);");
+        });
+    }
+
+    private sealed class NoScope : IDisposable
+    {
+        public static readonly NoScope Instance = new();
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ActionScope(Action dispose) : IDisposable
+    {
+        public void Dispose() => dispose();
     }
 
     // ----- helpers -----------------------------------------------------------------------------------------------------
@@ -1348,8 +1404,8 @@ internal sealed class Emitter
         var stateParam = type.BoxedAdapterGuarded || type.NeedsState ? $", ref {KnownTypes.GlobalState} state" : string.Empty;
         using (_w.Block($"private static bool EqualsBoxed_{type.ShortName}(object x, object y{stateParam})"))
         {
-            EmitCycleGuard(type, boxed: true);
-            _w.Return($"Equals_{type.ShortName}({unboxX}, {unboxY}{StateArg(type)})");
+            using (GuardScope(type, boxed: true))
+                _w.Return($"Equals_{type.ShortName}({unboxX}, {unboxY}{StateArg(type)})");
         }
         _w.Line();
     }
@@ -1485,10 +1541,12 @@ internal sealed class Emitter
             }
             else if (type.TailMemberIndex >= 0)
             {
+                using (TailLoopScope(type))
                 using (_w.Block("while (true)"))
                 {
                     EmitReferencePrelude();
-                    EmitCycleGuard(type);
+                    if (type.IsGuarded)
+                        EmitTryEnter(type);
 
                     var predicates = type.Members
                         .Where((_, i) => i != type.TailMemberIndex)
@@ -1506,9 +1564,8 @@ internal sealed class Emitter
             else
             {
                 EmitReferencePrelude();
-                EmitCycleGuard(type);
-
-                _w.Return($"EqualsMembers_{type.ShortName}(x, y{StateArg(type)})");
+                using (GuardScope(type))
+                    _w.Return($"EqualsMembers_{type.ShortName}(x, y{StateArg(type)})");
             }
 
         }
@@ -1521,8 +1578,8 @@ internal sealed class Emitter
         {
             using (_w.Block($"private static bool EqualsExact_{type.ShortName}({type.GlobalName} x, {type.GlobalName} y, ref {KnownTypes.GlobalState} state)"))
             {
-                EmitCycleGuard(type);
-                _w.Return($"EqualsMembers_{type.ShortName}(x, y, ref state)");
+                using (GuardScope(type))
+                    _w.Return($"EqualsMembers_{type.ShortName}(x, y, ref state)");
             }
         }
 
@@ -1965,18 +2022,19 @@ internal sealed class Emitter
         {
             _w.Line($"if ({RefEq("x", "y")}) return true;");
             _w.Line($"if (x is null || y is null || x.{count} != y.{count}) return false;");
-            EmitCycleGuard(type);
-
-            if (SpanAvailable(type))
+            using (GuardScope(type))
             {
-                _spanCores.Add(element.Id);
-                _w.Return($"Equals_SpanOf{element.ShortName}({SpanOf(type, "x")}, {SpanOf(type, "y")}{StateArg(type)})");
-            }
-            else
-            {
-                _w.Line($"int n = x.{count};");
-                using (_w.For("n")) _w.Line($"if (!({Eq(element, "x[i]", "y[i]")})) return false;");
-                _w.Return("true");
+                if (SpanAvailable(type))
+                {
+                    _spanCores.Add(element.Id);
+                    _w.Return($"Equals_SpanOf{element.ShortName}({SpanOf(type, "x")}, {SpanOf(type, "y")}{StateArg(type)})");
+                }
+                else
+                {
+                    _w.Line($"int n = x.{count};");
+                    using (_w.For("n")) _w.Line($"if (!({Eq(element, "x[i]", "y[i]")})) return false;");
+                    _w.Return("true");
+                }
             }
 
         }
@@ -2130,11 +2188,12 @@ internal sealed class Emitter
             _w.Line($"{iface} yi = y;");
             _w.Line("int count = xi.Count;");
             _w.Line("if (count != yi.Count) return false;");
-            EmitCycleGuard(type);
-            EmitSpanCompare(element);
-
-            using (_w.For("count")) _w.Line($"if (!({Eq(element, "xi[i]", "yi[i]")})) return false;");
-            _w.Return("true");
+            using (GuardScope(type))
+            {
+                EmitSpanCompare(element);
+                using (_w.For("count")) _w.Line($"if (!({Eq(element, "xi[i]", "yi[i]")})) return false;");
+                _w.Return("true");
+            }
         }
 
         var listBlockOnly = false;
@@ -2252,18 +2311,19 @@ internal sealed class Emitter
         {
             EmitReferencePrelude();
             EmitSpanCapture(element, "x", "y");
+
+            // One guard over everything after it. It used to be emitted twice when spans exist, and the second TryEnter
+            // then found the pair the first had entered and returned true without comparing a side that has no span.
+            var guard = GuardScope(type);
+
+            // Both sides have spans: their lengths decide, and no interface is consulted.
             if (_model.Capabilities.HasFrameworkSpanHelpers || ImmutableSpans)
-            {
-                // Both sides have spans: their lengths decide, and no interface is consulted.
-                EmitCycleGuard(type);
                 EmitSpanCompare(element);
-            }
+
 
             _w.Line($"int xCount = x is global::System.Collections.Generic.ICollection<{element.GlobalName}> xc ? xc.Count : (x is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> xr ? xr.Count : -1);");
             _w.Line($"int yCount = y is global::System.Collections.Generic.ICollection<{element.GlobalName}> yc ? yc.Count : (y is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> yr ? yr.Count : -1);");
             _w.Line("if (xCount >= 0 && yCount >= 0 && xCount != yCount) return false;");
-            EmitCycleGuard(type);
-
             _w.Line("int n = 0;");
             using (_w.Block($"using (global::System.Collections.Generic.IEnumerator<{element.GlobalName}> ex = (({enumerable})x).GetEnumerator())"))
             {
@@ -2284,6 +2344,7 @@ internal sealed class Emitter
             }
             _w.Line("if ((xCount >= 0 && n != xCount) || (yCount >= 0 && n != yCount)) throw new global::System.InvalidOperationException(\"A collection enumerated a different number of elements than its Count advertised.\");");
             _w.Return("true");
+            guard.Dispose();
         }
 
         var enumerableBlockOnly = false;
@@ -2368,7 +2429,7 @@ internal sealed class Emitter
                 _w.Line("if (count != yi.Count) return false;");
             }
 
-            EmitCycleGuard(type);
+            var unorderedGuard = GuardScope(type);
 
             if (keyIsDefault)
             {
@@ -2399,6 +2460,7 @@ internal sealed class Emitter
                 ? $"{KnownTypes.GlobalUnordered}.DictionaryEquals<{key.GlobalName}, {value!.GlobalName}, {ops}>({xs}, {ys}, count, MaxUnorderedCollisionRun{StateArg(type)})"
                 : $"{KnownTypes.GlobalUnordered}.SetEquals<{key.GlobalName}, {ops}>({xs}, {ys}, count, MaxUnorderedCollisionRun{StateArg(type)})";
             _w.Return(call);
+            unorderedGuard.Dispose();
         }
 
         // Ops struct: equality and full hash of one entry.
@@ -2505,12 +2567,10 @@ internal sealed class Emitter
         using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             if (reference)
-            {
                 EmitReferencePrelude();
-                EmitCycleGuard(type);
-            }
 
-            EmitPredicates(items, i => Eq(i.Type, $"x.{i.Path}", $"y.{i.Path}"), terminalReturnTrue: true);
+            using (reference ? GuardScope(type) : NoScope.Instance)
+                EmitPredicates(items, i => Eq(i.Type, $"x.{i.Path}", $"y.{i.Path}"), terminalReturnTrue: true);
         }
 
         foreach (var level in HashLevels(type))

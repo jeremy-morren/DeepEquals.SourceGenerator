@@ -220,12 +220,15 @@ public sealed class FastPathTests
         run.Hash(wide, a).Should().NotBe(run.Hash(wide, b), "a change in the last Guid byte, which Guid.GetHashCode ignores, changes the hash");
     }
 
-    [Fact]
-    public void One_guard_per_cycle_still_terminates_and_equates_rolled_and_unrolled_graphs()
+    [Theory]
+    [InlineData("")]
+    [InlineData("[DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path)]")]
+    public void One_guard_per_cycle_still_terminates_and_equates_rolled_and_unrolled_graphs(string options)
     {
-        var run = Clean("""
+        var run = Clean($$"""
                         public sealed class TreeNode { public int Value; public List<TreeNode>? Children; }
 
+                        {{options}}
                         [GenerateDeepEquals(typeof(TreeNode))]
                         public partial class Ctx : DeepEqualsContextBase { }
                         """);

@@ -76,6 +76,11 @@ namespace DeepEquals.Fixtures
             d.Children.Add(d);
             FixtureContext.Node.Equals(c, d).Should().BeTrue("cycles through collections terminate");
             FixtureContext.Node.GetHashCode(c).Should().Be(FixtureContext.Node.GetHashCode(d));
+
+            PathFixtureContext.Node.Equals(a, b1).Should().BeTrue("Path equates rolled and unrolled cycles too");
+            PathFixtureContext.Node.GetHashCode(a).Should().Be(PathFixtureContext.Node.GetHashCode(b1));
+            PathFixtureContext.Node.Equals(c, d).Should().BeTrue();
+            PathFixtureContext.Holder.Equals(MakeHolder(), MakeHolder()).Should().BeTrue();
         }
 
         [Fact]
@@ -84,8 +89,10 @@ namespace DeepEquals.Fixtures
             var head1 = Chain(200_000);
             var head2 = Chain(200_000);
             FixtureContext.Node.Equals(head1, head2).Should().BeTrue();
+            PathFixtureContext.Node.Equals(head1, head2).Should().BeTrue("the chain is one path, walked in one frame");
             head2.Next.Next.Value = -1;
             FixtureContext.Node.Equals(head1, head2).Should().BeFalse();
+            PathFixtureContext.Node.Equals(head1, head2).Should().BeFalse();
         }
 
         private static Node Chain(int length)
