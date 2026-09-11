@@ -197,4 +197,15 @@ namespace DeepEquals.Fixtures
     public partial class PathFixtureContext : DeepEqualsContextBase
     {
     }
+
+    /// <summary>The same closure with no pair table: one depth bound, for data that cannot hold cycles.</summary>
+    [GenerateDeepEquals(typeof(Person))]
+    [GenerateDeepEquals(typeof(Node))]
+    [GenerateDeepEquals(typeof(Circle))]
+    [GenerateDeepEquals(typeof(Cube))]
+    [GenerateDeepEquals(typeof(Holder))]
+    [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Tree, MaxDepth = 64, Hashing = DeepEqualsHashing.XxHash64)]
+    public partial class TreeFixtureContext : DeepEqualsContextBase
+    {
+    }
 }

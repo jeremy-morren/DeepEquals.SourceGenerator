@@ -90,7 +90,7 @@ internal static class GeneratorHost
         return [..references];
     }
 
-    public static GeneratorRun Run(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool load = true, string assemblyName = "GeneratedTests")
+    public static GeneratorRun Run(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool load = true, string assemblyName = "GeneratedTests", bool checkedArithmetic = false)
     {
         var parseOptions = new CSharpParseOptions(languageVersion);
         var tree = CSharpSyntaxTree.ParseText(source, parseOptions, path: "Input.cs");
@@ -98,7 +98,7 @@ internal static class GeneratorHost
             $"{assemblyName}_{Guid.NewGuid():N}",
             [tree],
             s_references.Value,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable, allowUnsafe: true));
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable, allowUnsafe: true, checkOverflow: checkedArithmetic));
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new DeepEqualsGenerator().AsSourceGenerator()], parseOptions: parseOptions);
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);

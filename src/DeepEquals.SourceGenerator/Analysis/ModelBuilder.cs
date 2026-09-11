@@ -721,7 +721,7 @@ internal sealed class ModelBuilder
             BoxedAdapterGuarded: _boxedGuardKinds.ContainsKey(type),
             GuardKind: _guardKinds.TryGetValue(type, out var kind) ? kind : 0,
             BoxedGuardKind: _boxedGuardKinds.TryGetValue(type, out var boxedKind) ? boxedKind : 0,
-            HasShallowHash: cyclic,
+            HasShallowHash: cyclic && !_options.IsTree,
             MatchHashLevels: MatchHashLevels(cyclic, semantic, dispatch),
             BitBlockSize: BitBlock(type)?.Size ?? 0,
             BitBlockChecks: EquatableArray.Create(BitBlockChecks(type)));

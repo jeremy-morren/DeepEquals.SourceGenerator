@@ -41,6 +41,9 @@ internal static class KnownTypes
     public const string GlobalHashOps = $"{GlobalFramework}.IDeepEqualsHashOps";
     public const string GlobalElementOps = $"{GlobalFramework}.IDeepEqualsElementOps";
     public const string GlobalStatelessElementOps = $"{GlobalFramework}.IDeepEqualsStatelessElementOps";
+    public const string GlobalDepthElementOps = $"{GlobalFramework}.IDeepEqualsDepthElementOps";
+    public const string GlobalDepthHashOps = $"{GlobalFramework}.IDeepEqualsDepthHashOps";
+    public const string GlobalDepthHashOps64 = $"{GlobalFramework}.IDeepEqualsDepthHashOps64";
     public const string GlobalUnknownTypeException = $"{GlobalFramework}.DeepEqualsUnknownTypeException";
     public const string GlobalRuntimeHelpers = "global::System.Runtime.CompilerServices.RuntimeHelpers";
     public const string GlobalUnsafe = "global::System.Runtime.CompilerServices.Unsafe";

@@ -358,6 +358,9 @@ internal sealed class Emitter
     {
         _w.Line($"private const int MaxComparisonPairs = {_model.Options.MaxComparisonPairs};");
         _w.Line($"private const int MaxUnorderedCollisionRun = {_model.Options.MaxUnorderedCollisionRun};");
+        if (IsTree)
+            _w.Line($"private const int MaxDepth = {_model.Options.MaxDepth};");
+
         _w.Line();
     }
 
@@ -472,6 +475,12 @@ internal sealed class Emitter
         if (!(boxed ? type.BoxedAdapterGuarded : type.IsGuarded))
             return NoScope.Instance;
 
+        if (IsTree)
+        {
+            EmitDepthGuard(type);
+            return NoScope.Instance;
+        }
+
         if (!_model.Options.IsPath)
         {
             EmitTryEnter(type, boxed);
@@ -488,6 +497,23 @@ internal sealed class Emitter
             using (_w.Block("finally"))
                 _w.Line("state.Rollback(pathMark);");
         });
+    }
+
+    /// <summary>
+    /// One step of Brent's cycle detection over the chain in <paramref name="cursor"/>, run once per node after the node is
+    /// compared or hashed: meeting the saved node again means a cycle; the saved node moves to the cursor whenever the
+    /// step count reaches the next power of two, so a cycle of length L after a prefix of P is found within about 2(P + L)
+    /// steps.
+    /// </summary>
+    private void EmitBrentStep(TypeModel type, string cursor)
+    {
+        _w.Line($"if ({RefEq(cursor, "tortoise")}) {KnownTypes.GlobalHelpers}.ThrowCycle(typeof({type.GlobalName}));");
+        using (_w.Block("if (lambda++ == power)"))
+        {
+            _w.Line($"tortoise = {cursor};");
+            _w.Line("power <<= 1;");
+            _w.Line("lambda = 1;");
+        }
     }
 
     private void EmitTryEnter(TypeModel type, bool boxed = false) =>
@@ -538,10 +564,42 @@ internal sealed class Emitter
     /// </summary>
     private static string Identifier(string name) => Analysis.Naming.Identifier(name);
 
-    private static string StateParam(TypeModel type) =>
-        type.NeedsState ? $", ref {KnownTypes.GlobalState} state" : string.Empty;
+    private bool IsTree => _model.Options.IsTree;
 
-    private static string StateArg(TypeModel type) => type.NeedsState ? ", ref state" : string.Empty;
+    /// <summary>
+    /// The comparison state a core that reaches a cycle takes: the pair table under Graph and Path, the nesting depth
+    /// under Tree. Everything the model records as needing state needs depth instead under Tree.
+    /// </summary>
+    private string StateParam(TypeModel type) => !type.NeedsState ? string.Empty : StateParamAlways;
+
+    private string StateArg(TypeModel type) => !type.NeedsState ? string.Empty : StateArgAlways;
+
+    /// <summary>The state parameter for a core that has one whatever its type says: a guarded boxed adapter, <c>EqualsExact_T</c>.</summary>
+    private string StateParamAlways => IsTree ? ", int depth" : $", ref {KnownTypes.GlobalState} state";
+
+    private string StateArgAlways => IsTree ? ", depth" : ", ref state";
+
+    /// <summary>Under Tree a hash core that reaches a cycle carries the depth too; under Graph and Path hashing needs no state.</summary>
+    private string HashDepthParam(TypeModel type) => IsTree && type.NeedsState ? ", int depth" : string.Empty;
+
+    private string HashDepthArg(TypeModel type) => IsTree && type.NeedsState ? ", depth" : string.Empty;
+
+    /// <summary>
+    /// The Tree guard in a hash core: the same guarded types as equality, since every cycle of the hash call graph passes
+    /// through the same cores, so hashing a cycle the traversal enters throws where comparing it would.
+    /// </summary>
+    private void EmitHashGuard(TypeModel type)
+    {
+        if (IsTree && type.IsGuarded)
+            EmitDepthGuard(type);
+    }
+
+    /// <summary>The Tree guard: one more level, a throw past MaxDepth, and a stack check, since MaxDepth bounds cycles, not the stack.</summary>
+    private void EmitDepthGuard(TypeModel type)
+    {
+        _w.Line($"if (++depth > MaxDepth) {KnownTypes.GlobalHelpers}.ThrowDepthExceeded(typeof({type.GlobalName.TrimEnd('?')}), MaxDepth);");
+        _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
+    }
 
     /// <summary>Call <see cref="object.ReferenceEquals"/></summary>
     private static string RefEq(string x, string y) => $"{KnownTypes.GlobalObject}.ReferenceEquals({x}, {y})";
@@ -946,12 +1004,12 @@ internal sealed class Emitter
         // An edge that leaves the component calls the full hash. Inside it, a structural edge keeps the caller's level
         // and a payload edge steps one level down, and is left out entirely at level 0.
         if (!sameScc)
-            return Wide($"{HashName(type, 1)}({value})");
+            return Wide($"{HashName(type, 1)}({value}{HashDepthArg(type)})");
 
         if (IsContainerOrProduct(type))
-            return Wide($"{HashName(type, level)}({value})");
+            return Wide($"{HashName(type, level)}({value}{HashDepthArg(type)})");
 
-        return level == 0 ? null : Wide($"{HashName(type, level - 1)}({value})");
+        return level == 0 ? null : Wide($"{HashName(type, level - 1)}({value}{HashDepthArg(type)})");
     }
 
     /// <summary>
@@ -999,7 +1057,7 @@ internal sealed class Emitter
         }
 
         if (type.HasShallowHash && type.MatchHashLevels > 1)
-            return Wide($"{HashName(type, type.MatchHashLevels)}({value})");
+            return Wide($"{HashName(type, type.MatchHashLevels)}({value}{HashDepthArg(type)})");
 
         return HashOrOmit(type, value, 1, sameScc: false) ?? Const("0");
     }
@@ -1300,7 +1358,13 @@ internal sealed class Emitter
                 // edge into a cycle, and an acyclic closure is as deep as its declarations. Every cycle also passes
                 // through a guard, whose TryEnter checks the stack again at each turn.
                 var body = WrapperEqualsBody(type);
-                if (type.NeedsState)
+                if (type.NeedsState && IsTree)
+                {
+                    _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
+                    _w.Line("int depth = 0;");
+                    _w.Return(body);
+                }
+                else if (type.NeedsState)
                 {
                     _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
                     _w.Line($"{KnownTypes.GlobalState} state = new {KnownTypes.GlobalState}(MaxComparisonPairs);");
@@ -1317,7 +1381,11 @@ internal sealed class Emitter
             
             _w.Line();
             using (Method(type, $"public int GetHashCode({Param(type)} o)"))
-                        {
+            {
+                // Under Tree a hash walks the whole value, bounded by the same depth as equality.
+                if (type.NeedsState && IsTree)
+                    _w.Line("int depth = 0;");
+
                 _w.Return(WrapperHashBody(type));
             }
         }
@@ -1401,7 +1469,7 @@ internal sealed class Emitter
     {
         var unboxX = Unbox(type, "x");
         var unboxY = Unbox(type, "y");
-        var stateParam = type.BoxedAdapterGuarded || type.NeedsState ? $", ref {KnownTypes.GlobalState} state" : string.Empty;
+        var stateParam = type.BoxedAdapterGuarded || type.NeedsState ? StateParamAlways : string.Empty;
         using (_w.Block($"private static bool EqualsBoxed_{type.ShortName}(object x, object y{stateParam})"))
         {
             using (GuardScope(type, boxed: true))
@@ -1426,7 +1494,7 @@ internal sealed class Emitter
                 case TypeKind.Memory:
                     _w.Line("if (x.Length != y.Length) return false;");
                     _spanCores.Add(element.Id);
-                    _w.Return($"Equals_SpanOf{element.ShortName}(x.Span, y.Span{(element.NeedsState ? ", ref state" : string.Empty)})");
+                    _w.Return($"Equals_SpanOf{element.ShortName}(x.Span, y.Span{StateArg(element)})");
                     break;
             
                 case TypeKind.ImmutableArray:
@@ -1435,7 +1503,7 @@ internal sealed class Emitter
                     if (spans)
                     {
                         _spanCores.Add(element.Id);
-                        _w.Return($"Equals_SpanOf{element.ShortName}(x.AsSpan(), y.AsSpan(){(element.NeedsState ? ", ref state" : string.Empty)})");
+                        _w.Return($"Equals_SpanOf{element.ShortName}(x.AsSpan(), y.AsSpan(){StateArg(element)})");
                     }
                     else
                     {
@@ -1452,7 +1520,7 @@ internal sealed class Emitter
                     if (spans)
                     {
                         _spanCores.Add(element.Id);
-                        _w.Return($"Equals_SpanOf{element.ShortName}(({span})x, ({span})y{(element.NeedsState ? ", ref state" : string.Empty)})");
+                        _w.Return($"Equals_SpanOf{element.ShortName}(({span})x, ({span})y{StateArg(element)})");
                     }
                     else
                     {
@@ -1468,7 +1536,7 @@ internal sealed class Emitter
 
         // Level 1 hash over the represented sequence; ImmutableArray default hashes to 0.
         var valueBlockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             if (type.Kind == TypeKind.ImmutableArray)
                 _w.Line("if (o.IsDefault) return 0;");
@@ -1490,7 +1558,7 @@ internal sealed class Emitter
                 if (type.Kind == TypeKind.ArraySegment)
                     _w.Line("if (o.Count == 0) return 1;");
                 var ops = type.ElementIsSameScc ? $"{type.ShortName}ShallowOps" : $"{type.ShortName}Ops";
-                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({spanOf})");
+                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({spanOf}{HashDepthArg(type)})");
             }
             else
             {
@@ -1541,11 +1609,24 @@ internal sealed class Emitter
             }
             else if (type.TailMemberIndex >= 0)
             {
+                if (IsTree)
+                {
+                    // Tree: one guard for the whole chain, so a long list keeps its depth flat, and Brent's detector on
+                    // the left chain to stop a real cycle. A finite chain on either side ends the loop at its null.
+                    EmitReferencePrelude();
+                    if (type.IsGuarded)
+                        EmitDepthGuard(type);
+
+                    _w.Line($"{type.GlobalName}{Q()} tortoise = null;");
+                    _w.Line("int power = 1;");
+                    _w.Line("int lambda = 1;");
+                }
+
                 using (TailLoopScope(type))
                 using (_w.Block("while (true)"))
                 {
                     EmitReferencePrelude();
-                    if (type.IsGuarded)
+                    if (type.IsGuarded && !IsTree)
                         EmitTryEnter(type);
 
                     var predicates = type.Members
@@ -1554,6 +1635,11 @@ internal sealed class Emitter
                         .ToList();
 
                     EmitPredicates(predicates, false);
+
+                    // After this node is compared, so a finite side that differs or ends first still decides.
+                    if (IsTree)
+                        EmitBrentStep(type, "x");
+
                     var tail = type.Members[type.TailMemberIndex];
                     _w.Line($"{type.GlobalName}{Q()} nextX = {Read(tail, "x", false)};");
                     _w.Line($"{type.GlobalName}{Q()} nextY = {Read(tail, "y", false)};");
@@ -1576,10 +1662,10 @@ internal sealed class Emitter
 
         if (type.IsGuarded)
         {
-            using (_w.Block($"private static bool EqualsExact_{type.ShortName}({type.GlobalName} x, {type.GlobalName} y, ref {KnownTypes.GlobalState} state)"))
+            using (_w.Block($"private static bool EqualsExact_{type.ShortName}({type.GlobalName} x, {type.GlobalName} y{StateParamAlways})"))
             {
                 using (GuardScope(type))
-                    _w.Return($"EqualsMembers_{type.ShortName}(x, y, ref state)");
+                    _w.Return($"EqualsMembers_{type.ShortName}(x, y{StateArgAlways})");
             }
         }
 
@@ -1636,10 +1722,20 @@ internal sealed class Emitter
         var param = type.Kind == TypeKind.Struct 
             ? inReceiver ? $"in {type.GlobalName} o" : $"{type.GlobalName} o" 
             : membersOnly ? $"{type.GlobalName} o" : $"{Param(type)} o";
-        using (Method(type, $"private static {HashType} {name}({param})"))
+        using (Method(type, $"private static {HashType} {name}({param}{HashDepthParam(type)})"))
         {
             if (!membersOnly && type.Kind == TypeKind.Class)
                 _w.Line("if (o is null) return 0;");
+
+            // A sealed class carries its guard in GetHashCode_T; an unsealed one in HashMembers_T, behind its dispatch.
+            if (type.Kind == TypeKind.Class && (membersOnly || type.IsSealed))
+                EmitHashGuard(type);
+
+            if (IsTree && type.TailMemberIndex >= 0 && !membersOnly)
+            {
+                EmitTreeChainHash(type, inReceiver);
+                return;
+            }
 
             var inputs = new List<HashWord>(type.Members.Count);
             foreach (var member in type.Members)
@@ -1647,6 +1743,35 @@ internal sealed class Emitter
 
             _w.Return(Combine(inputs));
         }
+    }
+
+    /// <summary>
+    /// Under Tree the hash of a chain type walks the chain, since its tail no longer stops at a shallow level: one stream
+    /// word per node, the combine of that node's other members, in a loop that keeps the depth flat and stops a real
+    /// cycle with Brent's detector, as the comparison loop does. The node words are the definition, so equal chains hash
+    /// alike whatever their length.
+    /// </summary>
+    private void EmitTreeChainHash(TypeModel type, bool inReceiver)
+    {
+        var tail = type.Members[type.TailMemberIndex];
+        _w.Line($"{type.GlobalName}{Q()} tortoise = null;");
+        _w.Line("int power = 1;");
+        _w.Line("int lambda = 1;");
+        _w.Line($"{HashClass}.Streaming h = default;");
+        using (_w.Block("while (true)"))
+        {
+            var inputs = new List<HashWord>(type.Members.Count);
+            foreach (var member in type.Members.Where((_, i) => i != type.TailMemberIndex))
+                HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), 1, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
+
+            _w.Line($"h.Add({Combine(inputs)});");
+            EmitBrentStep(type, "o");
+            _w.Line($"{type.GlobalName}{Q()} next = {Read(tail, "o", inReceiver)};");
+            _w.Line("if (next is null) break;");
+            _w.Line("o = next;");
+        }
+
+        _w.Return("h.ToHashCode()");
     }
 
     // ----- structs ------------------------------------------------------------------------------------------------------------
@@ -1864,18 +1989,18 @@ internal sealed class Emitter
             case TypeKind.Class:
                 if (target.Id == dispatch.Id)
                     return target.IsGuarded
-                        ? $"EqualsExact_{target.ShortName}(x, y, ref state)"
+                        ? $"EqualsExact_{target.ShortName}(x, y{StateArgAlways})"
                         : $"EqualsMembers_{target.ShortName}(x, y{stateArg})";
 
                 var cx = $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>(x)";
                 var cy = $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>(y)";
                 return target.IsGuarded
-                    ? $"EqualsExact_{target.ShortName}({cx}, {cy}, ref state)"
+                    ? $"EqualsExact_{target.ShortName}({cx}, {cy}{StateArgAlways})"
                     : $"EqualsMembers_{target.ShortName}({cx}, {cy}{stateArg})";
             
             case TypeKind.Struct:
                 return target.BoxedAdapterGuarded
-                    ? $"EqualsBoxed_{target.ShortName}(x, y, ref state)" 
+                    ? $"EqualsBoxed_{target.ShortName}(x, y{StateArgAlways})" 
                     : $"Equals_{target.ShortName}({Unbox(target, "x")}, {Unbox(target, "y")}{stateArg})";
 
             case TypeKind.Leaf:
@@ -1886,7 +2011,7 @@ internal sealed class Emitter
             
             default:
                 if (target.BoxedAdapterGuarded) 
-                    return $"EqualsBoxed_{target.ShortName}(x, y, ref state)";
+                    return $"EqualsBoxed_{target.ShortName}(x, y{StateArgAlways})";
 
                 return target.IsValueType
                     ? $"Equals_{target.ShortName}({Unbox(target, "x")}, {Unbox(target, "y")}{stateArg})"
@@ -1899,7 +2024,7 @@ internal sealed class Emitter
 
     private void EmitDispatchHash(TypeModel type, int level)
     {
-        using (_w.Block($"private static {HashType} {HashName(type, level)}({Param(type)} o)"))
+        using (_w.Block($"private static {HashType} {HashName(type, level)}({Param(type)} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             var assignable = type.Cases.Where(c => !c.IsExact).ToList();
@@ -1975,22 +2100,27 @@ internal sealed class Emitter
                     : WordExpr(LeafWord(target, typed));
 
             case TypeKind.Class:
-                if (target.Id == dispatch.Id) return $"{MembersHashName(target, caseLevel)}(o)";
+                if (target.Id == dispatch.Id) return $"{MembersHashName(target, caseLevel)}(o{HashDepthArg(target)})";
 
                 var cast = $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value})";
                 return target.IsSealed
-                    ? $"{HashName(target, caseLevel)}({cast})"
-                    : $"{MembersHashName(target, caseLevel)}({cast})";
+                    ? $"{HashName(target, caseLevel)}({cast}{HashDepthArg(target)})"
+                    : $"{MembersHashName(target, caseLevel)}({cast}{HashDepthArg(target)})";
 
             case TypeKind.Struct:
-                return $"{HashName(target, caseLevel)}({Unbox(target, value)})";
+                // A boxed struct in a cycle has its guard on the boxed adapter, which hashing never passes through, so the
+                // Tree guard sits here, in the argument.
+                var boxedDepth = IsTree && target.BoxedAdapterGuarded
+                    ? $", {KnownTypes.GlobalHelpers}.Descend(depth, MaxDepth, typeof({target.GlobalName}))"
+                    : HashDepthArg(target);
+                return $"{HashName(target, caseLevel)}({Unbox(target, value)}{boxedDepth})";
 
             case TypeKind.Tuple:
-                return $"{HashName(target, caseLevel)}({KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value}))";
+                return $"{HashName(target, caseLevel)}({KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value}){HashDepthArg(target)})";
 
             default:
                 var operand = isExact ? target.IsValueType ? Unbox(target, value) : $"{KnownTypes.GlobalUnsafe}.As<{target.GlobalName}>({value})" : value;
-                return $"{HashName(target, caseLevel)}({operand})";
+                return $"{HashName(target, caseLevel)}({operand}{HashDepthArg(target)})";
         }
     }
 
@@ -2041,9 +2171,10 @@ internal sealed class Emitter
 
         // Level 1 hash.
         var blockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
+            EmitHashGuard(type);
             if (BlockElement(element))
                 blockOnly = EmitBlockPath(element, () => _w.Return(SpanAvailable(type)
                     ? BlockHash("HashBlock", element, SpanOf(type, "o"))
@@ -2055,7 +2186,7 @@ internal sealed class Emitter
             else if (SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
             {
                 var ops = type.ElementIsSameScc ? $"{type.ShortName}ShallowOps" : $"{type.ShortName}Ops";
-                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({SpanOf(type, "o")})");
+                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({SpanOf(type, "o")}{HashDepthArg(type)})");
             }
             else
             {
@@ -2089,7 +2220,7 @@ internal sealed class Emitter
         {
             string Item(string value) => HashWordExpr(element, value, level, type.ElementIsSameScc);
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
-            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o)"))
+            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
                 switch (type.Kind)
                 {
@@ -2140,16 +2271,17 @@ internal sealed class Emitter
     private void EmitHashOps(TypeModel container, TypeModel element)
     {
         var name = container.ElementIsSameScc ? $"{container.ShortName}ShallowOps" : $"{container.ShortName}Ops";
-        using (_w.Block($"private struct {name} : {HashOpsInterface}<{element.GlobalName}>"))
+        var depth = IsTree && container.NeedsState;
+        var opsInterface = !depth ? HashOpsInterface : Hash64 ? KnownTypes.GlobalDepthHashOps64 : KnownTypes.GlobalDepthHashOps;
+        using (_w.Block($"private struct {name} : {opsInterface}<{element.GlobalName}>"))
         {
-            _w.Arrow($"public {HashType} {HashOpsMethod}({element.GlobalName} value)", ElementHashForContainer(container, element, "value"));
+            _w.Arrow($"public {HashType} {HashOpsMethod}({element.GlobalName} value{HashDepthParam(container)})", ElementHashForContainer(container, element, "value"));
         }
     }
 
     private void EmitSpanCores(TypeModel element)
     {
-        var needsState = element.NeedsState;
-        var stateParam = needsState ? $", ref {KnownTypes.GlobalState} state" : string.Empty;
+        var stateParam = StateParam(element);
         var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
         using (_w.Block($"private static bool Equals_SpanOf{element.ShortName}({span} xs, {span} ys{stateParam})"))
         {
@@ -2197,9 +2329,10 @@ internal sealed class Emitter
         }
 
         var listBlockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
+            EmitHashGuard(type);
             if (BlockElement(element))
                 listBlockOnly = EmitBlockPath(element, () => EmitInterfaceBlockHash(type, element, iface));
 
@@ -2280,7 +2413,7 @@ internal sealed class Emitter
 
         var xSpan = helpers ? $"(xSpan || {KnownTypes.GlobalCollections}.TryGetSpan(x, out xs))" : "xSpan";
         var ySpan = helpers ? $"(ySpan || {KnownTypes.GlobalCollections}.TryGetSpan(y, out ys))" : "ySpan";
-        _w.Line($"if ({xSpan} && {ySpan}) return Equals_SpanOf{element.ShortName}(xs, ys{(element.NeedsState ? ", ref state" : string.Empty)});");
+        _w.Line($"if ({xSpan} && {ySpan}) return Equals_SpanOf{element.ShortName}(xs, ys{StateArg(element)});");
     }
 
     /// <summary>The hash of an interface-typed collection through its span, when it has one; otherwise falls through. A default immutable array hashes to 0.</summary>
@@ -2293,12 +2426,12 @@ internal sealed class Emitter
         {
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
             _w.Line(helpers && ImmutableSpans
-                ? $"if ({o} is {immutable} io) return io.IsDefault ? 0 : {hashSpan}(io.AsSpan());"
+                ? $"if ({o} is {immutable} io) return io.IsDefault ? 0 : {hashSpan}(io.AsSpan(){HashDepthArg(container)});"
                 : $"if ({o} is {immutable} io && io.IsDefault) return 0;");
         }
 
         if (helpers)
-            _w.Line($"if ({KnownTypes.GlobalCollections}.TryGetSpan({o}, out global::System.ReadOnlySpan<{element.GlobalName}> s)) return {hashSpan}(s);");
+            _w.Line($"if ({KnownTypes.GlobalCollections}.TryGetSpan({o}, out global::System.ReadOnlySpan<{element.GlobalName}> s)) return {hashSpan}(s{HashDepthArg(container)});");
     }
 
     private void EmitEnumerableCores(TypeModel type)
@@ -2348,9 +2481,10 @@ internal sealed class Emitter
         }
 
         var enumerableBlockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o)"))
+        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
+            EmitHashGuard(type);
             if (BlockElement(element))
                 enumerableBlockOnly = EmitBlockPath(element, () => EmitInterfaceBlockHash(type, element, enumerable));
 
@@ -2464,24 +2598,25 @@ internal sealed class Emitter
         }
 
         // Ops struct: equality and full hash of one entry.
-        var opsInterface = type.NeedsState ? KnownTypes.GlobalElementOps : KnownTypes.GlobalStatelessElementOps;
+        var opsInterface = !type.NeedsState ? KnownTypes.GlobalStatelessElementOps : IsTree ? KnownTypes.GlobalDepthElementOps : KnownTypes.GlobalElementOps;
         using (_w.Block($"private struct {ops} : {opsInterface}<{elementName}>"))
         {
-            var stateParam = type.NeedsState ? $", ref {KnownTypes.GlobalState} state" : string.Empty;
+            var stateParam = StateParam(type);
             var entryEq = dictionary
                 ? $"{Eq(key, "a.Key", "b.Key")} && {Eq(value!, "a.Value", "b.Value")}"
                 : Eq(key, "a", "b");
             _w.Arrow($"public bool Equals({elementName} a, {elementName} b{stateParam})", entryEq);
             // The matching fingerprint stays 32-bit: it keys the packed (hash, index) entries of the unordered runtime.
             var fingerprint = WordExpr(EntryHash(type, key, value, "a", forMatching: true));
-            _w.Arrow($"public int GetHashCode({elementName} a)", Hash64 ? $"{HashClass}.Fold({fingerprint})" : fingerprint);
+            _w.Arrow($"public int GetHashCode({elementName} a{HashDepthParam(type)})", Hash64 ? $"{HashClass}.Fold({fingerprint})" : fingerprint);
         }
 
         // Level 1 hash, and the deeper levels a fingerprint reaches: Combine(Count, sum of entry hashes) with empty-zero finalization.
         foreach (var level in HashLevels(type).Where(l => l != 0))
-        using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o)"))
+        using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
+            EmitHashGuard(type);
             _w.Line($"{HashType} sum = 0;");
             var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {WordExpr(EntryHash(type, key, value, "e", forMatching: false, level))}; }}}} }}}}";
             if (isConcrete)
@@ -2575,9 +2710,13 @@ internal sealed class Emitter
 
         foreach (var level in HashLevels(type))
         {
-            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o)"))
+            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
-                if (reference) _w.Line("if (o is null) return 0;");
+                if (reference)
+                {
+                    _w.Line("if (o is null) return 0;");
+                    EmitHashGuard(type);
+                }
 
                 var inputs = new List<HashWord>(items.Count);
                 var k = 0;

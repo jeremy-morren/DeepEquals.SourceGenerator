@@ -22,6 +22,20 @@ public static class DeepEqualsHelpers
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static void ThrowCycle(Type type) => throw new DeepEqualsComplexityException(type);
 
+    /// <summary>
+    /// The depth guard as an expression, for the one place a guard sits inside one: a boxed value reached through a
+    /// dispatch hash. Returns <paramref name="depth"/> plus one, or throws past <paramref name="maxDepth"/>.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int Descend(int depth, int maxDepth, Type type)
+    {
+        if (++depth > maxDepth)
+            ThrowDepthExceeded(type, maxDepth);
+
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+        return depth;
+    }
+
     // ----- Raw bits -----------------------------------------------------------------------------------------------------
     //
     // Equality and hashing of a built-in leaf operate on its storage bits, never on a numeric conversion: a conversion
