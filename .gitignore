@@ -367,5 +367,6 @@ FodyWeavers.xsd
 # Local pack output
 artifacts/
 
-# The smoke consumers restore into a folder of their own; see smoke/NuGet.config.
-smoke/.packages/
+# The downstream projects restore into a folder of their own; see downstream/NuGet.config.
+downstream/.packages/
+BenchmarkDotNet.Artifacts/

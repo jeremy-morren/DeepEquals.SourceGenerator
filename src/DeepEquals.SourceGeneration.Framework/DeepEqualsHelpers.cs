@@ -28,6 +28,27 @@ public static class DeepEqualsHelpers
     public static ulong DateTimeBits(DateTime value) => Unsafe.As<DateTime, ulong>(ref value);
 
     /// <summary>
+    /// Bitwise equality of two decimals: the same 96-bit magnitude, scale and sign, so <c>1.0m</c> and <c>1.00m</c>
+    /// differ. Two 64-bit compares over the struct's storage, the same test <c>decimal.GetBits</c> word by word makes.
+    /// </summary>
+    /// <remarks>Relies only on <c>sizeof(decimal) == 16</c> with no padding, which every runtime guarantees.</remarks>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static bool DecimalEquals(in decimal x, in decimal y)
+    {
+        ref var a = ref Unsafe.As<decimal, ulong>(ref Unsafe.AsRef(in x));
+        ref var b = ref Unsafe.As<decimal, ulong>(ref Unsafe.AsRef(in y));
+        return a == b && Unsafe.Add(ref a, 1) == Unsafe.Add(ref b, 1);
+    }
+
+    /// <summary>One of the four 32-bit words of a decimal's storage, for hashing every bit the equality above compares.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int DecimalWord(in decimal value, int index) => Unsafe.Add(ref Unsafe.As<decimal, int>(ref Unsafe.AsRef(in value)), index);
+
+    /// <summary>One of the four 32-bit words of a <see cref="Guid"/>; <see cref="Guid.GetHashCode"/> ignores six of its bytes.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static int GuidWord(in Guid value, int index) => Unsafe.Add(ref Unsafe.As<Guid, int>(ref Unsafe.AsRef(in value)), index);
+
+    /// <summary>
     /// <c>x.Equals(y)</c> through the <see cref="IEquatable{T}"/> constraint: a constrained call,
     /// direct for a struct even when the implementation is explicit, and an interface call for a class.
     /// Exactly what <c>EqualityComparer&lt;T&gt;.Default</c> does for such a <typeparamref name="T"/> after its null checks,

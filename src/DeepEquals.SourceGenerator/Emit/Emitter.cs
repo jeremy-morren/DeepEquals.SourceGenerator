@@ -378,8 +378,8 @@ internal sealed class Emitter
             }
         }
         _w.Line();
-        using (_w.Block("private static class Cache<T>")) 
-            _w.Line($"internal static readonly object{Q()} Value = LookupEqualityComparer(ComparerMap.Value, typeof(T));");
+                using (_w.Block("private static class Cache<T>"))
+            _w.Line($"internal static readonly {KnownTypes.GlobalIEqualityComparer}<T>{Q()} Value = LookupEqualityComparer<T>(ComparerMap.Value);");
         _w.Line();
         EmitUnsafeAttributes(_model.HasUnsafeTypes);
         _w.Arrow(
@@ -554,8 +554,12 @@ internal sealed class Emitter
     {
         switch (member.Access)
         {
-            case MemberAccess.Direct:
+                        case MemberAccess.Direct:
                 return $"{receiver}.{Identifier(member.FieldMetadataName)}";
+
+            case MemberAccess.Getter:
+                return $"{receiver}.{Identifier(member.Name)}";
+
             
             case MemberAccess.UnsafeAccessor:
                 var accessor = member.GenericAccessor 
@@ -618,8 +622,8 @@ internal sealed class Emitter
             case LeafRule.Enum:
                 return $"({type.EnumUnderlyingGlobalName}){x} == ({type.EnumUnderlyingGlobalName}){y}";
             
-            case LeafRule.String:
-                return $"string.Equals({x}, {y}, {KnownTypes.GlobalStringComparison}.Ordinal)";
+                        case LeafRule.String:
+                return $"{x} == {y}";
             
             case LeafRule.Single:
                 return $"{SingleBits(x)} == {SingleBits(y)}";
@@ -630,8 +634,8 @@ internal sealed class Emitter
             case LeafRule.Half:
                 return $"{KnownTypes.GlobalBitConverter}.HalfToInt16Bits({x}) == {KnownTypes.GlobalBitConverter}.HalfToInt16Bits({y})";
             
-            case LeafRule.Decimal:
-                return $"Equals_{type.ShortName}({x}, {y})";
+                        case LeafRule.Decimal:
+                return $"{KnownTypes.GlobalHelpers}.DecimalEquals({x}, {y})";
             
             case LeafRule.DateTime:
                 return $"{KnownTypes.GlobalHelpers}.DateTimeBits({x}) == {KnownTypes.GlobalHelpers}.DateTimeBits({y})";
@@ -740,7 +744,118 @@ internal sealed class Emitter
         return $"GetHashCode_{type.ShortName}({value})";
     }
 
-    private static bool IsContainerOrProduct(TypeModel type) => type.Kind is 
+        /// <summary>
+    /// The words a member contributes to its owner's hash stream, in statement context. A leaf wider than 32 bits is
+    /// read once into a local named <paramref name="local"/> and split into its words, so the owner mixes them into one
+    /// seeded stream instead of finishing a nested hash per member; an inlined struct contributes its members' words.
+    /// Everything else contributes the single word of its own hash, or nothing when the level omits it.
+    /// </summary>
+    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<string> words)
+    {
+        switch (type.Kind)
+        {
+            case TypeKind.Leaf when WideLeafWords(type, value, local, words):
+                return;
+
+            case TypeKind.Struct when type.InlineAsSmallStruct:
+                var k = 0;
+                foreach (var member in type.Members)
+                    HashWords(Type(member.TypeId), Read(member, value, false), level, sameScc, $"{local}_{k++}", words);
+
+                return;
+        }
+
+        var single = HashOrOmit(type, value, level, sameScc);
+        if (single is not null)
+            words.Add(single);
+    }
+
+    /// <summary>Reads a wide leaf into <paramref name="local"/> and appends its 32-bit words; false when the leaf is not wide.</summary>
+    private bool WideLeafWords(TypeModel type, string value, string local, List<string> words)
+    {
+        switch (type.LeafRule)
+        {
+            case LeafRule.WideInteger:
+                if (type.GlobalName.EndsWith("Int128", StringComparison.Ordinal))
+                    return false;   // keeps its own seeded hash
+
+                var unsigned = type.GlobalName is "ulong" or "nuint" || type.GlobalName.EndsWith("UIntPtr", StringComparison.Ordinal);
+                _w.Line(unsigned ? $"ulong {local} = (ulong){value};" : $"long {local} = (long){value};");
+                Words64(local, words);
+                return true;
+
+            case LeafRule.Enum:
+                if (type.EnumUnderlyingWidth != 8)
+                    return false;
+
+                _w.Line(type.EnumUnderlyingUnsigned ? $"ulong {local} = (ulong){value};" : $"long {local} = (long){value};");
+                Words64(local, words);
+                return true;
+
+            case LeafRule.Double:
+                _w.Line($"long {local} = {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({value});");
+                Words64(local, words);
+                return true;
+
+            case LeafRule.DateTime:
+                _w.Line($"ulong {local} = {KnownTypes.GlobalHelpers}.DateTimeBits({value});");
+                Words64(local, words);
+                return true;
+
+            case LeafRule.DateTimeOffset:
+                _w.Line($"global::System.DateTimeOffset {local} = {value};");
+                _w.Line($"long {local}t = {local}.Ticks;");
+                _w.Line($"long {local}o = {local}.Offset.Ticks;");
+                Words64($"{local}t", words);
+                Words64($"{local}o", words);
+                return true;
+
+            case LeafRule.Guid:
+                _w.Line($"global::System.Guid {local} = {value};");
+                for (var i = 0; i < 4; i++)
+                    words.Add($"{KnownTypes.GlobalHelpers}.GuidWord({local}, {i})");
+
+                return true;
+
+            case LeafRule.Decimal:
+                _w.Line($"decimal {local} = {value};");
+                for (var i = 0; i < 4; i++)
+                    words.Add($"{KnownTypes.GlobalHelpers}.DecimalWord({local}, {i})");
+
+                return true;
+
+            case LeafRule.FloatAggregate:
+                _w.Line($"{type.GlobalName} {local} = {value};");
+                var k = 0;
+                foreach (var component in type.AggregateComponents)
+                {
+                    if (component.IsDouble)
+                    {
+                        _w.Line($"long {local}_{k} = {KnownTypes.GlobalBitConverter}.DoubleToInt64Bits({local}.{component.Expression});");
+                        Words64($"{local}_{k}", words);
+                    }
+                    else
+                    {
+                        words.Add(SingleBits($"{local}.{component.Expression}"));
+                    }
+
+                    k++;
+                }
+
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    private static void Words64(string local, List<string> words)
+    {
+        words.Add($"unchecked((int){local})");
+        words.Add($"unchecked((int)({local} >> 32))");
+    }
+
+    private static bool IsContainerOrProduct(TypeModel type) => type.Kind is  
         TypeKind.Array or TypeKind.List or TypeKind.ImmutableArray or TypeKind.ArraySegment or TypeKind.Memory or 
         TypeKind.ListInterface or TypeKind.EnumerableInterface or TypeKind.Set or TypeKind.Dictionary or 
         TypeKind.KeyValuePair or TypeKind.ValueTuple or TypeKind.Tuple;
@@ -786,8 +901,8 @@ internal sealed class Emitter
             case LeafRule.Half:
                 return $"(int){KnownTypes.GlobalBitConverter}.HalfToInt16Bits({value})";
             
-            case LeafRule.Decimal:
-                return $"GetHashCode_{type.ShortName}({value})";
+                        case LeafRule.Decimal:
+                return $"{KnownTypes.GlobalHashCode}.Hash({value})";
             
             case LeafRule.DateTime:
                 return $"{KnownTypes.GlobalHashCode}.Hash({KnownTypes.GlobalHelpers}.DateTimeBits({value}))";
@@ -860,11 +975,14 @@ internal sealed class Emitter
             // The comparer for object declares an instance Equals(object, object),
             // which hides the static one every class inherits from object; `new` states that this is meant.
             using (Method(type, $"public {(type.IsObject ? "new " : string.Empty)}bool Equals({Param(type)} x, {Param(type)} y)"))
-            {
-                _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
+                        {
+                // Only a closure with a cycle can recurse without bound, and only its Equals: the hash stops one payload
+                // edge into a cycle, and an acyclic closure is as deep as its declarations. Every cycle also passes
+                // through a guard, whose TryEnter checks the stack again at each turn.
                 var body = WrapperEqualsBody(type);
                 if (type.NeedsState)
                 {
+                    _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
                     _w.Line($"{KnownTypes.GlobalState} state = new {KnownTypes.GlobalState}(MaxComparisonPairs);");
                     using (_w.Block("try"))
                         _w.Return(body);
@@ -879,8 +997,7 @@ internal sealed class Emitter
             
             _w.Line();
             using (Method(type, $"public int GetHashCode({Param(type)} o)"))
-            {
-                _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
+                        {
                 _w.Return(WrapperHashBody(type));
             }
         }
@@ -901,10 +1018,7 @@ internal sealed class Emitter
     {
         switch (type.Kind)
         {
-            case TypeKind.Leaf:
-                if (type.LeafRule == LeafRule.Decimal) 
-                    EmitDecimalCores(type);
-
+                        case TypeKind.Leaf:
                 break;
             case TypeKind.Nullable:
                 break;
@@ -1081,46 +1195,6 @@ internal sealed class Emitter
         _w.Line();
     }
 
-    private void EmitDecimalCores(TypeModel type)
-    {
-        // Both shapes compare the four GetBits words; only where those words live differs.
-        var spanBits = _model.Capabilities.HasDecimalGetBitsSpan;
-        using (_w.Block($"private static bool Equals_{type.ShortName}(decimal x, decimal y)"))
-        {
-            if (spanBits)
-            {
-                _w.Line("global::System.Span<int> a = stackalloc int[4];");
-                _w.Line("global::System.Span<int> b = stackalloc int[4];");
-                _w.Line("decimal.GetBits(x, a);");
-                _w.Line("decimal.GetBits(y, b);");
-            }
-            else
-            {
-                _w.Line("int[] a = decimal.GetBits(x);");
-                _w.Line("int[] b = decimal.GetBits(y);");
-            }
-
-            _w.Return("a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3]");
-        }
-
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}(decimal o)"))
-        {
-            if (spanBits)
-            {
-                _w.Line("global::System.Span<int> a = stackalloc int[4];");
-                _w.Line("decimal.GetBits(o, a);");
-            }
-            else
-            {
-                _w.Line("int[] a = decimal.GetBits(o);");
-            }
-
-            _w.Return($"{KnownTypes.GlobalHashCode}.Combine(a[0], a[1], a[2], a[3])");
-        }
-
-        _w.Line();
-    }
-
     // ----- classes ------------------------------------------------------------------------------------------------------------
 
     private void EmitClassCores(TypeModel type)
@@ -1241,17 +1315,9 @@ internal sealed class Emitter
             if (!membersOnly && type.Kind == TypeKind.Class) 
                 _w.Line("if (o is null) return 0;");
 
-            var inputs = new List<string>(type.Members.Count);
+                        var inputs = new List<string>(type.Members.Count);
             foreach (var member in type.Members)
-            {
-                var hash = HashOrOmit(
-                    Type(member.TypeId), 
-                    HoistedRead(member, "o", inReceiver, "O"),
-                    level, 
-                    member.IsSameScc);
-                if (hash is not null) 
-                    inputs.Add(hash);
-            }
+                HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), level, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
 
             _w.Return(Combine(inputs));
         }
@@ -1293,48 +1359,123 @@ internal sealed class Emitter
     {
         EmitReferencePrelude();
 
-        var assignable = type.Cases.Where(c => !c.IsExact).ToList();
+                var assignable = type.Cases.Where(c => !c.IsExact).ToList();
         var exact = type.Cases.Where(c => c.IsExact).ToList();
 
-        foreach (var c in assignable)
+        // Sealed assignable cases no earlier case accepts, string above all: one method-table compare each.
+        foreach (var c in assignable.Where(c => c.Hoistable))
+            EmitAssignableCaseEquals(c, bothSides: false);
+
+        // Runtime types the closure knows come first: a sealed or value type is one method-table compare, an unsealed
+        // class one GetType compare, and above MaxSwitchCases one lookup in a prebuilt map. Each lands where the
+        // assignable chain below would have sent it.
+                if (exact.Count > _model.Options.MaxSwitchCases)
         {
-            var target = Type(c.TypeId);
-            var local = $"c{c.TypeId}";
-            using (_w.Block($"if (x is {target.GlobalName} x{local})"))
+            // The leaves that dominate real payloads cost one method-table compare each, ahead of the map lookup.
+            foreach (var c in HotLeafCases(exact))
             {
-                _w.Line($"if (!(y is {target.GlobalName} y{local})) return false;");
-                _w.Return($"{AssignableEq(target, $"x{local}", $"y{local}")}");
+                using (_w.Block($"if ({ExactTest("x", Type(c.TypeId))})"))
+                    EmitKnownCaseEquals(type, c, assignable);
             }
-            _w.Line($"if (y is {target.GlobalName}) return false;");
-        }
 
-        _w.Line($"{KnownTypes.GlobalType} t = x.GetType();");
-        _w.Line("if (t != y.GetType()) return false;");
-
-        if (exact.Count > _model.Options.MaxSwitchCases)
-        {
-            using (_w.Block($"switch ({type.ShortName}_Dispatch.CaseIndex.TryGetValue(t, out int i) ? i : -1)"))
+            using (_w.Block($"switch ({type.ShortName}_Dispatch.CaseIndex.TryGetValue(x.GetType(), out int i) ? i : -1)"))
             {
-                for (var k = 0; k < exact.Count; k++) 
-                    _w.Line($"case {k}: return {ExactEq(type, Type(exact[k].TypeId))};");
+                for (var k = 0; k < exact.Count; k++)
+                {
+                    _w.Line($"case {k}:");
+                    using (_w.Block())
+                        EmitKnownCaseEquals(type, exact[k], assignable);
+                }
 
-                _w.Line($"default: throw new {KnownTypes.GlobalUnknownTypeException}(t);");
+                _w.Line("default: break;");
             }
+
+            _pendingDispatchHolders.Add((type, exact));
         }
         else
         {
             foreach (var c in exact)
             {
-                var target = Type(c.TypeId);
-                _w.Line($"if (t == typeof({target.GlobalName})) return {ExactEq(type, target)};");
+                using (_w.Block($"if ({ExactTest("x", Type(c.TypeId))})"))
+                    EmitKnownCaseEquals(type, c, assignable);
             }
-
-            _w.Line($"throw new {KnownTypes.GlobalUnknownTypeException}(t);");
         }
 
-        if (exact.Count > _model.Options.MaxSwitchCases)
-            _pendingDispatchHolders.Add((type, exact));
+                // Runtime types the closure does not know: the first assignable case each side matches decides. A hoisted case
+        // has already taken every x of its type; only its y test is left to do.
+        foreach (var c in assignable)
+        {
+            if (c.Hoistable)
+                _w.Line($"if (y is {Type(c.TypeId).GlobalName}) return false;");
+            else
+                EmitAssignableCaseEquals(c, bothSides: true);
+        }
+
+        // Neither side matched a case: different runtime types are unequal, the same unknown type cannot be compared.
+        _w.Line("if (x.GetType() != y.GetType()) return false;");
+        _w.Line($"throw new {KnownTypes.GlobalUnknownTypeException}(x.GetType());");
     }
+
+        /// <summary>
+    /// An assignable case: both sides must match it, and its rule decides. <paramref name="bothSides"/> adds the test that
+    /// a y matching it, when x did not, is unequal.
+    /// </summary>
+    private void EmitAssignableCaseEquals(DispatchCase c, bool bothSides)
+    {
+        var target = Type(c.TypeId);
+        var local = $"c{c.TypeId}";
+        using (_w.Block($"if (x is {target.GlobalName} x{local})"))
+        {
+            _w.Line($"if (!(y is {target.GlobalName} y{local})) return false;");
+            _w.Return($"{AssignableEq(target, $"x{local}", $"y{local}")}");
+        }
+
+        if (bothSides)
+            _w.Line($"if (y is {target.GlobalName}) return false;");
+    }
+
+    /// <summary>
+    /// The body of a known exact case, with <c>x</c> established as the case type: the other side must be the same
+    /// exact type, or, when the case type converts to an assignable case, must match that case as the chain would demand.
+    /// </summary>
+    private void EmitKnownCaseEquals(TypeModel type, DispatchCase c, List<DispatchCase> assignable)
+    {
+        var target = Type(c.TypeId);
+        if (c.ResolvedAssignable >= 0)
+        {
+            var a = Type(assignable[c.ResolvedAssignable].TypeId);
+            var local = $"y{a.Id}";
+            _w.Line($"if (!(y is {a.GlobalName} {local})) return false;");
+            _w.Return(AssignableEq(a, AsCase(a, "x"), local));
+            return;
+        }
+
+        _w.Line($"if (!({ExactTest("y", target)})) return false;");
+        _w.Return(ExactEq(type, target));
+    }
+
+        /// <summary>The built-in leaves that most object-typed values are, in the order they are tested ahead of a dispatch map.</summary>
+    private static readonly string[] HotLeafNames =
+        ["string", "int", "long", "decimal", "double", "bool", "global::System.Guid", "global::System.DateTime", "global::System.DateTimeOffset"];
+
+    /// <summary>The exact cases among <see cref="HotLeafNames"/> that land on their own rule, in that order.</summary>
+    private IEnumerable<DispatchCase> HotLeafCases(List<DispatchCase> exact) =>
+        HotLeafNames
+            .Select(name => exact.FirstOrDefault(c => c.ResolvedAssignable < 0 && Type(c.TypeId) is { Kind: TypeKind.Leaf } t && t.GlobalName == name))
+            .Where(c => c is not null)!;
+
+    /// <summary>
+    /// An exact runtime-type test the JIT lowers to a method-table compare: <c>is</c> for a sealed or value type,
+    /// where it is exact, and <c>GetType() == typeof</c> for an unsealed class and for <c>object</c> itself.
+    /// </summary>
+    private static string ExactTest(string value, TypeModel target) =>
+        !target.IsObject && (target.IsSealed || target.IsValueType) && !target.GlobalName.StartsWith("(", StringComparison.Ordinal)
+            ? $"{value} is {target.GlobalName}"
+            : $"{value}.GetType() == typeof({target.GlobalName})";   // tuple syntax after `is` is a pattern, not a type, before C# 9
+
+    /// <summary>A known reference viewed as an assignable case type, which is always a reference type, without a cast check.</summary>
+    private static string AsCase(TypeModel caseType, string value) =>
+        caseType.IsValueType ? $"(({caseType.GlobalName}){value})" : $"{KnownTypes.GlobalUnsafe}.As<{caseType.GlobalName}>({value})";
 
     /// <summary>The Dictionary{Type, int} holders of large dispatch shapes, emitted after the cores of the type that asked for them.</summary>
     private void EmitDispatchHolders()
@@ -1438,37 +1579,56 @@ internal sealed class Emitter
         using (_w.Block($"private static int {name}({Param(type)} o)"))
         {
             _w.Line("if (o is null) return 0;");
+                        var assignable = type.Cases.Where(c => !c.IsExact).ToList();
             var exact = type.Cases.Where(c => c.IsExact).ToList();
-            foreach (var c in type.Cases.Where(c => !c.IsExact))
-            {
-                var target = Type(c.TypeId);
-                var local = $"c{c.TypeId}";
-                _w.Line($"if (o is {target.GlobalName} {local}) return {CaseHash(type, target, local, level, c.IsSameScc, isExact: false)};");
-            }
 
-            _w.Line($"{KnownTypes.GlobalType} t = o.GetType();");
+            foreach (var c in assignable.Where(c => c.Hoistable))
+                EmitAssignableCaseHash(type, c, level);
+
             if (exact.Count > _model.Options.MaxSwitchCases)
             {
-                using (_w.Block($"switch ({type.ShortName}_Dispatch.CaseIndex.TryGetValue(t, out int i) ? i : -1)"))
+                foreach (var c in HotLeafCases(exact))
+                    _w.Line($"if ({ExactTest("o", Type(c.TypeId))}) return {KnownCaseHash(type, c, assignable, level)};");
+
+                using (_w.Block($"switch ({type.ShortName}_Dispatch.CaseIndex.TryGetValue(o.GetType(), out int i) ? i : -1)"))
                 {
                     for (var k = 0; k < exact.Count; k++)
-                        _w.Line($"case {k}: return {CaseHash(type, Type(exact[k].TypeId), "o", level, exact[k].IsSameScc, isExact: true)};");
+                        _w.Line($"case {k}: return {KnownCaseHash(type, exact[k], assignable, level)};");
 
-                    _w.Line($"default: throw new {KnownTypes.GlobalUnknownTypeException}(t);");
+                    _w.Line("default: break;");
                 }
             }
             else
             {
                 foreach (var c in exact)
-                {
-                    var target = Type(c.TypeId);
-                    _w.Line($"if (t == typeof({target.GlobalName})) return {CaseHash(type, target, "o", level, c.IsSameScc, isExact: true)};");
-                }
-
-                _w.Line($"throw new {KnownTypes.GlobalUnknownTypeException}(t);");
+                    _w.Line($"if ({ExactTest("o", Type(c.TypeId))}) return {KnownCaseHash(type, c, assignable, level)};");
             }
 
+                        foreach (var c in assignable.Where(c => !c.Hoistable))
+                EmitAssignableCaseHash(type, c, level);
+
+            _w.Line($"throw new {KnownTypes.GlobalUnknownTypeException}(o.GetType());");
         }
+    }
+
+        private void EmitAssignableCaseHash(TypeModel type, DispatchCase c, int level)
+    {
+        var target = Type(c.TypeId);
+        var local = $"c{c.TypeId}";
+        _w.Line($"if (o is {target.GlobalName} {local}) return {CaseHash(type, target, local, level, c.IsSameScc, isExact: false)};");
+    }
+
+    /// <summary>The hash of a known exact case: the case type's own rule, or the assignable case its type converts to.</summary>
+    private string KnownCaseHash(TypeModel type, DispatchCase c, List<DispatchCase> assignable, int level)
+    {
+        if (c.ResolvedAssignable >= 0)
+        {
+            var a = assignable[c.ResolvedAssignable];
+            var target = Type(a.TypeId);
+            return CaseHash(type, target, AsCase(target, "o"), level, a.IsSameScc, isExact: false);
+        }
+
+        return CaseHash(type, Type(c.TypeId), "o", level, c.IsSameScc, isExact: true);
     }
 
     /// <summary>The hash of a dispatch case at the level the dispatch preserves: a same-SCC case keeps the level, any other is full.</summary>
@@ -1612,6 +1772,8 @@ internal sealed class Emitter
         _w.Line();
     }
 
+    private bool ImmutableSpans => _model.Capabilities is { HasImmutableArray: true, HasReadOnlySpan: true };
+
     private void EmitListInterfaceCores(TypeModel type)
     {
         var element = Type(type.ElementTypeId);
@@ -1621,18 +1783,13 @@ internal sealed class Emitter
         using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             EmitReferencePrelude();
-            EmitImmutablePreflight(element, "x", "y");
+            EmitSpanCapture(element, "x", "y");
             _w.Line($"{iface} xi = x;");
             _w.Line($"{iface} yi = y;");
             _w.Line("int count = xi.Count;");
             _w.Line("if (count != yi.Count) return false;");
             EmitCycleGuard(type);
-
-            if (_model.Capabilities.HasFrameworkSpanHelpers)
-            {
-                _spanCores.Add(element.Id);
-                _w.Line($"if ({KnownTypes.GlobalCollections}.TryGetSpan(x, out global::System.ReadOnlySpan<{element.GlobalName}> xs) && {KnownTypes.GlobalCollections}.TryGetSpan(y, out global::System.ReadOnlySpan<{element.GlobalName}> ys)) return Equals_SpanOf{element.ShortName}(xs, ys{(element.NeedsState ? ", ref state" : string.Empty)});");
-            }
+            EmitSpanCompare(element);
 
             using (_w.For("count")) _w.Line($"if (!({Eq(element, "xi[i]", "yi[i]")})) return false;");
             _w.Return("true");
@@ -1641,7 +1798,7 @@ internal sealed class Emitter
         using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            EmitImmutablePreflightHash(element, "o");
+            EmitSpanHash(type, element, "o");
             _w.Line($"{iface} oi = o;");
             _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
             _w.Line("int n = oi.Count;");
@@ -1649,29 +1806,89 @@ internal sealed class Emitter
             _w.Return("h.ToHashCode()");
         }
 
-        if (type.HasShallowHash) 
+        if (type.HasShallowHash)
             _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : ((({iface})o).Count == 0 ? 1 : (({iface})o).Count)");
+
+        if (_model.Capabilities.HasFrameworkSpanHelpers)
+            EmitHashOps(type, element);
 
         _w.Line();
     }
 
-    private void EmitImmutablePreflight(TypeModel element, string x, string y)
+    /// <summary>
+    /// The span each side of an interface-typed collection exposes, when it is an array, a list, or an immutable array,
+    /// captured before anything reads the view. A default immutable array equals only another default one; nothing else
+    /// may touch it, because its members throw.
+    /// </summary>
+    private void EmitSpanCapture(TypeModel element, string x, string y)
     {
-        if (!_model.Capabilities.HasImmutableArray) 
+        var capture = _model.Capabilities.HasFrameworkSpanHelpers || ImmutableSpans;
+        if (capture)
+        {
+            _spanCores.Add(element.Id);
+            var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
+            _w.Line($"{span} {x}s = default;");
+            _w.Line($"bool {x}Span = false;");
+            _w.Line($"{span} {y}s = default;");
+            _w.Line($"bool {y}Span = false;");
+        }
+
+        if (!_model.Capabilities.HasImmutableArray)
             return;
 
         var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
-        _w.Line($"bool {x}Default = {x} is {immutable} i{x} && i{x}.IsDefault;");
-        _w.Line($"bool {y}Default = {y} is {immutable} i{y} && i{y}.IsDefault;");
-        _w.Line($"if ({x}Default || {y}Default) return {x}Default && {y}Default;");
+        if (ImmutableSpans)
+        {
+            using (_w.Block($"if ({x} is {immutable} i{x})"))
+            {
+                _w.Line($"if (i{x}.IsDefault) return {y} is {immutable} i{y}d && i{y}d.IsDefault;");
+                _w.Line($"{x}s = i{x}.AsSpan();");
+                _w.Line($"{x}Span = true;");
+            }
+
+            using (_w.Block($"if ({y} is {immutable} i{y})"))
+            {
+                _w.Line($"if (i{y}.IsDefault) return false;");
+                _w.Line($"{y}s = i{y}.AsSpan();");
+                _w.Line($"{y}Span = true;");
+            }
+        }
+        else
+        {
+            _w.Line($"bool {x}Default = {x} is {immutable} i{x} && i{x}.IsDefault;");
+            _w.Line($"bool {y}Default = {y} is {immutable} i{y} && i{y}.IsDefault;");
+            _w.Line($"if ({x}Default || {y}Default) return {x}Default && {y}Default;");
+        }
     }
 
-    private void EmitImmutablePreflightHash(TypeModel element, string o)
+    /// <summary>Compares through the span core when both sides captured or expose a span; otherwise falls through.</summary>
+    private void EmitSpanCompare(TypeModel element)
     {
-        if (!_model.Capabilities.HasImmutableArray) 
+        var helpers = _model.Capabilities.HasFrameworkSpanHelpers;
+        if (!helpers && !ImmutableSpans)
             return;
 
-        _w.Line($"if ({o} is global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}> io && io.IsDefault) return 0;");
+        var xSpan = helpers ? $"(xSpan || {KnownTypes.GlobalCollections}.TryGetSpan(x, out xs))" : "xSpan";
+        var ySpan = helpers ? $"(ySpan || {KnownTypes.GlobalCollections}.TryGetSpan(y, out ys))" : "ySpan";
+        _w.Line($"if ({xSpan} && {ySpan}) return Equals_SpanOf{element.ShortName}(xs, ys{(element.NeedsState ? ", ref state" : string.Empty)});");
+    }
+
+    /// <summary>The hash of an interface-typed collection through its span, when it has one; otherwise falls through. A default immutable array hashes to 0.</summary>
+    private void EmitSpanHash(TypeModel container, TypeModel element, string o)
+    {
+        var helpers = _model.Capabilities.HasFrameworkSpanHelpers;
+        var ops = container.ElementIsSameScc ? $"{container.ShortName}ShallowOps" : $"{container.ShortName}Ops";
+        var hashSpan = $"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>";
+        if (_model.Capabilities.HasImmutableArray)
+        {
+            var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
+            _w.Line(helpers && ImmutableSpans
+                ? $"if ({o} is {immutable} io) return io.IsDefault ? 0 : {hashSpan}(io.AsSpan());"
+                : $"if ({o} is {immutable} io && io.IsDefault) return 0;");
+        }
+
+        if (helpers)
+            _w.Line($"if ({KnownTypes.GlobalCollections}.TryGetSpan({o}, out global::System.ReadOnlySpan<{element.GlobalName}> s)) return {hashSpan}(s);");
     }
 
     private void EmitEnumerableCores(TypeModel type)
@@ -1683,17 +1900,18 @@ internal sealed class Emitter
         using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             EmitReferencePrelude();
-            EmitImmutablePreflight(element, "x", "y");
+            EmitSpanCapture(element, "x", "y");
+            if (_model.Capabilities.HasFrameworkSpanHelpers || ImmutableSpans)
+            {
+                // Both sides have spans: their lengths decide, and no interface is consulted.
+                EmitCycleGuard(type);
+                EmitSpanCompare(element);
+            }
+
             _w.Line($"int xCount = x is global::System.Collections.Generic.ICollection<{element.GlobalName}> xc ? xc.Count : (x is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> xr ? xr.Count : -1);");
             _w.Line($"int yCount = y is global::System.Collections.Generic.ICollection<{element.GlobalName}> yc ? yc.Count : (y is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> yr ? yr.Count : -1);");
             _w.Line("if (xCount >= 0 && yCount >= 0 && xCount != yCount) return false;");
             EmitCycleGuard(type);
-
-            if (_model.Capabilities.HasFrameworkSpanHelpers)
-            {
-                _spanCores.Add(element.Id);
-                _w.Line($"if ({KnownTypes.GlobalCollections}.TryGetSpan(x, out global::System.ReadOnlySpan<{element.GlobalName}> xs) && {KnownTypes.GlobalCollections}.TryGetSpan(y, out global::System.ReadOnlySpan<{element.GlobalName}> ys)) return Equals_SpanOf{element.ShortName}(xs, ys{(element.NeedsState ? ", ref state" : string.Empty)});");
-            }
 
             _w.Line("int n = 0;");
             using (_w.Block($"using (global::System.Collections.Generic.IEnumerator<{element.GlobalName}> ex = (({enumerable})x).GetEnumerator())"))
@@ -1706,7 +1924,9 @@ internal sealed class Emitter
                         _w.Line("bool my = ey.MoveNext();");
                         _w.Line("if (mx != my) return false;");
                         _w.Line("if (!mx) break;");
-                        _w.Line($"if (!({Eq(element, "ex.Current", "ey.Current")})) return false;");
+                        _w.Line($"{Param(element)} cx = ex.Current;");
+                        _w.Line($"{Param(element)} cy = ey.Current;");
+                        _w.Line($"if (!({Eq(element, "cx", "cy")})) return false;");
                         _w.Line("n++;");
                     }
                 }
@@ -1718,7 +1938,7 @@ internal sealed class Emitter
         using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            EmitImmutablePreflightHash(element, "o");
+            EmitSpanHash(type, element, "o");
             _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
             using (_w.Block($"foreach ({element.GlobalName} e in ({enumerable})o)")) _w.Line($"h.Add({ElementHashForContainer(type, element, "e")});");
             _w.Return("h.ToHashCode()");
@@ -1739,6 +1959,9 @@ internal sealed class Emitter
             }
         }
 
+        if (_model.Capabilities.HasFrameworkSpanHelpers)
+            EmitHashOps(type, element);
+
         _w.Line();
     }
 
@@ -1753,25 +1976,68 @@ internal sealed class Emitter
         var p = Param(type);
         var iface = type.CollectionInterfaceGlobalName.Length > 0 ? type.CollectionInterfaceGlobalName : type.GlobalName;
         var ops = $"{type.ShortName}Ops";
+        var concrete = dictionary
+            ? $"global::System.Collections.Generic.Dictionary<{key.GlobalName}, {value!.GlobalName}>"
+            : $"global::System.Collections.Generic.HashSet<{key.GlobalName}>";
+
+        // The static type is the framework collection itself: no view, no runtime test, direct Count and enumerator.
+        var isConcrete = type.GlobalName == concrete;
+
+        // The key's rule is what EqualityComparer<K>.Default does, so a collection built on that comparer already
+        // groups by the context's equality and can be walked through its own lookup, with no materialization or sort.
+        var keyIsDefault = key is { Kind: TypeKind.Leaf, DefaultCompatible: true } && key.LeafRule != LeafRule.Custom;
 
         using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             EmitReferencePrelude();
-            _w.Line($"{iface} xi = x;");
-            _w.Line($"{iface} yi = y;");
-            _w.Line("int count = xi.Count;");
-            _w.Line("if (count != yi.Count) return false;");
-            if (!dictionary && key is { Kind: TypeKind.Leaf, DefaultCompatible: true } && key.LeafRule != LeafRule.Custom)
+            string xs, ys;
+            if (isConcrete)
             {
-                var hashSet = $"global::System.Collections.Generic.HashSet<{key.GlobalName}>";
-                _w.Line($"if (x is {hashSet} hx && y is {hashSet} hy && {RefEq("hx.Comparer", $"{KnownTypes.GlobalEqualityComparer}<{key.GlobalName}>.Default")} && {RefEq("hy.Comparer", $"{KnownTypes.GlobalEqualityComparer}<{key.GlobalName}>.Default")}) return hx.SetEquals(hy);");
+                xs = "x";
+                ys = "y";
+                _w.Line("int count = x.Count;");
+                _w.Line("if (count != y.Count) return false;");
+            }
+            else
+            {
+                xs = "xi";
+                ys = "yi";
+                _w.Line($"{iface} xi = x;");
+                _w.Line($"{iface} yi = y;");
+                _w.Line("int count = xi.Count;");
+                _w.Line("if (count != yi.Count) return false;");
             }
 
             EmitCycleGuard(type);
 
+            if (keyIsDefault)
+            {
+                var (cx, cy) = isConcrete ? ("x", "y") : ("hx", "hy");
+                var test = isConcrete
+                    ? $"if ({DefaultComparerTest(key, "x.Comparer")} && {DefaultComparerTest(key, "y.Comparer")})"
+                    : $"if (x is {concrete} hx && y is {concrete} hy && {DefaultComparerTest(key, "hx.Comparer")} && {DefaultComparerTest(key, "hy.Comparer")})";
+                using (_w.Block(test))
+                {
+                    if (!dictionary)
+                    {
+                        _w.Return($"{cx}.SetEquals({cy})");
+                    }
+                    else
+                    {
+                        using (_w.Block($"foreach ({elementName} e in {cx})"))
+                        {
+                            _w.Line($"{Param(value!)} v;");
+                            _w.Line($"if (!{cy}.TryGetValue(e.Key, out v) || !({Eq(value!, "e.Value", "v")})) return false;");
+                        }
+
+                        _w.Return("true");
+                    }
+                }
+            }
+
             var call = dictionary
-                ? $"{KnownTypes.GlobalUnordered}.DictionaryEquals<{key.GlobalName}, {value!.GlobalName}, {ops}>(xi, yi, count, MaxUnorderedCollisionRun{StateArg(type)})"
-                : $"{KnownTypes.GlobalUnordered}.SetEquals<{key.GlobalName}, {ops}>(xi, yi, count, MaxUnorderedCollisionRun{StateArg(type)})";
+                ? $"{KnownTypes.GlobalUnordered}.DictionaryEquals<{key.GlobalName}, {value!.GlobalName}, {ops}>({xs}, {ys}, count, MaxUnorderedCollisionRun{StateArg(type)})"
+                : $"{KnownTypes.GlobalUnordered}.SetEquals<{key.GlobalName}, {ops}>({xs}, {ys}, count, MaxUnorderedCollisionRun{StateArg(type)})";
             _w.Return(call);
         }
 
@@ -1791,24 +2057,45 @@ internal sealed class Emitter
         using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o)"))
         {
             _w.Line("if (o is null) return 0;");
-            _w.Line($"{iface} oi = o;");
-            _w.Line("int count = oi.Count;");
             _w.Line("int sum = 0;");
-            var concrete = dictionary
-                ? $"global::System.Collections.Generic.Dictionary<{key.GlobalName}, {value!.GlobalName}>"
-                : $"global::System.Collections.Generic.HashSet<{key.GlobalName}>";
-            using (_w.Block($"if (o is {concrete} known)")) _w.Line($"foreach ({elementName} e in known) {{ unchecked {{ sum += {EntryHash(type, key, value, "e", forMatching: false)}; }} }}");
-            using (_w.Block("else"))
+            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {EntryHash(type, key, value, "e", forMatching: false)}; }}}} }}}}";
+            if (isConcrete)
             {
-                _w.Line($"foreach ({elementName} e in (global::System.Collections.Generic.IEnumerable<{elementName}>)o) {{ unchecked {{ sum += {EntryHash(type, key, value, "e", forMatching: false)}; }} }}");
+                _w.Line("int count = o.Count;");
+                _w.Line(string.Format(entry, "o"));
             }
+            else
+            {
+                _w.Line($"{iface} oi = o;");
+                _w.Line("int count = oi.Count;");
+                using (_w.Block($"if (o is {concrete} known)"))
+                    _w.Line(string.Format(entry, "known"));
+                using (_w.Block("else"))
+                    _w.Line(string.Format(entry, $"(global::System.Collections.Generic.IEnumerable<{elementName}>)o"));
+            }
+
             _w.Line($"int h = {KnownTypes.GlobalHashCode}.Combine(count, sum);");
             _w.Return("count == 0 && h == 0 ? 1 : h");
         }
 
-        if (type.HasShallowHash) _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : ((({iface})o).Count == 0 ? 1 : (({iface})o).Count)");
+        if (type.HasShallowHash)
+            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", isConcrete
+                ? "o is null ? 0 : (o.Count == 0 ? 1 : o.Count)"
+                : $"o is null ? 0 : ((({iface})o).Count == 0 ? 1 : (({iface})o).Count)");
 
         _w.Line();
+    }
+
+    /// <summary>
+    /// True when a framework set or dictionary compares its keys the way the context does: the default comparer, or
+    /// for string keys the ordinal comparer, which is the same equality under another instance.
+    /// </summary>
+    private static string DefaultComparerTest(TypeModel key, string comparer)
+    {
+        var isDefault = RefEq(comparer, $"{KnownTypes.GlobalEqualityComparer}<{key.GlobalName}>.Default");
+        return key.GlobalName == "string"
+            ? $"({isDefault} || {RefEq(comparer, "global::System.StringComparer.Ordinal")})"
+            : isDefault;
     }
 
     /// <summary>
@@ -1871,12 +2158,10 @@ internal sealed class Emitter
             {
                 if (reference) _w.Line("if (o is null) return 0;");
 
-                var inputs = new List<string>(items.Count);
+                                var inputs = new List<string>(items.Count);
+                var k = 0;
                 foreach (var (itemType, path, sameScc) in items)
-                {
-                    var hash = HashOrOmit(itemType, $"o.{path}", level, sameScc);
-                    if (hash is not null) inputs.Add(hash);
-                }
+                    HashWords(itemType, $"o.{path}", level, sameScc, $"w{k++}", inputs);
 
                 _w.Return(Combine(inputs));
             }

@@ -87,8 +87,8 @@ internal static class ContextAnalyzer
         foreach (var attribute in symbol.GetAttributes())
         {
             var name = attribute.AttributeClass?.ToDisplayString();
-            var isRegistration = string.Equals(name, KnownTypes.GenerateDeepEqualsAttribute, StringComparison.Ordinal);
-            var isOptions = string.Equals(name, KnownTypes.OptionsAttribute, StringComparison.Ordinal);
+            var isRegistration = name == KnownTypes.GenerateDeepEqualsAttribute;
+            var isOptions = name == KnownTypes.OptionsAttribute;
             if (!isRegistration && !isOptions)
                 continue;
 

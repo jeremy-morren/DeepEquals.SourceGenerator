@@ -42,7 +42,7 @@ public static class Dotnet
         {
             FileName = "dotnet",
             Arguments = arguments,
-            WorkingDirectory = workingDirectory ?? SmokePaths.SmokeRoot,
+            WorkingDirectory = workingDirectory ?? SmokePaths.DownstreamRoot,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -102,7 +102,7 @@ public static class Dotnet
     }
 
     /// <summary>Runs an executable the SDK produced, and returns what it printed.</summary>
-    public static CommandResult RunExecutable(ITestOutputHelper output, string path, IDictionary<string, string>? environment = null)
+    public static CommandResult RunExecutable(ITestOutputHelper output, string path, IDictionary<string, string>? environment = null, params string[] arguments)
     {
         if (!File.Exists(path)) throw new FileNotFoundException($"the consumer did not produce {path}", path);
 
@@ -115,9 +115,11 @@ public static class Dotnet
             UseShellExecute = false,
         };
 
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+
         if (environment is not null) foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
 
-        output.WriteLine($"$ {path}");
+        output.WriteLine($"$ {path} {string.Join(' ', arguments)}");
 
         using var process = Process.Start(start)!;
         var text = process.StandardOutput.ReadToEnd() + process.StandardError.ReadToEnd();

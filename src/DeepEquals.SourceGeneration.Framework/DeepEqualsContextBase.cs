@@ -15,7 +15,7 @@ public abstract class DeepEqualsContextBase
     /// <summary>
     /// Looks a comparer up by exact type.
     /// Never throws, so a generic static cache initializer can store the result or null without poisoning the cache type;
-    /// <see cref="RequireEqualityComparer{T}"/> turns null into the documented exception.
+    /// <see cref="RequireEqualityComparer{T}(object?)"/> turns null into the documented exception.
     /// </summary>
     protected static object? LookupEqualityComparer(Dictionary<Type, object> comparers, Type type)
     {
@@ -31,7 +31,18 @@ public abstract class DeepEqualsContextBase
 #endif
     }
 
+    /// <summary>
+    /// Looks a comparer up by exact type, already typed for the generic static cache that stores it, so the call that
+    /// reads the cache needs no cast. Never throws.
+    /// </summary>
+    protected static IEqualityComparer<T>? LookupEqualityComparer<T>(Dictionary<Type, object> comparers)
+        => LookupEqualityComparer(comparers, typeof(T)) as IEqualityComparer<T>;
+
     /// <summary>Returns the cached comparer or throws <see cref="DeepEqualsMissingComparerException"/> for <typeparamref name="T"/>.</summary>
     protected static IEqualityComparer<T> RequireEqualityComparer<T>(object? comparer)
         => comparer as IEqualityComparer<T> ?? throw new DeepEqualsMissingComparerException(typeof(T));
+
+    /// <summary>Returns the cached comparer or throws <see cref="DeepEqualsMissingComparerException"/> for <typeparamref name="T"/>.</summary>
+    protected static IEqualityComparer<T> RequireEqualityComparer<T>(IEqualityComparer<T>? comparer)
+        => comparer ?? throw new DeepEqualsMissingComparerException(typeof(T));
 }

@@ -1,0 +1,58 @@
+@* The smoke test waits for #result and reads its text, so the element appears only once the
+   assertions have actually run on the WebAssembly runtime. It then waits for #benchmarks, which
+   appears once the stopwatch harness has timed every shared scenario in the browser. *@
+
+<h1>DeepEquals WebAssembly smoke</h1>
+
+@if (_result == null)
+{
+    <p><em>running…</em></p>
+}
+else
+{
+    <p id="result">@_result</p>
+}
+
+@if (_result != null && _benchmarks == null)
+{
+    <p><em>benchmarking…</em></p>
+}
+else if (_benchmarks != null)
+{
+    <pre id="benchmarks">@_benchmarks</pre>
+}
+
+@code {
+    private string _result;
+    private string _benchmarks;
+
+    protected override void OnInitialized()
+    {
+        try
+        {
+            _result = Checks.Run();
+        }
+        catch (Exception ex)
+        {
+            _result = "FAIL " + ex.GetType().FullName + ": " + ex.Message;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        // Let the result paint before the harness occupies the single thread.
+        await Task.Delay(50);
+        try
+        {
+            _benchmarks = MicroBench.Format(MicroBench.Run(Scenarios.All(), 80));
+        }
+        catch (Exception ex)
+        {
+            _benchmarks = "FAIL " + ex.GetType().FullName + ": " + ex.Message;
+        }
+
+        StateHasChanged();
+    }
+}

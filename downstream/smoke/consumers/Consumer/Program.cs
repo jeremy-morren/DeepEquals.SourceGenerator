@@ -3,6 +3,7 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System;
+using DeepEquals.Downstream;
 
 namespace DeepEquals.Smoke
 {
@@ -12,8 +13,16 @@ namespace DeepEquals.Smoke
     /// </summary>
     public static class Program
     {
-        public static int Main()
+        public static int Main(string[] args)
         {
+            if (args.Length > 0 && args[0] == "--bench")
+            {
+                // The stopwatch harness over the shared scenarios: indicative numbers for this tier.
+                Console.WriteLine(Checks.Describe());
+                Console.WriteLine(MicroBench.Format(MicroBench.Run(Scenarios.All(), 100)));
+                return 0;
+            }
+
             var result = Checks.Run();
             Console.WriteLine(result);
             return result.StartsWith("OK", StringComparison.Ordinal) ? 0 : 1;

@@ -17,8 +17,8 @@ internal static class CapabilityProbe
     {
         // Runtime capabilities come from the identity of the core library, which a package cannot fake.
         var core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
-        var runtimeFamily = string.Equals(core.Name, "System.Runtime", StringComparison.Ordinal) || 
-                            string.Equals(core.Name, "System.Private.CoreLib", StringComparison.Ordinal);
+        var runtimeFamily = core.Name == "System.Runtime" || 
+                            core.Name == "System.Private.CoreLib";
         var coreMajor = runtimeFamily ? core.Identity.Version.Major : 0;
         var hasUnsafeAccessor = coreMajor >= 8;
         var hasGenericUnsafeAccessor = coreMajor >= 9;

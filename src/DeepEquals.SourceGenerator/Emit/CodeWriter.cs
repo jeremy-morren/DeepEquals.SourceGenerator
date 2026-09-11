@@ -87,6 +87,14 @@ internal sealed class CodeWriter
         return new Closer(this);
     }
 
+    /// <summary>A bare braced block, for a switch section that declares locals.</summary>
+    public IDisposable Block()
+    {
+        Line("{");
+        _indent++;
+        return new Closer(this);
+    }
+
     /// <summary>A counted loop over <c>i</c> from zero to <paramref name="limit"/>, the shape every element walk takes.</summary>
     public IDisposable For(string limit) => Block($"for (int i = 0; i < {limit}; i++)");
 

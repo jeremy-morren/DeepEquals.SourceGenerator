@@ -120,6 +120,12 @@ internal enum MemberAccess
     /// <summary>The context can name the field: read it directly.</summary>
     Direct,
 
+    /// <summary>
+    /// Compiler storage behind an auto-property whose getter the compiler wrote: read through that getter, which returns
+    /// exactly the backing field and inlines to the same load. Needs no accessor, no reflection and nothing a trimmer can remove.
+    /// </summary>
+    Getter,
+
     /// <summary>An [UnsafeAccessor] extern on the context.</summary>
     UnsafeAccessor,
 
@@ -162,8 +168,12 @@ internal sealed record MemberModel(
     string OpenDeclaringTypeGlobalName,
     string OpenFieldTypeGlobalName);
 
-/// <summary>One case of a dispatch core.</summary>
-internal sealed record DispatchCase(int TypeId, bool IsExact, bool IsSameScc);
+/// <summary>
+/// One case of a dispatch core. For an exact case, <paramref name="ResolvedAssignable"/> is the index among the
+/// assignable cases of the one its runtime type converts to first, or -1 when it converts to none. An assignable case is
+/// <paramref name="Hoistable"/> when its type is sealed and converts to no earlier case: its test may then run first.
+/// </summary>
+internal sealed record DispatchCase(int TypeId, bool IsExact, bool IsSameScc, int ResolvedAssignable, bool Hoistable);
 
 /// <summary>The component of a floating-point aggregate leaf.</summary>
 internal sealed record AggregateComponent(string Expression, bool IsDouble);

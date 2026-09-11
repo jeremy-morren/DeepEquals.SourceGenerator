@@ -46,7 +46,8 @@ public ref struct DeepEqualsState
     private readonly ArrayPool<ReferencePair> _pairPool;
     private readonly ArrayPool<int> _indexPool;
     private readonly int _pairBudget;
-    private ReferencePair[]? _pairs;     // rented; insertion order, so it is the journal
+        private ReferencePair[]? _pairs;     // rented; insertion order, so it is the journal
+    private int[]? _hashes;              // rented; the identity hash of each journal entry, computed once
     private int[]? _index;               // rented; slot value = pair index + 1, 0 = empty; only the logical prefix participates
     private int _pairsCapacity;          // logical capacity, <= _pairs.Length and <= _pairBudget
     private int _indexCapacity;          // logical power of two, >= 2 * _pairsCapacity, <= _index.Length
@@ -101,21 +102,23 @@ public ref struct DeepEqualsState
         if (_pairs is null) 
             Spill();
 
-        var pair = new ReferencePair(kind, x, y);
-        var slot = Probe(pair, out var found);
+                var pair = new ReferencePair(kind, x, y);
+        var hash = pair.GetHashCode();
+        var slot = Probe(pair, hash, out var found);
         if (found)
             return false;
 
-        if (_count == _pairBudget) 
+        if (_count == _pairBudget)
             ThrowBudgetExceeded();
 
         if (_count == _pairsCapacity)
         {
             Grow();
-            slot = Probe(pair, out _);
+            slot = Probe(pair, hash, out _);
         }
 
         _pairs![_count] = pair;
+        _hashes![_count] = hash;
         _index![slot] = ++_count;
         return true;
     }
@@ -154,14 +157,17 @@ public ref struct DeepEqualsState
     {
         if (_pairs is not null)
         {
-            var pairs = _pairs;
+                        var pairs = _pairs;
             var index = _index!;
+            var hashes = _hashes!;
             _pairs = null;
             _index = null;
+            _hashes = null;
             _pairsCapacity = 0;
             _indexCapacity = 0;
             _pairPool.Return(pairs, clearArray: true); // holds object references
             _indexPool.Return(index);                  // not cleared here: every rent clears before use
+            _indexPool.Return(hashes);                 // written before every read
         }
     }
 
@@ -241,24 +247,29 @@ public ref struct DeepEqualsState
     {
         var capacity = Math.Min(InitialSpillCapacity, _pairBudget);
         var indexCapacity = IndexCapacityFor(capacity);
-        ReferencePair[]? pairs = null;
+                ReferencePair[]? pairs = null;
         int[]? index = null;
+        int[]? hashes = null;
         var published = false;
         try
         {
             pairs = _pairPool.Rent(capacity);
             index = _indexPool.Rent(indexCapacity);
+            hashes = _indexPool.Rent(capacity);
             Array.Clear(index, 0, indexCapacity);
             var count = _count;
             for (var i = 0; i < count; i++)
             {
                 var p = GetInline(i);
+                var hash = p.GetHashCode();
                 pairs[i] = p;
-                index[FindEmptySlot(index, indexCapacity, p)] = i + 1;
+                hashes[i] = hash;
+                index[FindEmptySlot(index, indexCapacity, hash)] = i + 1;
             }
 
             _pairs = pairs;
             _index = index;
+            _hashes = hashes;
             _pairsCapacity = capacity;
             _indexCapacity = indexCapacity;
             published = true;
@@ -272,6 +283,9 @@ public ref struct DeepEqualsState
 
                 if (index is not null)
                     _indexPool.Return(index);
+
+                if (hashes is not null)
+                    _indexPool.Return(hashes);
             }
         }
     }
@@ -281,23 +295,28 @@ public ref struct DeepEqualsState
     {
         var newCapacity = (int)Math.Min(checked(2L * _pairsCapacity), _pairBudget);
         var newIndexCapacity = IndexCapacityFor(newCapacity);
-        var oldPairs = _pairs!;
+                var oldPairs = _pairs!;
         var oldIndex = _index!;
+        var oldHashes = _hashes!;
         ReferencePair[]? pairs = null;
         int[]? index = null;
+        int[]? hashes = null;
         var published = false;
         try
         {
             pairs = _pairPool.Rent(newCapacity);
             index = _indexPool.Rent(newIndexCapacity);
+            hashes = _indexPool.Rent(newCapacity);
             Array.Clear(index, 0, newIndexCapacity);
             var count = _count;
             Array.Copy(oldPairs, pairs, count);
+            Array.Copy(oldHashes, hashes, count);
             for (var i = 0; i < count; i++)
-                index[FindEmptySlot(index, newIndexCapacity, pairs[i])] = i + 1;
+                index[FindEmptySlot(index, newIndexCapacity, hashes[i])] = i + 1;
 
             _pairs = pairs;
             _index = index;
+            _hashes = hashes;
             _pairsCapacity = newCapacity;
             _indexCapacity = newIndexCapacity;
             published = true;
@@ -308,6 +327,7 @@ public ref struct DeepEqualsState
             {
                 _pairPool.Return(oldPairs, clearArray: true);
                 _indexPool.Return(oldIndex);
+                _indexPool.Return(oldHashes);
             }
             else
             {
@@ -316,6 +336,9 @@ public ref struct DeepEqualsState
 
                 if (index is not null)
                     _indexPool.Return(index);
+
+                if (hashes is not null)
+                    _indexPool.Return(hashes);
             }
         }
     }
@@ -337,10 +360,10 @@ public ref struct DeepEqualsState
     /// Linear probe from the pair's identity hash to the first empty slot.
     /// Used only while rebuilding a table from distinct pairs.
     /// </summary>
-    private static int FindEmptySlot(int[] index, int indexCapacity, ReferencePair pair)
+        private static int FindEmptySlot(int[] index, int indexCapacity, int hash)
     {
         var mask = indexCapacity - 1;
-        var slot = pair.GetHashCode() & mask;
+        var slot = hash & mask;
         while (index[slot] != 0)
             slot = (slot + 1) & mask;
 
@@ -351,12 +374,13 @@ public ref struct DeepEqualsState
     /// Linear probe for <paramref name="pair"/>:
     /// returns its slot if found, otherwise the empty slot where it would go.
     /// </summary>
-    private int Probe(ReferencePair pair, out bool found)
+        private int Probe(ReferencePair pair, int hash, out bool found)
     {
         var index = _index!;
         var pairs = _pairs!;
+        var hashes = _hashes!;
         var mask = _indexCapacity - 1;
-        var slot = pair.GetHashCode() & mask;
+        var slot = hash & mask;
         while (true)
         {
             var value = index[slot];
@@ -366,7 +390,7 @@ public ref struct DeepEqualsState
                 return slot;
             }
 
-            if (pairs[value - 1].Equals(pair))
+            if (hashes[value - 1] == hash && pairs[value - 1].Equals(pair))
             {
                 found = true;
                 return slot;
@@ -381,7 +405,7 @@ public ref struct DeepEqualsState
     {
         var index = _index!;
         var mask = _indexCapacity - 1;
-        var slot = _pairs![i].GetHashCode() & mask;
+                var slot = _hashes![i] & mask;
         var wanted = i + 1;
         while (index[slot] != wanted)
             slot = (slot + 1) & mask;

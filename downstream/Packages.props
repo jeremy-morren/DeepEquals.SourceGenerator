@@ -1,19 +1,19 @@
+<!--
+    The documented setup, for every project here that consumes the packed packages: the analyzer private to the
+    project, the runtime library flowing normally. Imported by the smoke consumers and by the benchmarks; the smoke
+    test driver itself does not consume the packages and does not import this.
+-->
 <Project>
-    <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
     <PropertyGroup>
         <!--
-            Floating, so nothing has to thread the version through from version.props. 
-            Source mapping in NuGet.config keeps this resolving against the local feed, 
+            Floating, so nothing has to thread the version through from version.props.
+            Source mapping in NuGet.config keeps this resolving against the local feed,
             so it always means "whatever was just packed" rather than "the newest release".
         -->
         <DeepEqualsVersion Condition="'$(DeepEqualsVersion)' == ''">*-*</DeepEqualsVersion>
     </PropertyGroup>
 
-    <!--
-        The documented setup: the analyzer private to this project, the runtime library flowing normally.
-        A smoke consumer references the packages the way the README tells a real consumer to.
-    -->
     <ItemGroup>
         <PackageReference Include="DeepEquals.SourceGenerator" Version="$(DeepEqualsVersion)" PrivateAssets="all" />
         <PackageReference Include="DeepEquals.SourceGeneration.Framework" Version="$(DeepEqualsVersion)" />

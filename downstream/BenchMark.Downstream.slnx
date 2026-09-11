@@ -1,0 +1,40 @@
+<!--
+    Everything that consumes the packed packages the way an outside project would: the smoke consumers, the
+    driver that builds and runs them, and the benchmarks. Separate from DeepEquals.SourceGenerator.slnx on purpose:
+    every consuming project restores DeepEquals.SourceGenerator from artifacts/package/release, so this solution
+    only builds after `dotnet pack DeepEquals.SourceGenerator.slnx -c Release`.
+-->
+<Solution>
+    <Folder Name="/Solution Items/">
+        <File Path="NuGet.config" />
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Build.targets" />
+        <File Path="Packages.props" />
+    </Folder>
+    <Folder Name="/models/">
+        <File Path="models/Models.props" />
+        <File Path="models/Models.cs" />
+        <File Path="models/Records.cs" />
+        <File Path="models/Contexts.cs" />
+        <File Path="models/Data.cs" />
+        <File Path="models/BuiltIn.cs" />
+        <File Path="models/Scenarios.cs" />
+        <File Path="models/Checks.cs" />
+        <File Path="models/MicroBench.cs" />
+        <File Path="models/TrimmingModels.cs" />
+    </Folder>
+    <Folder Name="/smoke/">
+        <Project Path="smoke/Smoke.Tests/Smoke.Tests.csproj" />
+    </Folder>
+    <Folder Name="/smoke/consumers/">
+        <File Path="smoke/consumers/Directory.Build.props" />
+        <Project Path="smoke/consumers/BlazorWasm/BlazorWasm.csproj" />
+        <Project Path="smoke/consumers/Consumer/Consumer.csproj" />
+        <Project Path="smoke/consumers/Trimming.Safe/Trimming.Safe.csproj" />
+        <Project Path="smoke/consumers/Trimming.Unsafe/Trimming.Unsafe.csproj" />
+    </Folder>
+    <Folder Name="/benchmarks/">
+        <File Path="benchmarks/Directory.Build.props" />
+        <Project Path="benchmarks/DeepEquals.Benchmarks/DeepEquals.Benchmarks.csproj" />
+    </Folder>
+</Solution>

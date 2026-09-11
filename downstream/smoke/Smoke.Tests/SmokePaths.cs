@@ -11,7 +11,7 @@ using System.Linq;
 
 namespace DeepEquals.Smoke.Tests;
 
-/// <summary>Where the smoke consumers live, and what has to exist before they can be built.</summary>
+/// <summary>Where the downstream projects live, and what has to exist before they can be built.</summary>
 public static class SmokePaths
 {
     /// <summary>Long enough for a cold restore of a wasm or self-contained publish on a slow runner.</summary>
@@ -19,12 +19,12 @@ public static class SmokePaths
 
     public const string Configuration = "Release";
 
-    /// <summary>The `smoke` directory, found by walking up from the test binary.</summary>
-    public static string SmokeRoot { get; } = FindSmokeRoot();
+    /// <summary>The `downstream` directory, found by walking up from the test binary.</summary>
+    public static string DownstreamRoot { get; } = FindDownstreamRoot();
 
-    public static string RepositoryRoot { get; } = Path.GetFullPath(Path.Combine(SmokeRoot, ".."));
+    public static string RepositoryRoot { get; } = Path.GetFullPath(Path.Combine(DownstreamRoot, ".."));
 
-    public static string Consumers { get; } = Path.Combine(SmokeRoot, "consumers");
+    public static string Consumers { get; } = Path.Combine(DownstreamRoot, "smoke", "consumers");
 
     public static string PackageFeed { get; } = Path.Combine(RepositoryRoot, "artifacts", "package", Configuration.ToLowerInvariant());
 
@@ -74,18 +74,18 @@ public static class SmokePaths
         return agreed!;
     }
 
-    private static string FindSmokeRoot()
+    private static string FindDownstreamRoot()
     {
         DirectoryInfo? directory = new(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (directory.Name == "smoke" &&
+            if (directory.Name == "downstream" &&
                 File.Exists(Path.Combine(directory.FullName, "NuGet.config")))
                 return directory.FullName;
 
             directory = directory.Parent;
         }
 
-        throw new InvalidOperationException($"Could not find the smoke directory above {AppContext.BaseDirectory}");
+        throw new InvalidOperationException($"Could not find the downstream directory above {AppContext.BaseDirectory}");
     }
 }

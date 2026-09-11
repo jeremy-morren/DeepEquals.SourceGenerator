@@ -66,16 +66,19 @@ jobs:
         run: dotnet pack DeepEquals.SourceGenerator.slnx -c Release
 
       - name: Build the smoke tests
-        run: dotnet build smoke/Smoke.Tests -c Release
+        run: dotnet build downstream/smoke/Smoke.Tests -c Release
+
+      - name: Build the benchmarks (every platform, against the packed package)
+        run: dotnet build downstream/benchmarks/DeepEquals.Benchmarks -c Release
 
       - name: Install the headless browser
-        run: ./smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install chromium
+        run: ./downstream/smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install chromium
         shell: pwsh
 
       # Mono is Linux's job; everything else runs here, where net472 runs on .NET Framework.
       - name: Smoke (clean consumers, trimming boundary and Blazor WebAssembly)
         run: >-
-          dotnet test smoke/Smoke.Tests -c Release --no-build
+          dotnet test downstream/smoke/Smoke.Tests -c Release --no-build
           --filter "Category!=Mono"
           --logger trx
           --results-directory "${{ env.results }}"
@@ -157,17 +160,20 @@ jobs:
         run: dotnet pack DeepEquals.SourceGenerator.slnx -c Release
 
       - name: Build the smoke tests
-        run: dotnet build smoke/Smoke.Tests -c Release
+        run: dotnet build downstream/smoke/Smoke.Tests -c Release
+
+      - name: Build the benchmarks (every platform, against the packed package)
+        run: dotnet build downstream/benchmarks/DeepEquals.Benchmarks -c Release
 
       - name: Install the headless browser
-        run: ./smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+        run: ./downstream/smoke/Smoke.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
         shell: pwsh
 
       - name: Smoke (clean consumers, trimming boundary, Mono and Blazor WebAssembly)
         # The Mono test skips when mono is absent; here its absence is a failure, not a skip.
         env:
           SMOKE_REQUIRE_MONO: '1'
-        run: dotnet test smoke/Smoke.Tests -c Release --no-build
+        run: dotnet test downstream/smoke/Smoke.Tests -c Release --no-build
 
   # A draft release is prepared for every green push, and replaced until someone publishes it.
   # Publishing one triggers publish.yml, which pushes the package to NuGet.

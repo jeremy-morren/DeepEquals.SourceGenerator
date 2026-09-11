@@ -100,6 +100,13 @@ public static partial class DeepEqualsHashCode
         return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
     }
 
+    /// <summary>Seeded hash over all four words of a decimal's storage, matching <see cref="DeepEqualsHelpers.DecimalEquals"/>.</summary>
+    public static int Hash(in decimal value)
+    {
+        ref var words = ref Unsafe.As<decimal, int>(ref Unsafe.AsRef(in value));
+        return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
+    }
+
 #if NET7_0_OR_GREATER
     /// <summary>Seeded hash over all four 32-bit words.</summary>
     public static int Hash(Int128 value)

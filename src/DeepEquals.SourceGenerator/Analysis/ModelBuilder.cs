@@ -39,6 +39,7 @@ internal sealed class ModelBuilder
     private readonly List<List<int>> _edges = [];
     private int[] _scc = [];
     private bool[] _cyclic = [];
+    private bool[] _guarded = [];
     private bool[] _reachesCyclic = [];
     private bool[] _reachesUnsafe = [];
     private readonly Dictionary<ClosureType, int> _guardKinds = new();
@@ -62,8 +63,9 @@ internal sealed class ModelBuilder
     {
         AssignNames();
         _cancellationToken.ThrowIfCancellationRequested();
-        BuildGraph();
+                BuildGraph();
         Tarjan();
+        SelectGuards();
         Propagate();
         AssignKinds();
         _cancellationToken.ThrowIfCancellationRequested();
@@ -277,7 +279,7 @@ internal sealed class ModelBuilder
         }
 
         foreach (var dispatch in _types.Where(t => t.IsDispatchCapable))
-            foreach (var (c, exact) in dispatch.Cases)
+            foreach (var (c, exact, _, _) in dispatch.Cases)
                 if (exact && c.IsValueShape) 
                     Node(c, NodeKind.Boxed);
 
@@ -313,7 +315,7 @@ internal sealed class ModelBuilder
             if (type.IsDispatchCapable)
             {
                 var dispatch = Node(type, NodeKind.Dispatch);
-                foreach (var (c, exact) in type.Cases) 
+                                foreach (var (c, exact, _, _) in type.Cases)
                     Link(dispatch, CaseTarget(c, exact));
             }
 
@@ -461,9 +463,12 @@ internal sealed class ModelBuilder
         }
     }
 
-    private bool IsGuardedNode(int node)
+        private bool IsGuardedNode(int node) => _guarded[node];
+
+    /// <summary>A core that works on references and so can carry a guard: every cycle passes through at least one.</summary>
+    private bool IsGuardCandidate(int node)
     {
-        if (!_cyclic[node]) 
+        if (!_cyclic[node])
             return false;
 
         var (type, kind) = _nodeList[node];
@@ -474,6 +479,78 @@ internal sealed class ModelBuilder
                                  type is { IsContainer: true, Symbol.IsValueType: false },
             _ => false
         };
+    }
+
+    /// <summary>
+    /// One guard per cycle is enough to terminate, and assuming equality at any cut of the cycles gives the same
+    /// coinductive answer. Every candidate starts guarded; containers, then tuples, then boxed adapters give theirs up
+    /// whenever the component's unguarded nodes stay acyclic without it. Class bodies go last, so a cyclic class keeps
+    /// the one guard its cycle needs and a tree of them enters one pair per node instead of one per node and per list.
+    /// </summary>
+    private void SelectGuards()
+    {
+        var n = _nodeList.Count;
+        _guarded = new bool[n];
+        for (var v = 0; v < n; v++)
+            _guarded[v] = IsGuardCandidate(v);
+
+        int Rank(int v)
+        {
+            var (type, kind) = _nodeList[v];
+            if (kind == NodeKind.Boxed) return 2;
+            if (type.IsContainer) return 0;
+            return type.Kind == TypeKind.Tuple ? 1 : 3;
+        }
+
+        var order = Enumerable.Range(0, n).Where(v => _guarded[v]).OrderBy(Rank).ThenBy(v => v).ToList();
+        foreach (var v in order)
+        {
+            _guarded[v] = false;
+            if (HasUnguardedCycle(_scc[v]))
+                _guarded[v] = true;
+        }
+    }
+
+    /// <summary>True when the unguarded nodes of <paramref name="component"/> contain a cycle, found by an iterative colouring walk.</summary>
+    private bool HasUnguardedCycle(int component)
+    {
+        var n = _nodeList.Count;
+        var colour = new byte[n];   // 0 unvisited, 1 on the walk, 2 done
+        for (var root = 0; root < n; root++)
+        {
+            if (_scc[root] != component || _guarded[root] || colour[root] != 0)
+                continue;
+
+            var frames = new Stack<(int Node, int Next)>();
+            frames.Push((root, 0));
+            colour[root] = 1;
+            while (frames.Count > 0)
+            {
+                var (v, next) = frames.Pop();
+                if (next < _edges[v].Count)
+                {
+                    frames.Push((v, next + 1));
+                    var w = _edges[v][next];
+                    if (_scc[w] != component || _guarded[w])
+                        continue;
+
+                    if (colour[w] == 1)
+                        return true;
+
+                    if (colour[w] == 0)
+                    {
+                        colour[w] = 1;
+                        frames.Push((w, 0));
+                    }
+
+                    continue;
+                }
+
+                colour[v] = 2;
+            }
+        }
+
+        return false;
     }
 
     private void AssignKinds()
@@ -547,8 +624,8 @@ internal sealed class ModelBuilder
 
         var cases = new List<DispatchCase>(type.Cases.Count);
         if (type.IsDispatchCapable)
-            foreach (var (c, exact) in type.Cases) 
-                cases.Add(new DispatchCase(c.Id, exact, SameScc(dispatch, CaseTarget(c, exact))));
+                        foreach (var (c, exact, resolved, hoistable) in type.Cases)
+                cases.Add(new DispatchCase(c.Id, exact, SameScc(dispatch, CaseTarget(c, exact)), resolved, hoistable));
 
         var passByValue = true;
         var inline = false;
@@ -557,7 +634,7 @@ internal sealed class ModelBuilder
             var estimate = EstimateSize(type, _options.StructPassByValueMaxByteSize + 1);
             passByValue = estimate <= _options.StructPassByValueMaxByteSize;
             inline = type.Members.Count <= 4 && 
-                     type.Members.All(m => m.Type.Kind == TypeKind.Leaf && m.Access == MemberAccess.Direct && m.Type.LeafRule != LeafRule.Custom);
+                     type.Members.All(m => m.Type.Kind == TypeKind.Leaf && m.Access is MemberAccess.Direct or MemberAccess.Getter && m.Type.LeafRule != LeafRule.Custom);
         }
 
         var itemsSameScc = new List<bool>(type.Items.Count);

@@ -14,6 +14,7 @@
         <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
         <EnableAotAnalyzer>true</EnableAotAnalyzer>
         <TrimmerSingleWarn>false</TrimmerSingleWarn>
+        <LangVersion>latest</LangVersion>
     </PropertyGroup>
 
     <ItemGroup>
@@ -21,8 +22,6 @@
         <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.0" PrivateAssets="all" />
     </ItemGroup>
 
-    <ItemGroup>
-        <Compile Include="../Shared/Checks.cs" Link="Checks.cs" />
-    </ItemGroup>
+    <Import Project="../../../models/Models.props" />
 
 </Project>

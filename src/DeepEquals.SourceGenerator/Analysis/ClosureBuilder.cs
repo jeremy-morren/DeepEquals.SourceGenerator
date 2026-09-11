@@ -79,8 +79,12 @@ internal sealed class ClosureType
 
     public bool HasStorageIgnoredByShape { get; set; }
 
-    /// <summary>Dispatch cases in emission order: assignable first, exact last.</summary>
-    public List<(ClosureType Type, bool IsExact)> Cases { get; } = [];
+    /// <summary>
+    /// Dispatch cases in emission order: assignable first, exact last. An exact case carries the index of the first
+    /// assignable case its type converts to, or -1: that is the case the runtime type would have selected, so the emitter
+    /// can test the exact type first and still land where the assignable chain would have.
+    /// </summary>
+        public List<(ClosureType Type, bool IsExact, int ResolvedAssignable, bool Hoistable)> Cases { get; } = [];
 
     public bool IsDispatchCapable => Kind == TypeKind.Dispatch || (Kind == TypeKind.Class && !Symbol.IsSealed);
 
@@ -629,7 +633,7 @@ internal sealed class ClosureBuilder
                 return;
 
             var name = BuiltInLeaves.FullMetadataName(candidate.OriginalDefinition);
-            if (metadataNames.Any(wanted => string.Equals(name, wanted, StringComparison.Ordinal)))
+            if (metadataNames.Any(wanted => name == wanted))
                 found.Add(candidate);
         }
 
@@ -645,7 +649,7 @@ internal sealed class ClosureBuilder
         foreach (var wanted in metadataNames)
         {
             var match = found.FirstOrDefault(f => 
-                string.Equals(BuiltInLeaves.FullMetadataName(f.OriginalDefinition), wanted, StringComparison.Ordinal));
+                BuiltInLeaves.FullMetadataName(f.OriginalDefinition) == wanted);
             if (match is null) continue;
             chosen = match;
             break;
@@ -938,9 +942,11 @@ internal sealed class ClosureBuilder
                 // Compiler storage can never be read directly: C# cannot name <Name>k__BackingField even where the symbol is accessible.
                 var compilerStorage = field.IsImplicitlyDeclared || field.Name.StartsWith("<", StringComparison.Ordinal);
                 var genericDeclaring = IsGenericContext(declaring);
-                MemberAccess access;
-                if (!compilerStorage && _compilation.IsSymbolAccessibleWithin(field, _context)) 
+                                MemberAccess access;
+                if (!compilerStorage && _compilation.IsSymbolAccessibleWithin(field, _context))
                     access = MemberAccess.Direct;
+                else if (compilerStorage && ReadableThroughGetter(field, type.Symbol))
+                    access = MemberAccess.Getter;
                 else if (!_capabilities.HasUnsafeAccessor)
                     access = MemberAccess.Delegate;
                 else if (!genericDeclaring) 
@@ -962,6 +968,66 @@ internal sealed class ClosureBuilder
             var cost = a.Cost.CompareTo(b.Cost);
             return cost != 0 ? cost : a.Order.CompareTo(b.Order);
         });
+    }
+
+        /// <summary>
+    /// True when reading the auto-property that owns <paramref name="field"/> through its getter is exactly a read of the
+    /// field: the getter is the compiler's own, the context can call it, a call on a receiver of the declaring type cannot
+    /// dispatch to an override, and the name resolves to this property from the owning type.
+    /// </summary>
+    private bool ReadableThroughGetter(IFieldSymbol field, ITypeSymbol owner)
+    {
+        if (field.AssociatedSymbol is not IPropertySymbol { GetMethod: { } getter } property ||
+            property.IsIndexer || property.ReturnsByRef || property.ReturnsByRefReadonly || property.IsStatic ||
+            property.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+
+        var declaring = field.ContainingType;
+        var mayDispatch = property.IsVirtual || property.IsAbstract || (property.IsOverride && !property.IsSealed);
+        if (mayDispatch && !declaring.IsSealed && !declaring.IsValueType)
+            return false;   // a derived override would answer instead of this storage
+
+        // A getter that is not readonly would be called on a defensive copy of an `in` struct receiver.
+        if (declaring.IsValueType && !getter.IsReadOnly)
+            return false;
+
+        if (!_compilation.IsSymbolAccessibleWithin(property, _context) || !_compilation.IsSymbolAccessibleWithin(getter, _context))
+            return false;
+
+        if (!IsCompilerWrittenGetter(getter))
+            return false;
+
+        // A member of the same name between the owner and the declaring type would capture `owner.Name`.
+        for (var current = owner as INamedTypeSymbol; current is not null && !SymbolEqualityComparer.Default.Equals(current, declaring); current = current.BaseType)
+            if (current.GetMembers(property.Name).Length > 0)
+                return false;
+
+        return true;
+    }
+
+    /// <summary>
+    /// The compiler's own getter: <c>get;</c> in source, a positional record property's synthesized accessor, or a
+    /// metadata accessor marked [CompilerGenerated]. A getter with a body, the <c>field</c> keyword's included, is the user's.
+    /// </summary>
+    private static bool IsCompilerWrittenGetter(IMethodSymbol getter)
+    {
+        var references = getter.DeclaringSyntaxReferences;
+        if (references.Length == 0)
+            return getter.IsImplicitlyDeclared || getter.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == KnownTypes.CompilerGeneratedAttribute);
+
+        foreach (var reference in references)
+        {
+            switch (reference.GetSyntax())
+            {
+                case Microsoft.CodeAnalysis.CSharp.Syntax.AccessorDeclarationSyntax { Body: null, ExpressionBody: null }:
+                case Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax:
+                    continue;
+                default:
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>True when the type or any containing type declares type parameters.</summary>
@@ -1216,9 +1282,21 @@ internal sealed class ClosureBuilder
             assignable = TopologicalByAssignability(assignable);
             exact.Sort((a, b) => string.CompareOrdinal(a.Symbol.ToDisplayString(), b.Symbol.ToDisplayString()));
 
-            foreach (var a in assignable) dispatch.Cases.Add((a, false));
+                        // A sealed assignable case whose type converts to no earlier case is the first match for exactly its own
+            // runtime type, so its test can run before everything else and still select what the chain would.
+            for (var i = 0; i < assignable.Count; i++)
+            {
+                var a = assignable[i];
+                var hoistable = (a.Symbol.IsSealed || a.Symbol.IsValueType) &&
+                                !assignable.Take(i).Any(b => _compilation.IsAssignable(a.Symbol, b.Symbol));
+                dispatch.Cases.Add((a, false, -1, hoistable));
+            }
 
-            foreach (var e in exact) dispatch.Cases.Add((e, true));
+            foreach (var e in exact)
+            {
+                var resolved = assignable.FindIndex(a => _compilation.IsAssignable(e.Symbol, a.Symbol));
+                                dispatch.Cases.Add((e, true, resolved, false));
+            }
 
             if (dispatch is { Kind: TypeKind.Dispatch, Cases.Count: 0 } &&
                 dispatch.Symbol.SpecialType != SpecialType.System_Object)

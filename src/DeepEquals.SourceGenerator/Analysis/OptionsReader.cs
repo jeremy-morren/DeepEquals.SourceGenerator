@@ -29,7 +29,7 @@ internal static class OptionsReader
         {
             foreach (var attribute in type.GetAttributes())
             {
-                if (!string.Equals(attribute.AttributeClass?.ToDisplayString(), KnownTypes.OptionsAttribute, StringComparison.Ordinal)) 
+                if (attribute.AttributeClass?.ToDisplayString() != KnownTypes.OptionsAttribute) 
                     continue;
 
                 // Only explicitly written named arguments participate, so "unset" differs from "set to the default".

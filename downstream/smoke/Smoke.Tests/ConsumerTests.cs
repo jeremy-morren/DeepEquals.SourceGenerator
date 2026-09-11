@@ -62,6 +62,20 @@ public sealed class ConsumerTests
         run.ExitCode.Should().Be(0, "the {0} consumer must exit cleanly", framework);
     }
 
+    [Theory]
+    [MemberData(nameof(Runnable))]
+    public void The_stopwatch_benchmarks_run_on_every_platform(string framework)
+    {
+        // Indicative numbers per tier, logged rather than asserted; the benchmarks project holds the rigorous ones.
+        var build = ConsumerProject.Build(_output, framework);
+        build.ExitCode.Should().Be(0, "the {0} consumer must build against the package", framework);
+
+        var run = Dotnet.RunExecutable(_output, ConsumerProject.Executable(framework), RollForward, "--bench");
+
+        run.Output.Should().Contain("scenario", "the harness must print its table on {0}", framework);
+        run.ExitCode.Should().Be(0);
+    }
+
     [Fact]
     public void A_net472_consumer_runs_on_dotnet_framework()
     {
@@ -78,7 +92,12 @@ public sealed class ConsumerTests
         var run = Dotnet.RunExecutable(_output, ConsumerProject.Executable("net472"));
 
         run.Output.Should().Contain("OK ");
+        run.Output.Should().Contain("records=on", "the .NET Framework consumer compiles the record models too");
         run.ExitCode.Should().Be(0);
+
+        var bench = Dotnet.RunExecutable(_output, ConsumerProject.Executable("net472"), null, "--bench");
+        bench.Output.Should().Contain("scenario");
+        bench.ExitCode.Should().Be(0);
     }
 }
 
