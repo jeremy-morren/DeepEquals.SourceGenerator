@@ -28,6 +28,7 @@ internal static class OptionsReader
         var maxDepth = ContextOptions.DefaultMaxDepth;
         var matchingHashDepth = ContextOptions.DefaultMatchingHashDepth;
         var hashing = Hashing.XxHash32;
+        LocationInfo? maxDepthLocation = null;
         LocationInfo? matchingHashDepthLocation = null;
 
         foreach (var type in chain)
@@ -66,6 +67,7 @@ internal static class OptionsReader
                             break;
                         case "MaxDepth":
                             maxDepth = ReadInt(argument, 1, ContextOptions.MaximumMaxDepth, ContextOptions.DefaultMaxDepth, location, diagnostics);
+                            maxDepthLocation = location;
                             break;
                         case "MatchingHashDepth":
                             matchingHashDepth = ReadInt(argument, 1, ContextOptions.MaximumMatchingHashDepth, ContextOptions.DefaultMatchingHashDepth, location, diagnostics);
@@ -86,6 +88,13 @@ internal static class OptionsReader
                 Diagnostics.OptionWithoutEffect,
                 matchingHashDepthLocation,
                 "MatchingHashDepth has no effect under CycleHandling = Tree, where the matching fingerprint is the full hash; the value is ignored"));
+
+        // The mirror case: only Tree counts depth, so the other modes never read the bound.
+        if (cycleHandling != CycleHandling.Tree && maxDepthLocation is not null)
+            diagnostics.Add(DiagnosticInfo.Create(
+                Diagnostics.OptionWithoutEffect,
+                maxDepthLocation,
+                $"MaxDepth has no effect under CycleHandling = {cycleHandling}, which bounds a comparison by MaxComparisonPairs; the value is ignored"));
 
         return new ContextOptions(
             maxSwitchCases,

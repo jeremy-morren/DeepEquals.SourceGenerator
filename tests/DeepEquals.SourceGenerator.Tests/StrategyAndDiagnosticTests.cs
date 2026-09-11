@@ -529,6 +529,8 @@ public sealed class StrategyAndDiagnosticTests
     [InlineData("public sealed class A { public int X; } [GenerateDeepEquals(typeof(A))] [DeepEqualsSourceGenerationOptions(CycleHandling = (DeepEqualsCycleHandling)7)] public partial class Ctx : DeepEqualsContextBase { }", "DEQ013")]
     [InlineData("public sealed class A { public int X; } [GenerateDeepEquals(typeof(A))] [DeepEqualsSourceGenerationOptions(Hashing = (DeepEqualsHashing)-1)] public partial class Ctx : DeepEqualsContextBase { }", "DEQ013")]
     [InlineData("public sealed class A { public int X; } [GenerateDeepEquals(typeof(A))] [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Tree, MatchingHashDepth = 2)] public partial class Ctx : DeepEqualsContextBase { }", "DEQ037")]
+    [InlineData("public sealed class A { public int X; } [GenerateDeepEquals(typeof(A))] [DeepEqualsSourceGenerationOptions(MaxDepth = 64)] public partial class Ctx : DeepEqualsContextBase { }", "DEQ037")]
+    [InlineData("public sealed class A { public int X; } [GenerateDeepEquals(typeof(A))] [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path, MaxDepth = 64)] public partial class Ctx : DeepEqualsContextBase { }", "DEQ037")]
     [InlineData("public sealed class A { public dynamic? D; } [GenerateDeepEquals(typeof(A))] public partial class Ctx : DeepEqualsContextBase { }", "DEQ023")]
     [InlineData("public sealed class A { public System.Text.RegularExpressions.Regex? R; } [GenerateDeepEquals(typeof(A))] public partial class Ctx : DeepEqualsContextBase { }", "DEQ022")]
     [InlineData("public sealed class A { public int X; } [GenerateDeepEquals(typeof(A))] [DeepEqualsIgnore(typeof(A), \"Nope\")] public partial class Ctx : DeepEqualsContextBase { }", "DEQ033")]
@@ -543,5 +545,35 @@ public sealed class StrategyAndDiagnosticTests
     {
         var run = GeneratorHost.Run(Prelude + source, load: false);
         run.GeneratorDiagnosticIds.Should().Contain(expected, run.GeneratedSource);
+    }
+
+    [Theory]
+    [InlineData("CycleHandling = DeepEqualsCycleHandling.Tree, MaxDepth = 64")]
+    [InlineData("CycleHandling = DeepEqualsCycleHandling.Graph, MatchingHashDepth = 2")]
+    [InlineData("CycleHandling = DeepEqualsCycleHandling.Path, MatchingHashDepth = 2")]
+    [InlineData("CycleHandling = DeepEqualsCycleHandling.Graph")]
+    public void An_option_that_applies_to_the_mode_does_not_warn(string options)
+    {
+        var run = GeneratorHost.Run(Prelude + $"public sealed class A {{ public int X; }} [GenerateDeepEquals(typeof(A))] [DeepEqualsSourceGenerationOptions({options})] public partial class Ctx : DeepEqualsContextBase {{ }}", load: false);
+        run.GeneratorDiagnosticIds.Should().NotContain("DEQ037", run.GeneratedSource);
+    }
+
+    [Fact]
+    public void MaxDepth_outside_Tree_is_ignored_and_the_warning_names_the_mode()
+    {
+        // Set on a base context and inherited: the mode decided on the derived one still makes the depth inert.
+        var run = GeneratorHost.Run(Prelude + """
+            public sealed class Node { public int V; public Node? Next; public Node? Other; }
+            [DeepEqualsSourceGenerationOptions(MaxDepth = 64)]
+            public abstract class BaseCtx : DeepEqualsContextBase { }
+            [GenerateDeepEquals(typeof(Node))]
+            [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path)]
+            public partial class Ctx : BaseCtx { }
+            """, load: false);
+
+        var warning = run.GeneratorDiagnostics.Should().ContainSingle(d => d.Id == "DEQ037").Subject;
+        warning.Severity.Should().Be(DiagnosticSeverity.Warning);
+        warning.GetMessage().Should().Contain("MaxDepth").And.Contain("Path");
+        run.GeneratedSource.Should().NotContain("const int MaxDepth", "only Tree emits the depth bound");
     }
 }

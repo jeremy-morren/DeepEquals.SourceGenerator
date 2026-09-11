@@ -85,7 +85,8 @@ public sealed class DeepEqualsSourceGenerationOptionsAttribute : Attribute
     /// <summary>
     /// Under <see cref="DeepEqualsCycleHandling.Tree"/>: the guarded nesting depth past which a comparison or hash throws
     /// <c>DeepEqualsComplexityException</c>. A cycle detector, not a stack bound; linked lists are walked in a loop and do not
-    /// count against it. Ignored under the other modes.
+    /// count against it. Ignored under the other modes, which bound a comparison by <see cref="MaxComparisonPairs"/>;
+    /// setting it there reports <c>DEQ037</c>.
     /// </summary>
     public int MaxDepth { get; set; } = DefaultMaxDepth;
 
