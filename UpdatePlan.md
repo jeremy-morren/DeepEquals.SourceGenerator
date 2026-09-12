@@ -1,4 +1,4 @@
-# Update plan: cycle handling, 64-bit hashing, bit blocks
+# Update plan: cycle handling, raw bits, bit blocks
 
 Applied on top of the `splitFiles` branch. Revised after the audit in `Astra.md`; the findings it raised are folded
 in where they apply and listed in §7.
@@ -8,16 +8,16 @@ in where they apply and listed in §7.
 | Step | State | Notes |
 |---|---|---|
 | §0 defects, header, cancellation, version policy | Done | B1 to B5 fixed; `ContextDeclarationTests` holds the regressions and the DEQ036 test. The header is computed once per context and empty type files are never opened. Cancellation is checked inside Tarjan, `Propagate`, `SelectGuards` and `HasUnguardedCycle`. Generator tests: 78 pass on net10.0. |
-| 1 options plumbing | Done | `CycleHandling`, `MaxDepth`, `MatchingHashDepth`, `Hashing` on the attribute, the options record, the reader with DEQ013 and DEQ037, four header lines, incremental and cancellation tests. Generator tests: 89 pass. Nothing is emitted differently yet. |
-| 2 framework 64-bit hashing | Done | `DeepEqualsHashCode64` with `Combine` 1..32 from the generator script (`-Width 64`), `Fold`/`FoldNonZero`/`Pack`/`Narrow`, leaf hashes, `HashSpan`, `Streaming`; the §2.2 shims in `DeepEqualsHelpers`; `IDeepEqualsHashOps64`. `HashCode64Tests` and the helper theories. Framework tests: 81 on net6.0/8.0/10.0, 80 on netcoreapp3.1, 79 on net472. The 32-bit Combine file regenerates byte-identical except its header comment. |
-| 3 emitter 64-bit hashing | Done | Every hash core, ops struct and stream runs at the context width through one `HashWord` model in the emitter; narrow words pack before wide ones; the wrapper returns `DeepEqualsHashCode64.ToInt32`, which keeps null at 0 and folds everything else nonzero. Float, double and Half go through the §2.2 shims on both widths; `HasSingleToInt32Bits` and the old netstandard2.0 shim are gone. `Hashing64Tests` (8 tests incl. the semantic-model conversion scan), both-width theories in `FastPathTests` and `HashLevelTests`, `Hash64FixtureContext`. Generator tests 100 on net8.0 and net10.0; fixtures 8 on all five tiers. The DEQ036 test's override is async-local so it cannot leak into parallel tests. |
-| 4 bit blocks | Done | `DeepEqualsBlocks` (byte compare, XxHash3 over spans, list and enumerable copies, `HasSize`), the model's bit-block classification and padding walk, the byte paths in every ordered core, `BlocksTests` and `BitBlockTests`. Deviations from §2.3, all deliberate: **System.IO.Hashing is chosen per asset**, the newest release that builds without a warning on every runtime that asset serves: 10.0.12 on net10.0, net8.0 and netstandard2.0 (.NET Framework 4.6.2 and later), 8.0.0 on net6.0 because 9.x and 10.x warn on net6.0 and net7.0; **the netstandard2.1 asset has no block helpers**, because every release warns on the netcoreapp3.1 to net5.0 runtimes it serves, so the generator probes `HasFrameworkBlocks` there, a target-framework capability, not a version one; **System.Memory 4.6.3 is pinned on netstandard2.0**, so .NET Framework consumers now gain `ReadOnlySpan<T>` and the span paths; that exposed a latent gap, fixed with a new `HasImmutableArrayAsSpan` probe, since older immutable-collections releases lack `AsSpan()`; **only source-declared structs qualify**, because Roslyn exposes no layout for metadata structs and drops `[StructLayout]` from `GetAttributes()`, so layout is read from syntax; **the flag is one `static readonly bool` per struct in the context file**, and the fallback test rewrites it in the compiled output rather than through a hook; **`HashEnumerable` hashes what it enumerates**, since the advertised count only sizes the first buffer, and the test is named for that. Generator tests 148 on net8.0/net10.0, framework 88 (86 on net472, 80 on netcoreapp3.1), fixtures 8 on all five tiers. A compiler quirk found on the way: Roslyn folds a decimal constant in `new[] { 1.50m }` converted straight to a span, losing its scale; tests go through locals. |
-| 5 fingerprint levels | Done | Hash levels generalize from {1, 0} to {k .. 0} through one rule in `HashOrOmit`: an edge leaving the component calls the full hash, a structural edge keeps the level, a payload edge steps down. `HashName`/`MembersHashName` name every level; `MatchHashCode_T_L{n}` exists only for types in a component some set or dictionary entry belongs to (`TypeModel.MatchHashLevels`). Class, struct, dispatch and product cores loop over their levels; ordered containers get a plain-walk core per deeper level; unordered containers run their sum at each level; the entry fingerprint calls the level-k core. `MatchingHashDepthTests` (the audit's 65-chain case at depths 1, 2, 4, 16 and caps 64/65, rolled-versus-unrolled congruence inside sets at depths 1 to 4, emission scope, and a 70-entry set through lists, dictionaries, tuples and dispatch on both widths) lives in its own file rather than `CycleHandlingTests`. Generator tests 160 on net8.0/net10.0; fixtures 8 on all tiers. |
-| 6 depth-aware framework | Done | `IDeepEqualsDepthHashOps`, `IDeepEqualsDepthHashOps64`, `IDeepEqualsDepthElementOps`; `HashSpan(span, depth)` on both widths; `SetEquals`/`DictionaryEquals(..., depth)`, with the depth passed as an argument through fill, match, every trial and the commit, since `default(TOps)` cannot carry it; `DeepEqualsComplexityException(Type, int maxDepth)` and `(Type)` for a looping chain, with `TypeAtLimit`, `MaxDepth`, `IsCycle` and messages stating the Tree contract; `ThrowDepthExceeded`/`ThrowCycle`. Tests in `UnorderedTests` (forwarding, the bound across a set including a caller near the bound, brute-force matching over the depth overloads, exception arguments) and the depth `HashSpan` checks in both hash test files. Framework tests 94 (92 on net472, 86 on netcoreapp3.1). |
-| 7 `Path` | Done | Every guard goes through `GuardScope`: under Path it takes `state.Mark()`, enters, and wraps the rest of the core in `try`/`finally { state.Rollback(pathMark); }`, so the pair leaves on every return. That replaces the planned `EqualsBody_T` split: one uniform shape for classes, `EqualsExact_T`, boxed adapters, tuples and every collection core, and exception-safe as well. Tail loops keep `TryEnter` per node and roll back once around the loop. The header notes that `MaxComparisonPairs` bounds ancestors under Path. **Pre-existing bug found and fixed:** the `IEnumerable<T>` core emitted its guard twice when spans exist, and the second `TryEnter` found the pair the first had entered and returned true without comparing a lazy side; a struct whose children are `IEnumerable` of itself reached it. The guard is now emitted once, ahead of the span compare, with a regression test under Graph and Path. `CycleHandlingTests` for Path: every guard rolled back, a 585-node tree fitting a pair budget of 16 under Path and not under Graph, rolled-versus-unrolled cycles, a diamond DAG, a hundred 50-node chains in a budget of 60, and strategy agreement on acyclic data at both widths; `HashLevelTests` and `FastPathTests` widened to Path; `PathFixtureContext`. Generator tests 179 on net8.0/net10.0; fixtures 8 on all tiers. |
-| 8 `Tree` | Done | Under Tree the state parameter becomes `int depth` everywhere the model says `NeedsState`, through one `StateParam`/`StateArg` pair that also replaced every hard-coded `ref state`. Guards become `if (++depth > MaxDepth) ThrowDepthExceeded(typeof(T), MaxDepth)` plus a stack check, at the same guarded cores for equality and hashing. Hash cores take the depth and walk everything: no shallow or fingerprint levels, since `HasShallowHash` is false under Tree. Ops structs implement the depth interfaces, and `HashSpan` and the unordered calls pass the depth. A boxed struct cycle, whose guard sits on an adapter hashing never passes through, is guarded in its argument by `DeepEqualsHelpers.Descend`. Chain types loop in both equality and hashing with one guard and Brent's detector. **The detector runs after each node is compared**, so a finite chain that differs first returns false instead of throwing; the plan's §1.2 sketch checked before comparing. Tests: `CycleHandlingTests` (emission, the §1.1 contract including mutual recursion and both operand orders, `MaxDepth` bounds, 200,000-node chains under `MaxDepth = 8`, depth across nested sets and a node inside its own set, the whole-tree hash against Graph's one-level hash, the boxed cycle, sets and dictionaries at both widths, all three modes on acyclic data, and the sequence-guard regression under Tree); `TreeFixtureContext` at `MaxDepth = 64` and XxHash64 on all five tiers. Also added here from §3.2 and §3.3: `RobustnessTests` for checked arithmetic across all six mode and width combinations, and a 300-type acyclic chain on a 256 KB thread in every mode, generated rather than written as fixture models. Generator tests 204 on net8.0/net10.0; fixtures 9 on all tiers. |
-| 9 downstream | Done | New contexts: `DownstreamHash64Context` over every root, `DownstreamPathContext`, `DownstreamTreeContext`, and three matching contexts (depth 1 at the default cap, depth 1 at cap 512, depth 2). New models: `ListNode`, `Texts`, `CollidingId` (a simple type hashing to its group), `ReadOnlyListView<T>`, `Arrays`, and `PointArrays` in the record models, because array roots are not supported and `Point3[]` is reached through it. Every scenario carries its 64-bit hash, and there are four new ones: TreeNode under Path and under Tree, `double[]` x1000, and `Point3[]` x1000. `Checks` adds the mode, fingerprint, collision-run and bit-block assertions. `MicroBench` gains a hash64 column and `ColdStart()`, run by the Consumer's `--cold` and by the Blazor page before its checks. The smoke tests log both. `EqualityBenchmarks` gains `Generated64_GetHashCode`, and `StrategyBenchmarks.cs` holds every §6 class. The new `DeepEquals.Generator.Benchmarks` project times generator scale and cancellation latency against the generator source; it is in the solution and in CI's build steps. Package versions bumped to the newest that builds without a warning: WebAssembly 10.0.12, Playwright 1.62.0, Test SDK 18.10.0. FluentAssertions 8 was left alone because of its licence change, and xunit.runner.visualstudio 4 because it targets xunit v3. Verified: the whole downstream builds against freshly packed packages, and the Consumer's checks report OK on net472, net6.0, net7.0, net8.0 and net10.0. The smoke suite, the browser run and the benchmarks are step 11. |
-| 10 docs | Done | README: tier table with the hashing packages, the version policy, netstandard2.0 spans, sealing, the four options, "Choosing a cycle mode", bit blocks, the exception rows and the corrected limits. Implementation.md: the three modes, 64-bit stream and packing, fingerprint levels, guards per mode, Brent tail loop, raw-bit leaves, bit blocks, depth overloads, `DeepEqualsHashCode64` and `DeepEqualsBlocks`, the version policy and capabilities, the cross-context collision step, allocation rows; stale entries removed (dictionary fast path, `SingleToInt32Bits`, decimal allocation, partitioned output). Diagnostics.md was updated with steps 7 and 9. |
+| 1 options plumbing | Done | `CycleHandling`, `MaxDepth` and `MatchingHashDepth` on the attribute, the options record, the reader with DEQ013 and DEQ037, three header lines, incremental and cancellation tests. Generator tests: 89 pass. Nothing is emitted differently yet. |
+| 2 raw-bit shims | Done | The §2.1 shims in `DeepEqualsHelpers` and their helper theories. The rest of this step was removed in step 13. |
+| 3 raw-bit emitter | Done | Float, double and Half go through the §2.1 shims; `HasSingleToInt32Bits` and the old netstandard2.0 shim are gone; the semantic-model conversion scan (now `RawBitsTests`). The DEQ036 test's override is async-local so it cannot leak into parallel tests. The rest of this step was removed in step 13. |
+| 4 bit blocks | Done | `DeepEqualsBlocks` (byte compare, XxHash3 over spans, list and enumerable copies, `HasSize`), the model's bit-block classification and padding walk, the byte paths in every ordered core, `BlocksTests` and `BitBlockTests`. Deviations from §2.2, all deliberate: **System.IO.Hashing is chosen per asset**, the newest release that builds without a warning on every runtime that asset serves: 10.0.12 on net10.0, net8.0 and netstandard2.0 (.NET Framework 4.6.2 and later), 8.0.0 on net6.0 because 9.x and 10.x warn on net6.0 and net7.0; **the netstandard2.1 asset has no block helpers**, because every release warns on the netcoreapp3.1 to net5.0 runtimes it serves, so the generator probes `HasFrameworkBlocks` there, a target-framework capability, not a version one; **System.Memory 4.6.3 is pinned on netstandard2.0**, so .NET Framework consumers now gain `ReadOnlySpan<T>` and the span paths; that exposed a latent gap, fixed with a new `HasImmutableArrayAsSpan` probe, since older immutable-collections releases lack `AsSpan()`; **only source-declared structs qualify**, because Roslyn exposes no layout for metadata structs and drops `[StructLayout]` from `GetAttributes()`, so layout is read from syntax; **the flag is one `static readonly bool` per struct in the context file**, and the fallback test rewrites it in the compiled output rather than through a hook; **`HashEnumerable` hashes what it enumerates**, since the advertised count only sizes the first buffer, and the test is named for that. Generator tests 148 on net8.0/net10.0, framework 88 (86 on net472, 80 on netcoreapp3.1), fixtures 8 on all five tiers. A compiler quirk found on the way: Roslyn folds a decimal constant in `new[] { 1.50m }` converted straight to a span, losing its scale; tests go through locals. |
+| 5 fingerprint levels | Done | Hash levels generalize from {1, 0} to {k .. 0} through one rule in `HashOrOmit`: an edge leaving the component calls the full hash, a structural edge keeps the level, a payload edge steps down. `HashName`/`MembersHashName` name every level; `MatchHashCode_T_L{n}` exists only for types in a component some set or dictionary entry belongs to (`TypeModel.MatchHashLevels`). Class, struct, dispatch and product cores loop over their levels; ordered containers get a plain-walk core per deeper level; unordered containers run their sum at each level; the entry fingerprint calls the level-k core. `MatchingHashDepthTests` (the audit's 65-chain case at depths 1, 2, 4, 16 and caps 64/65, rolled-versus-unrolled congruence inside sets at depths 1 to 4, emission scope, and a 70-entry set through lists, dictionaries, tuples and dispatch) lives in its own file rather than `CycleHandlingTests`. Generator tests 160 on net8.0/net10.0; fixtures 8 on all tiers. |
+| 6 depth-aware framework | Done | `IDeepEqualsDepthHashOps`, `IDeepEqualsDepthElementOps`; `HashSpan(span, depth)`; `SetEquals`/`DictionaryEquals(..., depth)`, with the depth passed as an argument through fill, match, every trial and the commit, since `default(TOps)` cannot carry it; `DeepEqualsComplexityException(Type, int maxDepth)` and `(Type)` for a looping chain, with `TypeAtLimit`, `MaxDepth`, `IsCycle` and messages stating the Tree contract; `ThrowDepthExceeded`/`ThrowCycle`. Tests in `UnorderedTests` (forwarding, the bound across a set including a caller near the bound, brute-force matching over the depth overloads, exception arguments) and the depth `HashSpan` checks. Framework tests 94 (92 on net472, 86 on netcoreapp3.1). |
+| 7 `Path` | Done | Every guard goes through `GuardScope`: under Path it takes `state.Mark()`, enters, and wraps the rest of the core in `try`/`finally { state.Rollback(pathMark); }`, so the pair leaves on every return. That replaces the planned `EqualsBody_T` split: one uniform shape for classes, `EqualsExact_T`, boxed adapters, tuples and every collection core, and exception-safe as well. Tail loops keep `TryEnter` per node and roll back once around the loop. The header notes that `MaxComparisonPairs` bounds ancestors under Path. **Pre-existing bug found and fixed:** the `IEnumerable<T>` core emitted its guard twice when spans exist, and the second `TryEnter` found the pair the first had entered and returned true without comparing a lazy side; a struct whose children are `IEnumerable` of itself reached it. The guard is now emitted once, ahead of the span compare, with a regression test under Graph and Path. `CycleHandlingTests` for Path: every guard rolled back, a 585-node tree fitting a pair budget of 16 under Path and not under Graph, rolled-versus-unrolled cycles, a diamond DAG, a hundred 50-node chains in a budget of 60, and strategy agreement on acyclic data; `HashLevelTests` and `FastPathTests` widened to Path; `PathFixtureContext`. Generator tests 179 on net8.0/net10.0; fixtures 8 on all tiers. |
+| 8 `Tree` | Done | Under Tree the state parameter becomes `int depth` everywhere the model says `NeedsState`, through one `StateParam`/`StateArg` pair that also replaced every hard-coded `ref state`. Guards become `if (++depth > MaxDepth) ThrowDepthExceeded(typeof(T), MaxDepth)` plus a stack check, at the same guarded cores for equality and hashing. Hash cores take the depth and walk everything: no shallow or fingerprint levels, since `HasShallowHash` is false under Tree. Ops structs implement the depth interfaces, and `HashSpan` and the unordered calls pass the depth. A boxed struct cycle, whose guard sits on an adapter hashing never passes through, is guarded in its argument by `DeepEqualsHelpers.Descend`. Chain types loop in both equality and hashing with one guard and Brent's detector. **The detector runs after each node is compared**, so a finite chain that differs first returns false instead of throwing; the plan's §1.2 sketch checked before comparing. Tests: `CycleHandlingTests` (emission, the §1.1 contract including mutual recursion and both operand orders, `MaxDepth` bounds, 200,000-node chains under `MaxDepth = 8`, depth across nested sets and a node inside its own set, the whole-tree hash against Graph's one-level hash, the boxed cycle, sets and dictionaries, all three modes on acyclic data, and the sequence-guard regression under Tree); `TreeFixtureContext` at `MaxDepth = 64` on all five tiers. Also added here from §3.2 and §3.3: `RobustnessTests` for checked arithmetic in every mode, and a 300-type acyclic chain on a 256 KB thread in every mode, generated rather than written as fixture models. Generator tests 204 on net8.0/net10.0; fixtures 9 on all tiers. |
+| 9 downstream | Done | New contexts: `DownstreamPathContext`, `DownstreamTreeContext`, and three matching contexts (depth 1 at the default cap, depth 1 at cap 512, depth 2). New models: `ListNode`, `Texts`, `CollidingId` (a simple type hashing to its group), `ReadOnlyListView<T>`, `Arrays`, and `PointArrays` in the record models, because array roots are not supported and `Point3[]` is reached through it. There are four new scenarios: TreeNode under Path and under Tree, `double[]` x1000, and `Point3[]` x1000. `Checks` adds the mode, fingerprint, collision-run and bit-block assertions. `MicroBench` gains `ColdStart()`, run by the Consumer's `--cold` and by the Blazor page before its checks. The smoke tests log both. `StrategyBenchmarks.cs` holds every §6 class. The new `DeepEquals.Generator.Benchmarks` project times generator scale and cancellation latency against the generator source; it is in the solution and in CI's build steps. Package versions bumped to the newest that builds without a warning: WebAssembly 10.0.12, Playwright 1.62.0, Test SDK 18.10.0. FluentAssertions 8 was left alone because of its licence change, and xunit.runner.visualstudio 4 because it targets xunit v3. Verified: the whole downstream builds against freshly packed packages, and the Consumer's checks report OK on net472, net6.0, net7.0, net8.0 and net10.0. The smoke suite, the browser run and the benchmarks are step 11. |
+| 10 docs | Done | README: tier table with the hashing packages, the version policy, netstandard2.0 spans, sealing, the four options, "Choosing a cycle mode", bit blocks, the exception rows and the corrected limits. Implementation.md: the three modes, fingerprint levels, guards per mode, Brent tail loop, raw-bit leaves, bit blocks, depth overloads, `DeepEqualsBlocks`, the version policy and capabilities, the cross-context collision step, allocation rows; stale entries removed (dictionary fast path, `SingleToInt32Bits`, decimal allocation, partitioned output). Diagnostics.md was updated with steps 7 and 9. |
 | 11 repack and run | Done | Run on 2026-09-12 after the go-ahead. Every suite green in Release; smoke green including Mono and the browser; benchmarks on net10.0, net8.0 and net472, the browser table and the generator scale. Results and findings in §8. The generator-scale sizes were cut from 4,000 to 2,000 classes, since 4,000 exceeds the 4,096-type closure cap and timed a `DEQ018` refusal; setup now throws on any generator error. |
 | 12 `MaxDepth` without `Tree` | Done | Added by request: `DEQ037` when `MaxDepth` is set explicitly and `CycleHandling` is not `Tree`, the mirror of the `MatchingHashDepth` rule. `OptionsReader` tracks where `MaxDepth` was written, including on a base context, and the message names the mode. Tests: two `Diagnostics_are_reported` rows (Graph, Path), `An_option_that_applies_to_the_mode_does_not_warn`, and `MaxDepth_outside_Tree_is_ignored_and_the_warning_names_the_mode`. Diagnostics.md's `DEQ037` row covers both cases; the README already did. |
 | 13 drop `XxHash64` | Done | By request after §8: the 64-bit stream was nowhere faster on x64 and only tied in the browser. Removed the `Hashing` option and `DeepEqualsHashing`, `DeepEqualsHashCode64`, the 64-bit ops interfaces, the 64-bit decimal and Guid readers, the emitter's word-width machinery, the 64-bit contexts, scenarios, benchmark columns and tests. `DeepEqualsBlocks` keeps XxHash3 with its own per-process seed and returns the 32-bit fold (`HashBytes`, `HashBlock`, `HashReadOnlyList`, `HashList`, `HashEnumerable`). The storage-bits scan moved to `RawBitsTests`. |
@@ -36,7 +36,6 @@ New per-context options on `[DeepEqualsSourceGenerationOptions]`:
 | `CycleHandling` | `Graph`, `Path`, `Tree` | `Graph` | How a comparison remembers where it has been, and therefore what a cyclic type costs |
 | `MaxDepth` | 1 .. 1,000,000 | 512 | `Tree` only: the guarded nesting depth past which a comparison throws |
 | `MatchingHashDepth` | 1 .. 16 | 4 | `Graph` and `Path` only: how many payload edges into a cycle the fingerprint used inside unordered matching looks |
-| `Hashing` | `XxHash32`, `XxHash64` | `XxHash32` | The width of the hash stream every generated hash core runs |
 
 Dropped from the earlier brainstorm, on purpose: a stable hash mode and a declared-type polymorphism mode. Users seal
 classes for dispatch performance; the README will say so.
@@ -243,8 +242,8 @@ Framework, `src/DeepEquals.SourceGeneration.Framework/`:
   `Depth`, `MaxDepth`) and the tail-loop cycle (`Type`), with messages that state the §1.1 contract.
 - `DeepEqualsHelpers.cs`: `ThrowDepthExceeded(Type type, int maxDepth)` and `ThrowCycle(Type type)`, both
   `NoInlining`, so the guard stays one compare and one branch.
-- `DeepEqualsOps.cs`: `IDeepEqualsDepthHashOps<T>`, `IDeepEqualsDepthHashOps64<T>`, `IDeepEqualsDepthElementOps<T>`.
-- `DeepEqualsHashCode.cs`, `DeepEqualsHashCode64.cs`: `HashSpan` overloads taking `int depth` over the depth ops.
+- `DeepEqualsOps.cs`: `IDeepEqualsDepthHashOps<T>`, `IDeepEqualsDepthElementOps<T>`.
+- `DeepEqualsHashCode.cs`: `HashSpan` overloads taking `int depth` over the depth ops.
 - `DeepEqualsUnordered.cs`: `SetEquals` and `DictionaryEquals` overloads taking `int depth` through the depth ops,
   sharing the materialization and matching code with the stateless overloads (the trial loop without mark/rollback);
   `FillSet`/`FillDictionary` overloads forwarding the depth to the fingerprint.
@@ -276,59 +275,19 @@ Generator, `src/DeepEquals.SourceGenerator/`:
     hash core and ops struct, the guard is emitted, and tail-member types hash in a loop.
   - `EmitWrapper`: no state declaration, `try`/`finally` or `Dispose` under `Tree`; passes `0`.
   - `EmitConstants`: `MaxDepth` constant under `Tree`.
-  - `HeaderValues`: four new "Options in effect" lines.
-- `Templates/AutoGeneratedHeader.cs`: the four placeholders.
+  - `HeaderValues`: three new "Options in effect" lines.
+- `Templates/AutoGeneratedHeader.cs`: the three placeholders.
 - `KnownTypes.cs`: the new framework names.
 - `AnalyzerReleases.Unshipped.md`: `DEQ036`, `DEQ037`.
 
 ---
 
-## 2. `Hashing = XxHash64`
+## 2. Raw bits and bit blocks
 
-### 2.1 Design
+Hashing stays xxHash32 over 32-bit words. This section makes every leaf compare and hash its storage bits, and lets a
+sequence of such leaves compare and hash as one block of bytes.
 
-A 64-bit xxHash64 stream in place of the 32-bit one, with the same process seed policy, so every generated hash core
-returns `ulong` and only the public `GetHashCode(T)` folds:
-
-```csharp
-public int GetHashCode(Customer? o) => DeepEqualsHashCode64.Fold(GetHashCode_Customer(o));
-// Fold(h) = (int)(h ^ (h >> 32))
-```
-
-Words are 64-bit. Each leaf contributes as follows, and the emitter packs narrow words in pairs:
-
-| Leaf | 32-bit words today | 64-bit words |
-|---|---|---|
-| `int`, `uint`, `bool`, `char`, small enums, `float`, `Half`, `string`, `Uri`, custom comparer, `[SimpleType]`, default `.GetHashCode()` | 1 | narrow; two per word: `Pack(a, b) = ((ulong)(uint)a << 32) \| (uint)b` |
-| `long`, `ulong`, `nint`, 8-byte enums, `double`, `DateTime`, `TimeSpan` | 2 | 1 |
-| `decimal`, `Guid`, `DateTimeOffset`, `Int128`, `UInt128` | 4 | 2 |
-| nested object, collection, product | 1 | 1, carrying all 64 bits |
-
-Packing rules:
-
-- Narrow words of one owner are paired in declaration order first, then the wide words follow. Wide words are never
-  interleaved with the pairs, so no half-empty word is wasted on a wide leaf sitting between two narrow ones.
-- An odd trailing narrow word sits alone with a zero high half. Arity is fixed per type, so nothing is ambiguous.
-- The cast goes through `uint`. A negative `int` cast straight to `ulong` sign-extends over the high half.
-- Nested hashes and unordered sums carry 64 bits, so collisions between siblings and between set sums drop toward
-  2^-64 for the parts of a value that supply independent 64-bit information. Narrow leaves still supply 32 bits
-  each, the public result is still 32 bits, and a value the level rule omits supplies nothing at any width; §1.4 is
-  what addresses that, not the width.
-
-xxHash64, not XXH3 or wyhash: its rounds are 64-bit multiply, add and rotate, each one `i64` instruction in
-WebAssembly. The faster hashes need a widening 64x64 multiply, which wasm lacks. The 32-bit option stays for x86
-processes.
-
-**Empty and null at the fold.** The rule that a null collection hashes to 0 and an empty one to a nonzero value is
-stated for the public hash, so it is applied twice: on the 64-bit value inside, as today, and again after the fold,
-because `Fold(0x0000000100000001)` is 0. `FoldNonZero` returns 1 where the fold would return 0 for a non-null
-input. Null is folded to 0 before any of this.
-
-Unchanged: the seed policy (a separate 64-bit process seed, settable from the test assembly), the level machinery
-under `Graph` and `Path`, and the packed 32-bit `(hash, index)` keys inside `DeepEqualsUnordered`, which receive the
-folded fingerprint.
-
-### 2.2 Raw bits, never a numeric conversion
+### 2.1 Raw bits, never a numeric conversion
 
 Equality and hashing of a built-in leaf operate on its storage bits. No path may apply a numeric conversion to a
 value: no `(uint)f` on a float, no `(long)d` on a double, no `.GetHashCode()` on a floating-point or decimal value.
@@ -343,14 +302,13 @@ The only casts allowed in a hash word are the ones C# defines as bit-preserving 
 
 | Cast | Effect | Where |
 |---|---|---|
-| `int` to `uint`, `long` to `ulong` (and back), always inside `unchecked(...)` | Reinterpretation, same width | `Pack`, `Words64`, the stream |
-| `uint` to `ulong` | Zero-extension | `Pack`, a lone narrow word |
-| `(int)ulong` | Truncation to the low word | `Fold`, the 32-bit `Words64` |
+| `int` to `uint`, `long` to `ulong` (and back), always inside `unchecked(...)` | Reinterpretation, same width | the stream |
+| `(int)ulong`, `(int)(ulong >> 32)` | The low and high words | the two words of a 64-bit leaf |
 | `byte`, `sbyte`, `short`, `ushort`, `char` to `int` | Extension to one narrow word | narrow leaves |
 | an enum to exactly its underlying type | Identity on the bits; the compiler emits nothing | enum leaves |
 | `bool` as `? 1 : 0` | Not a cast; both outcomes are distinct words | `bool` leaves |
 
-`unchecked` is written explicitly, as `Words64` does today, because a consumer project may compile with
+`unchecked` is written explicitly because a consumer project may compile with
 `CheckForOverflowUnderflow`. `nint`/`nuint` widen to 64 bits by sign or zero extension, which preserves every
 bit of the native word.
 
@@ -363,7 +321,7 @@ local to the stack for the rest of the method. The fastest form on each asset is
 | `float` | `BitConverter.SingleToUInt32Bits` | `BitConverter.SingleToUInt32Bits` | `BitConverter.SingleToInt32Bits` | `Unsafe.As<float, uint>(ref)` |
 | `double` | `BitConverter.DoubleToUInt64Bits` | `BitConverter.DoubleToUInt64Bits` | `BitConverter.DoubleToInt64Bits` | `Unsafe.As<double, ulong>(ref)` |
 | `Half` | `BitConverter.HalfToUInt16Bits` | `BitConverter.HalfToUInt16Bits` | not a leaf on this asset | not a leaf on this asset |
-| `decimal`, `Guid`, `Int128`, `UInt128` | `Unsafe.As<T, ulong>(ref)` and `Unsafe.Add` | same | same | same |
+| `decimal`, `Guid`, `Int128`, `UInt128` | `Unsafe.As<T, int>(ref)` and `Unsafe.Add`, one 32-bit word at a time | same | same | same |
 | `DateTime` | `Unsafe.As<DateTime, ulong>(ref)` (existing `DateTimeBits`) | same | same | same |
 | `DateTimeOffset` | `.Ticks` and `.Offset.Ticks`, two `long` words | same | same | same |
 | `TimeSpan` | `.Ticks` | same | same | same |
@@ -376,26 +334,24 @@ later but adds nothing over `BitConverter` for 4- and 8-byte values, and it is n
 package, so netstandard stays on `Unsafe.As`. `DateTimeOffset` is read through its two tick properties rather than
 reinterpreted, because its 16 bytes include padding whose content is not defined.
 
-Every reinterpretation goes through one `AggressiveInlining` shim in `DeepEqualsHelpers`, selected per asset with
-`#if`, so generated code binds one stable name and the emitter stops probing for `SingleToInt32Bits`:
+Every reinterpretation that differs per asset goes through one `AggressiveInlining` shim in `DeepEqualsHelpers`,
+selected per asset with `#if`, so generated code binds one stable name and the emitter stops probing for
+`SingleToInt32Bits`. `Half` exists only where `BitConverter.HalfToUInt16Bits` does, so generated code calls that
+directly (step 17):
 
 ```csharp
-public static uint  FloatBits(float value);          // the four bytes
-public static ulong DoubleBits(double value);        // the eight bytes
-public static ushort HalfBits(Half value);           // net6.0 and later assets
-public static ulong DecimalLo64(in decimal value);   // storage words 0 and 1
-public static ulong DecimalHi64(in decimal value);   // storage words 2 and 3
-public static ulong GuidLo64(in Guid value);
-public static ulong GuidHi64(in Guid value);
-public static ulong DateTimeBits(DateTime value);    // exists today
+public static uint  FloatBits(float value);                 // the four bytes
+public static ulong DoubleBits(double value);               // the eight bytes
+public static int   DecimalWord(in decimal value, int i);   // storage word i
+public static int   GuidWord(in Guid value, int i);
+public static ulong DateTimeBits(DateTime value);           // exists today
 ```
 
-The decimal words are in storage order, which is not the `lo, mid, hi, flags` order `decimal.GetBits` returns, and
-the same holds for `DecimalWord` today. Tests compare the set of words, or map explicitly, never the sequence.
+The decimal words are in storage order, which is not the `lo, mid, hi, flags` order `decimal.GetBits` returns.
+Tests compare the set of words, or map explicitly, never the sequence.
 
-The 32-bit path adopts the same shims, with `DecimalWord`/`GuidWord` kept for its four-word split. The existing
-`SingleToInt32Bits` shim and the `HasSingleToInt32Bits` capability go away once every emitter path uses `FloatBits`;
-under the version policy nothing compiled against the old shim can meet the new asset.
+The existing `SingleToInt32Bits` shim and the `HasSingleToInt32Bits` capability go away once every emitter path uses
+`FloatBits`; under the version policy nothing compiled against the old shim can meet the new asset.
 
 **Packages.** None to add for this section. `System.Runtime.CompilerServices.Unsafe` 6.1.2 is already referenced on
 netstandard2.0 and netstandard2.1 and provides `Unsafe.As`, `Unsafe.Add` and `Unsafe.AsRef`; net6.0 and later have
@@ -403,13 +359,13 @@ them in the box. `System.Buffers` on netstandard2.0 is unchanged.
 
 **Tests for this rule.** `HelpersTests` gains, on every framework the tests run on: every shim returns the bytes
 `BitConverter.GetBytes` returns for the same value, for a normal value, `-0.0` against `0.0`, two NaNs with different
-payloads, and `float.MaxValue`; the two decimal words together cover each `decimal.GetBits` word once; the Guid words
-together equal `Guid.ToByteArray`. A generator test parses the emitted source into the test compilation and walks
+payloads, and `float.MaxValue`; the four decimal words together cover each `decimal.GetBits` word once; the Guid
+words together equal `Guid.ToByteArray`. A generator test parses the emitted source into the test compilation and walks
 its semantic model for any `IConversionOperation` from a floating-point or decimal type to an integer type, and any
 `GetHashCode` invocation on such a type outside `[SimpleType]` and custom-comparer paths; every hit fails. A textual
 cast scan is not enough, because casts appear in comments and in the unrelated `unchecked` integer forms.
 
-### 2.3 Bulk paths: bit blocks, vectorized compare, XxHash3
+### 2.2 Bulk paths: bit blocks, vectorized compare, XxHash3
 
 The raw-bits rule makes a sequence of bit-hashed leaves a contiguous block of bytes. Three changes follow, in
 order of value.
@@ -428,7 +384,7 @@ alignment leaves no gap and a total that is a multiple of the largest alignment.
 qualifies; an `int` followed by a `long` does not. Because the runtime owns layout, the generated code also checks
 at first use, once per type, that `Unsafe.SizeOf<T>()` equals the computed size, and otherwise takes the word path
 for that type. That check is a `static readonly bool` the JIT folds to a constant. A single bit-block struct value
-keeps its member-wise equality and packed-word hash; the byte paths pay off on sequences of them.
+keeps its member-wise equality and word hash; the byte paths pay off on sequences of them.
 
 **Equality of bit-block sequences (item 2).** `Equals_SpanOf<T>` for a bit-block `T` becomes
 
@@ -445,8 +401,8 @@ leaves whose default equality already matches ours reach `SequenceEqual`, so `fl
 `ImmutableArray<T>`, `ArraySegment<T>`, `Memory<T>`, and interface-typed members that capture a span at runtime.
 
 **Hashing of bit-block sequences (item 1).** The hash of a bit-block sequence is defined as XxHash3 over its bytes
-with the process seed, through `System.IO.Hashing.XxHash3.HashToUInt64(ReadOnlySpan<byte>, long seed)`, on both
-hash widths (the 32-bit width folds the result). The definition has to hold for every container shape of the same
+with a per-process seed, through `System.IO.Hashing.XxHash3.HashToUInt64(ReadOnlySpan<byte>, long seed)`, folded to
+32 bits. The definition has to hold for every container shape of the same
 declared type, because a `double[]` and a custom `IReadOnlyList<double>` holding the same values are equal and must
 hash equal. So:
 
@@ -457,57 +413,34 @@ hash equal. So:
 - The stream is the same for every length, so there is no threshold to keep consistent. XxHash3's short-input paths
   are one or two multiplies for up to 16 bytes and a handful for up to 128.
 
-`HashSpan`/`HashSpan64`, `Streaming`/`Streaming64` and the `Combine` overloads remain the definition for sequences
-of every other element type, and the invariant that the three agree is unchanged for those.
+`HashSpan`, `Streaming` and the `Combine` overloads remain the definition for sequences of every other element
+type, and the invariant that the three agree is unchanged for those.
 
 **Package.** `System.IO.Hashing`, latest stable, referenced on every framework asset. It targets netstandard2.0,
 has no further dependencies, and is trim and AOT safe. Its `XxHash3` core is vectorized with AVX2 and NEON on
 CoreCLR. On WebAssembly its 64x64 to 128-bit multiply is emulated, and whether the interpreter takes its vector path
 is a measurement, not a promise; the browser table in the smoke output will show it.
 
-**Not done.** Vectorizing the xxHash32 or xxHash64 lanes themselves: the four scalar lanes already overlap in the
-CPU, the 32-bit vector multiply is slow on Intel, and there is no 64-bit lane multiply below AVX-512. Strings stay
-on Marvin and the runtime's own hash.
+**Not done.** Vectorizing the xxHash32 lanes themselves: the four scalar lanes already overlap in the CPU, and the
+32-bit vector multiply is slow on Intel. Strings stay on Marvin and the runtime's own hash.
 
-### 2.4 Files
+### 2.3 Files
 
 Framework:
 
-- New `DeepEqualsHashCode64.cs`: primes, `s_seed64`, `Seed` (internal), `Round`, `MergeRound`, `MixFinal`,
-  `Fold`, `FoldNonZero`, `Pack`, `Hash(in decimal)`, `Hash(Guid)`, `Hash(Int128)`/`Hash(UInt128)` as two words,
-  `HashSpan64<T, TOps>` over `IDeepEqualsHashOps64<T>` and its depth overload, and `Streaming64` with `Add(ulong)`
-  and `ToHashCode()` returning `ulong`. Strings stay narrow through `DeepEqualsHashCode.Hash(string?)`.
-- New `DeepEqualsHashCode64.Combine.g.cs`: `ulong Combine(ulong h1 .. hN)` for `N` 1 to 32.
-- `eng/Generate-HashCodeCombine.ps1`: a `-Width 64` switch that emits the 64-bit lane arithmetic and the second
-  file; the 32-bit output is byte-identical to today.
-- `DeepEqualsHelpers.cs`: the shims of §2.2: `FloatBits`, `DoubleBits`, `HalfBits`, `DecimalLo64`/`DecimalHi64`,
-  `GuidLo64`/`GuidHi64`, each `#if`-selected per asset; `SingleToInt32Bits` removed.
-- `DeepEqualsOps.cs`: `IDeepEqualsHashOps64<T> { ulong GetHashCode64(T x); }`.
-- `DeepEqualsUnordered.cs`: no change beyond §1.5; the 64-bit container hash is generated inline, the matching
-  path folds.
-- New `DeepEqualsBlocks.cs`: `HashBytes(ReadOnlySpan<byte>)` returning `ulong` (XxHash3 with the process seed) and
-  `int`, `HashBlock<T>(ReadOnlySpan<T>)` over `MemoryMarshal.AsBytes`, `HashList<T>(IReadOnlyList<T>)` and
-  `HashEnumerable<T>(IEnumerable<T>)` with the rented-buffer copy, and `BlockEquals<T>(ReadOnlySpan<T>,
-  ReadOnlySpan<T>)`. All constrained to `unmanaged`.
+- `DeepEqualsHelpers.cs`: the shims of §2.1: `FloatBits` and `DoubleBits`, each `#if`-selected per asset;
+  `SingleToInt32Bits` removed.
+- New `DeepEqualsBlocks.cs`: `HashBytes(ReadOnlySpan<byte>)` (XxHash3 with its own per-process seed, folded to 32
+  bits and never 0), `HashBlock<T>(ReadOnlySpan<T>)` over `MemoryMarshal.AsBytes`, `HashReadOnlyList<T>`,
+  `HashList<T>` and `HashEnumerable<T>` with the rented-buffer copy, `BlockEquals<T>(ReadOnlySpan<T>,
+  ReadOnlySpan<T>)` and `HasSize<T>`. All constrained to `unmanaged`.
 - `DeepEquals.SourceGeneration.Framework.csproj`: adds `System.IO.Hashing` on every target. No `AllowUnsafeBlocks`.
 
 Generator:
 
-- `Attributes.cs`: `enum DeepEqualsHashing { XxHash32, XxHash64 }` and the `Hashing` property.
-- `Model/ContextOptions.cs`, `Analysis/OptionsReader.cs`, header template: as for cycle handling.
 - `Emit/Emitter.cs`:
-  - `HashWords`, `WideLeafWords`, `Words64`: the word list becomes `List<HashWord>` with `(string Expr, bool Wide)`.
-    Under 64-bit a wide leaf adds one or two `ulong` expressions; under 32-bit behaviour is unchanged.
-  - `Combine(List<...>)`: under 64-bit, pairs narrow words with `Pack`, casts a lone narrow word, and nests above
-    32 words as today.
-  - `LeafHash`, `LeafEq`, `SingleBits`: every float, double, Half, decimal and Guid read goes through the §2.2
-    shims on both widths; `SingleBits` becomes `FloatBits` and the `HasSingleToInt32Bits` branch is deleted. Wide
-    leaves reached outside a member stream (a list element, a dictionary key) use the 64-bit `Hash` overloads.
-  - `EmitMembersHash`, `EmitDispatchHash`, `CaseHash`, `EmitProductCores`, `EmitValueSequenceCores`,
-    `EmitSpanHash`, `EmitEnumerableCores`, `EmitUnorderedCores`, `EntryHash`, `EmitHashOps`: return type `ulong`,
-    `ulong sum`, `HashSpan64`, `Streaming64`, and the 64-bit ops struct.
-  - `EmitWrapper`: `Fold` around the top-level hash, `FoldNonZero` for collection roots.
-  - A `HashClass`/`HashType`/`Fold` trio on the emitter so the two widths share every code path.
+  - `LeafHash`, `LeafEq`, `SingleBits`: every float and double read goes through the §2.1 shims; `SingleBits`
+    becomes `FloatBits` and the `HasSingleToInt32Bits` branch is deleted.
   - `EmitSpanCores`, `EmitSpanCompare`, `EmitSpanHash`, `EmitArrayOrListCores`, `EmitListInterfaceCores`,
     `EmitEnumerableCores`: a bit-block element selects the `DeepEqualsBlocks` calls in place of `SequenceEqual`, the
     element loop, `HashSpan` and `Streaming`. `EmitStructCores` emits the `Unsafe.SizeOf` check for a bit-block
@@ -515,9 +448,9 @@ Generator:
 - `Analysis/CapabilityProbe.cs`, `Model/TargetCapabilities.cs`: `HasSingleToInt32Bits` removed; the header's
   capability list drops that line.
 - `Analysis/ModelBuilder.cs`, `Model/TypeModel.cs`: `IsBitBlock` on a type model, with `BitBlockSize`. Leaves are
-  classified from the §2.3 list; structs by the padding proof, which walks the fields in declaration order with
+  classified from the §2.2 list; structs by the padding proof, which walks the fields in declaration order with
   natural alignment and reads `StructLayoutAttribute` off the symbol.
-- `KnownTypes.cs`: `GlobalHashCode64`, `GlobalHashOps64`, `GlobalBlocks`.
+- `KnownTypes.cs`: `GlobalBlocks`.
 
 ---
 
@@ -528,29 +461,12 @@ collision under a random seed would fail the run. Tests that assert equal values
 
 ### 3.1 Framework tests, `tests/DeepEquals.SourceGeneration.Framework.Tests/`
 
-New `HashCode64Tests.cs`, mirroring `HashCodeTests.cs` with an independent naive xxHash64 reference:
-
-- `Combine64_matches_reference_for_every_arity` (theory over three seeds, arity 1 to 32, 20 trials each).
-- `Empty_stream_with_seed_zero_is_the_published_xxHash64_vector` (`0xEF46DB3751D8E999`).
-- `Empty_stream_never_returns_zero`, on the 64-bit value and after `FoldNonZero`.
-- `Fold_of_a_nonzero_value_can_be_zero_and_FoldNonZero_maps_it_to_one`: `0x0000000100000001` and a searched
-  seed whose empty-stream value folds to zero.
-- `Streaming64_lengths_around_lane_boundaries_match_reference`.
-- `HashSpan64_matches_streaming_and_combine`, including the depth overload with a counting ops struct.
-- `Fold_uses_both_halves`: two values differing only above bit 32 fold differently.
-- `Pack_casts_through_uint`: a negative low word leaves the high word intact, and `Pack(a, b) != Pack(b, a)`.
-- `Decimal_and_guid_hashes_use_both_words`: distinct scales and the six bytes `Guid.GetHashCode` folds away, with
-  fixed seeds.
-- `Seed64_is_independent_of_the_32_bit_seed`.
-
 `HelpersTests.cs`, added:
 
-- `Bit_shims_return_the_storage_bytes` (theory per shim): `FloatBits`, `DoubleBits`, `HalfBits` where the asset has
-  it, `DecimalLo64`/`Hi64`, `GuidLo64`/`Hi64` and `DateTimeBits` against `BitConverter.GetBytes`, `decimal.GetBits`
-  as a set of words, and `Guid.ToByteArray`, for a normal value, `float.MaxValue`, `-0.0` against `0.0`, and two
+- `Bit_shims_return_the_storage_bytes` (theory per shim): `FloatBits`, `DoubleBits`, `DecimalWord`, `GuidWord` and
+  `DateTimeBits` against `BitConverter.GetBytes`, `decimal.GetBits` as a set of words, and `Guid.ToByteArray`, for a normal value, `float.MaxValue`, `-0.0` against `0.0`, and two
   NaNs with different payloads. Runs on all five test frameworks, so netstandard2.0's `Unsafe.As` path is covered
   on net472.
-- `Decimal_and_guid_64_bit_words_match_the_32_bit_words`: the lo/hi readers agree with the single-word readers.
 - `ThrowDepthExceeded_and_ThrowCycle_carry_their_arguments`.
 
 `UnorderedTests.cs`, added:
@@ -563,14 +479,14 @@ New `HashCode64Tests.cs`, mirroring `HashCodeTests.cs` with an independent naive
 
 New `BlocksTests.cs`:
 
-- `HashBytes_is_seeded_XxHash3`: agrees with `XxHash3.HashToUInt64` for the same seed on lengths 0, 1, 3, 16, 17,
+- `HashBytes_is_seeded_XxHash3`: agrees with `XxHash3.HashToUInt64`, folded, for the same seed on lengths 0, 1, 3, 16, 17,
   128, 129, 240, 241 and 4096, and changes with the seed.
 - `HashBlock_HashList_and_HashEnumerable_agree` for `double`, `Guid` and `decimal` elements, on every length above,
   with a list that is not an array and an enumerable that is not a list.
 - `HashEnumerable_detects_a_count_lie`.
 - `HashEnumerable_returns_its_rented_buffer` through `FakeArrayPool`, on the success and the throwing path.
 - `BlockEquals_is_bitwise`: NaN payloads, negative zero, decimal scale, `DateTime` kind.
-- `Empty_block_hashes_nonzero_and_null_container_hashes_zero`, before and after the fold.
+- `Empty_block_hashes_nonzero_and_null_container_hashes_zero`.
 
 `StateTests.cs`, added:
 
@@ -606,7 +522,7 @@ New `CycleHandlingTests.cs`:
 - `Path_shared_subgraphs_are_recompared_and_still_correct`: a diamond DAG.
 - `Path_tail_loops_rollback_after_the_loop`.
 - `Every_strategy_agrees_on_acyclic_data`: theory over the three values against one acyclic model set, equal and
-  unequal pairs, both hash widths.
+  unequal pairs.
 - `Matching_hash_depth_separates_chains_that_the_public_hash_does_not` (S1): 65 chains `0 -> 0 -> i -> null` in
   two equal sets; with `MatchingHashDepth = 1` and cap 64 the comparison throws, with cap 65 it succeeds, with
   depth 2 and cap 64 it succeeds; the public hashes of all 65 stay equal; the sets compare equal under `Tree`
@@ -617,26 +533,15 @@ New `CycleHandlingTests.cs`:
 - `Framework_version_mismatch_reports_DEQ036`: the test host references a framework assembly stamped with a
   different version.
 
-New `Hashing64Tests.cs`:
+New `RawBitsTests.cs`:
 
-- `XxHash64_cores_return_ulong_and_the_wrapper_folds`: source assertions, `FoldNonZero` on collection roots.
-- `Narrow_leaves_pack_in_pairs_before_wide_words`: a type with three ints and a double emits `Pack` once, a lone
-  cast once, one `DoubleBits` word, and a `Combine` of arity 3, in that order.
-- `Equal_values_hash_equal_and_agree_with_equality_under_XxHash64`: class, struct, inlined struct, nullable, tuple,
-  array, list behind interface, immutable array, set, dictionary, dispatch, and the wide leaves with the same edge
-  data as `Wide_leaves_hash_by_word_and_agree_with_equality`; over many seeds.
-- `XxHash64_distinguishes_the_representation_edges`: `-0.0` against `0.0`, NaN payloads, decimal scale,
-  `DateTime` kind, with fixed seeds and chosen vectors.
-- `XxHash64_collections_use_HashSpan64_Streaming64_and_a_ulong_sum`: source assertions.
-- `XxHash64_custom_comparers_and_simple_types_are_narrow_words`.
-- `Int128_hashes_as_two_words_under_XxHash64`.
-- `Generated_cores_contain_no_numeric_conversion` (theory over both widths): the semantic-model walk of §2.2 over a
+- `Generated_cores_contain_no_numeric_conversion`: the semantic-model walk of §2.1 over a
   closure with every floating-point and decimal leaf, including `Half`, float aggregates and nullable forms, and a
   `[SimpleType]` double wrapper that is exempt.
 
 New `BitBlockTests.cs`:
 
-- `Bit_block_leaves_are_classified` (theory): each type in the §2.3 list is a bit block, and `bool`, `nint`,
+- `Bit_block_leaves_are_classified` (theory): each type in the §2.2 list is a bit block, and `bool`, `nint`,
   `DateTimeOffset`, `string`, a `[SimpleType]` and a custom-comparer type are not.
 - `Structs_without_padding_are_bit_blocks_and_padded_ones_are_not`: three doubles, `(int, int)` pair, a struct of a
   `Guid` and a `long`, a nested bit-block struct; against `int` then `long`, `byte` then `int`, a struct with a
@@ -646,64 +551,58 @@ New `BitBlockTests.cs`:
   such call for `string[]`, `bool[]` or `List<int?>`.
 - `Every_container_shape_of_a_bit_block_sequence_hashes_equal`: array, list, immutable array, a custom
   `IReadOnlyList<T>`, a lazy `IEnumerable<T>`, for `double` and a bit-block struct.
-- `Bit_block_sequence_equality_is_bitwise`: NaN payloads and negative zero inside arrays, under both widths.
+- `Bit_block_sequence_equality_is_bitwise`: NaN payloads and negative zero inside arrays.
 - `Size_check_failure_falls_back_to_the_word_path`: a fixture whose computed size is made wrong through a test hook
   on the generated `static readonly` still compares and hashes correctly.
 
 Changed:
 
 - `HashLevelTests.Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently`: theory over
-  `{Graph, Path} x {XxHash32, XxHash64} x MatchingHashDepth {1, 4}`.
-- `FastPathTests.Wide_leaves_hash_by_word_and_agree_with_equality` and
-  `One_guard_per_cycle_still_terminates_and_equates_rolled_and_unrolled_graphs`: theory over both hash widths, and
-  the guard test over `Graph` and `Path`.
-- `StrategyAndDiagnosticTests.Diagnostics_are_reported`: `DEQ013` cases for the four new options, `DEQ036`,
+  `{Graph, Path} x MatchingHashDepth {1, 4}`.
+- `FastPathTests.One_guard_per_cycle_still_terminates_and_equates_rolled_and_unrolled_graphs`: theory over `Graph`
+  and `Path`.
+- `StrategyAndDiagnosticTests.Diagnostics_are_reported`: `DEQ013` cases for the three new options, `DEQ036`,
   `DEQ037`.
-- `BasicGenerationTests.Output_is_one_context_file_plus_one_file_per_emitted_type`: header shows the four lines and
+- `BasicGenerationTests.Output_is_one_context_file_plus_one_file_per_emitted_type`: header shows the three lines and
   the type file's header no longer lists the closure.
 - `IncrementalTests`: `Changing_an_option_reruns_the_output` for each new option.
-- New `Generated_code_compiles_and_runs_under_CheckForOverflowUnderflow`: theory over every mode and width, the
+- New `Generated_code_compiles_and_runs_under_CheckForOverflowUnderflow`: theory over every mode, the
   consumer compilation set to checked arithmetic, over the collection, dispatch, aliasing and boxed-cycle fixtures.
 - Every test asserting a stack check follows the README wording fixed in §3.5.
 
 ### 3.3 Fixture tests, `tests/DeepEquals.Fixtures.Tests/`
 
-`Models.cs` gains `PathFixtureContext`, `TreeFixtureContext` (registering the acyclic-data models and `Node`) and
-`Hash64FixtureContext` over the same models. `FixtureTests.cs`:
+`Models.cs` gains `PathFixtureContext` and `TreeFixtureContext` (registering the acyclic-data models and `Node`).
+`FixtureTests.cs`:
 
 - `Cycles_terminate_and_unrolled_cycles_are_equal` runs under `Graph` and `Path`.
 - `Tree_context_bounds_its_traversal`: the §1.1 contract on the fixture `Node`.
 - `Long_chains_use_one_stack_frame` runs under all three.
-- `Hash64_context_hashes_equal_values_equal_on_every_fixture`.
-- `Holder_covers_structs_nullables_enums_collections_and_products` runs under both hash widths.
 - `Deep_acyclic_declaration_chain_in_a_small_stack_thread`: a thread with a 256 KB stack compares and hashes a
   closure whose declaration chain is long, and gets `InsufficientExecutionStackException` or a result, never a
   crash. This is the audit's stack-safety scenario.
 
 ### 3.4 Downstream, `downstream/`
 
-- `models/Contexts.cs`: `DownstreamPathContext` and `DownstreamTreeContext` registering `TreeNode`, and
-  `DownstreamHash64Context` registering every root. `GraphNode` stays out of the tree context.
-- `models/Scenarios.cs`: `Generated64Hash` and `Generated64HashOfOther` delegates on every scenario, plus the new
-  scenarios of §6.
-- `models/Checks.cs`: the 64-bit context agrees with equality on every scenario; the tree context follows the
-  §1.1 contract on the graph fixture; the path context equates rolled and unrolled graphs; the S1 sets compare
+- `models/Contexts.cs`: `DownstreamPathContext` and `DownstreamTreeContext` registering `TreeNode`. `GraphNode`
+  stays out of the tree context.
+- `models/Scenarios.cs`: the new scenarios of §6.
+- `models/Checks.cs`: the tree context follows the §1.1 contract on the graph fixture; the path context equates rolled and unrolled graphs; the S1 sets compare
   equal at the default depth.
-- `models/MicroBench.cs`: a "hash64 gen" column and ratio.
-- `benchmarks/DeepEquals.Benchmarks/EqualityBenchmarks.cs`: `Generated64_GetHashCode` in the hash category, and
-  the classes of §6.
-- `smoke/consumers/BlazorWasm/Result.razor`, `Consumer/Program.cs`: print the new column; the smoke tests assert
-  the new checks pass and log the browser table with the new column.
+- `models/MicroBench.cs`: `ColdStart()`, the first call per context.
+- `benchmarks/DeepEquals.Benchmarks/StrategyBenchmarks.cs`: the classes of §6.
+- `smoke/consumers/BlazorWasm/Result.razor`, `Consumer/Program.cs`: the smoke tests assert the new checks pass and
+  log the browser table.
 
 ### 3.5 Docs
 
-- `README.md`: the options table gains four rows, a paragraph per `CycleHandling` value with the `Tree` contract,
+- `README.md`: the options table gains three rows, a paragraph per `CycleHandling` value with the `Tree` contract,
   the sealing note, the version policy. Stale claims fixed: the stack check is made at the `Equals` entry of a
   stateful comparer and at every cycle guard, not at every entry point; exact `decimal` allocates nothing on any
   tier; a spilled state near the default budget holds about 36 MB, the pairs, the index and the cached hashes.
-- `docs/Implementation.md`: §3 (64-bit stream, packing rule, fold rule, fingerprint levels), §6.1 and §6.7 (tail
+- `docs/Implementation.md`: §3 (fingerprint levels), §6.1 and §6.7 (tail
   loops under `Tree`), §6.8 and §6.9 (depth overloads, fingerprint depth), §7 (the three modes, what `Path` rolls
-  back, the `Tree` contract), §8 (`DeepEqualsHashCode64`, `DeepEqualsBlocks`), §11 (the version policy), §12
+  back, the `Tree` contract), §8 (`DeepEqualsBlocks`), §11 (the version policy), §12
   (the per-compilation hint-name step from B2), §13 (decimal row removed, hash-array row added), §14 (the
   dictionary fast path, partitioned output and vectorized combine entries corrected; the dropped modes listed).
   §6.9 and every other section are re-read for statements the current code already contradicts, since the audit
@@ -715,13 +614,12 @@ Changed:
 ## 4. Order of work
 
 0. §0: B1 to B5 with regressions, O1, and the version policy with `DEQ036`. Every existing suite stays green.
-1. Options, model and naming plumbing for all four options: attribute, `ContextOptions`, `OptionsReader`,
+1. Options, model and naming plumbing for all three options: attribute, `ContextOptions`, `OptionsReader`,
    `Naming`, header, `DEQ013`/`DEQ037` cases, incremental test. Nothing is emitted differently yet.
-2. Framework 64-bit hashing: generator script, `DeepEqualsHashCode64`, `Fold`/`FoldNonZero`, the §2.2 shims, ops,
-   framework tests.
-3. Emitter 64-bit hashing behind the option, the fold rule, `Hashing64Tests`, the changed theories, fixture context.
+2. Framework raw-bit shims: the §2.1 shims in `DeepEqualsHelpers`, framework tests.
+3. Emitter: every float and double read through the shims, the storage-bits scan, the changed theories.
 4. Bit blocks: the `System.IO.Hashing` reference, `DeepEqualsBlocks`, `BlocksTests`; then the model classification
-   and padding proof, the emitter's span, list and enumerable paths, `BitBlockTests`. Independent of the hash width.
+   and padding proof, the emitter's span, list and enumerable paths, `BitBlockTests`.
 5. Fingerprint levels (`MatchingHashDepth`) in the model and emitter, the S1 tests. Independent of `Tree`.
 6. Depth-aware hash interfaces and the `Tree` exception contract in the framework, then the depth overloads in
    `DeepEqualsUnordered`, `UnorderedTests` additions.
@@ -733,7 +631,7 @@ Changed:
 11. Repack and run: generator tests, framework tests on five frameworks, fixtures, smoke, then the benchmarks on
     net472, net8.0 and net10.0 plus the browser table. Not before you say so.
 
-Rough effort: half a day for §0, one day for hashing, half a day for bit blocks, half a day for the fingerprint
+Rough effort: half a day for §0, half a day for the raw-bit shims, half a day for bit blocks, half a day for the fingerprint
 levels, one and a half for cycle handling, half a day for downstream and docs.
 
 ---
@@ -749,10 +647,10 @@ levels, one and a half for cycle handling, half a day for downstream and docs.
 - **`MatchingHashDepth` trades fingerprint cost for fewer collision runs.** Default 4; users with wide cyclic
   elements in large sets can lower it, users with S1-shaped data can raise it. Under `Tree` it is ignored with a
   warning.
-- **Hash values change with the mode and the width.** Already true across processes; the docs state it once more.
+- **Hash values change with the mode.** Already true across processes; the docs state it once more.
 - **Same-version packages.** A mismatch is one error and otherwise unsupported. No per-feature fallback exists.
-- **Matching keys stay 32-bit** inside `DeepEqualsUnordered`, so its packed keys and collision-run logic are
-  untouched; only the container's own hash and the fingerprints fed to it change.
+- **Matching keys are unchanged** inside `DeepEqualsUnordered`: its packed `(hash, index)` keys and collision-run
+  logic stay as they are; only the fingerprint fed to them changes (§1.4).
 - **Bit-block struct layout is the runtime's call.** The generator's padding proof is checked once per type at run
   time against `Unsafe.SizeOf<T>()`, and a mismatch takes the word path, so a layout surprise costs speed, never
   correctness. `Explicit`, `Auto`, packed and generic structs are excluded outright.
@@ -761,8 +659,6 @@ levels, one and a half for cycle handling, half a day for downstream and docs.
   keeps the word path there; both are one condition in `DeepEqualsBlocks`.
 - **A new dependency.** `System.IO.Hashing` is the first package the framework needs on every asset. It is
   Microsoft-owned, netstandard2.0, dependency-free, trim and AOT safe.
-- **No measured evidence yet** that xxHash64 is faster on every intended runtime. Step 11 produces it; the default
-  stays `XxHash32` until then.
 
 ---
 
@@ -796,14 +692,12 @@ browser table run them too, unless noted. Each names what it is meant to expose.
 
 **Hashing**
 
-- Every scenario under both widths, already planned.
 - `HashSet<Customer>` and `Dictionary<Order, int>` built with the generated comparer: 1,000 adds then 1,000 lookups,
   against the same with the built-in comparer. Exposes hash quality and cost together, which raw `GetHashCode`
   throughput does not.
 - A record with 8 strings of 8, 64 and 1,024 characters, equals and hash. Exposes how much Marvin dominates, so
   gains elsewhere are read against it.
-- `Guid[]` and `decimal[]` of 1,000, equals and hash. Exposes the two-word leaves on both widths and the bit-block
-  paths.
+- `Guid[]` and `decimal[]` of 1,000, equals and hash. Exposes the 128-bit leaves and the bit-block paths.
 
 **Bit blocks**
 
@@ -844,12 +738,12 @@ to the generator
 | P1 depth in hash callbacks | §1.2, depth-aware hash ops and overloads; tests in §3.1 and §3.2 |
 | P2 compatibility | Version policy at the top; per-feature fallbacks removed |
 | P3 `Tree` contract | §1.1, contract stated; §3.2 `Tree_contract`; depth test uses a branching model |
-| P4 fold to zero | §2.1, `FoldNonZero`; targeted test in §3.1 |
-| P5 representation tests and packing | §2.2 wording, decimal word order, `[SimpleType]` exemption, test rename, fixed seeds, semantic scan |
+| P4 fold to zero | Not applicable: the 32-bit stream has no fold |
+| P5 representation tests and packing | §2.1 wording, decimal word order, `[SimpleType]` exemption, test rename, fixed seeds, semantic scan |
 | O1 header cost | §0 |
 | O2 graph analysis passes | Cancellation checks in §0; the worklist rework deferred and measured by the generator-scale benchmark in §6 |
 | O3 stateless matching matrix | Deferred; measured by the fingerprint benchmarks in §6 |
-| O4 bulk span equality | §2.3 item 2 |
+| O4 bulk span equality | §2.2 item 2 |
 | Stack-safety boundary | README wording fixed in §3.5; small-stack fixture test in §3.3; `Tree` hashing carries the check in its guard |
 | Benchmark shapes | §6 |
 | Stale documentation | §3.5 |
@@ -867,8 +761,8 @@ five tiers; smoke 20 of 20, with Mono passing once `C:\Program Files\Mono\bin` i
 The browser test first failed because the local Chromium headless shell was a damaged download
 (`STATUS_INVALID_IMAGE_FORMAT`); `playwright.ps1 install --force chromium-headless-shell` fixed it.
 
-**Hash width.** XxHash64 is not faster on x64 CoreCLR, so the default stays `XxHash32`. Public `GetHashCode`, XxHash32
-against XxHash64:
+**Hash width.** XxHash64 (§9.1 describes what was built) is not faster on x64 CoreCLR. Public `GetHashCode`, XxHash32
+against XxHash64, scenario harness:
 
 | Scenario | net10.0 | net8.0 | net472 | browser |
 |---|---|---|---|---|
@@ -893,8 +787,8 @@ Why, from the code and a focused probe:
   registers, spills them as 32-bit stores and `DecimalLo64`/`DecimalHi64` reload them as one 64-bit load, which the
   processor cannot forward. A probe on net8.0 (`D:\Temp\deepequals\hashprobe`) measured Money's public hash at
   63 ns under XxHash64 against 26 ns under XxHash32; building each 64-bit word from two 32-bit reads with `Pack`
-  brought it to 29 ns, and the member-stream form to 24.7 ns against 24.3 ns. Not yet applied: a candidate fix for
-  `DecimalLo64`/`DecimalHi64` and `Hash(in decimal)`, and worth checking for `Guid`.
+  brought it to 29 ns, and the member-stream form to 24.7 ns against 24.3 ns. §9.1 has the full probe and the
+  large-object measurements that followed.
 
 **Cycle handling**, net10.0: TreeNode 585 nodes compares in 10.8 µs under `Graph`, 5.1 µs under `Path`, 2.2 µs under
 `Tree` (built-in 1.8 µs); `Tree`'s full hash costs 3.4 µs where the shallow hash costs 26 ns. A 100,000-node chain
@@ -920,9 +814,151 @@ Time grows faster than linearly. Generated text is 33 MB with one root and 146 M
 type file's header repeats the full list of registered roots: output is proportional to files times roots. A
 cancellation 20 ms in returns after about 51 ms.
 
-**Open findings**, none applied:
+**Findings from this run**, and what became of them:
 
-1. The decimal store-forwarding stall under `XxHash64` above. Moot: `XxHash64` is removed (step 13).
-2. Type-file headers list every registered root. Resolved by step 14: type files carry only the auto-generated notice.
-3. Generation time grows faster than linearly with closure size; the O2 worklist rework remains the lead.
+1. The decimal store-forwarding stall under `XxHash64`. Moot: `XxHash64` is removed (step 13, §9.1). The same stall
+   in decimal equality was found and fixed later (step 16, §9.2).
+2. Type-file headers list every registered root. Resolved by step 14 (§9.3).
+3. Generation time grows faster than linearly with closure size. Open; the O2 worklist rework remains the lead.
+4. Generated equality on the cyclic `TreeNode` is 5.6 times the built-in, which does not track cycles. By design:
+   `Tree` is the mode for data that cannot hold cycles.
+
+---
+
+## 9. Measurements after step 11
+
+Every probe below is a BenchmarkDotNet project in `D:\Temp\deepequals` (4 warmups and 12 iterations, in process),
+run on the same Windows x64 machine, a 12th-generation Intel Core i9-12900HK, on .NET 10 and .NET 8. Sub-nanosecond
+results are at the harness's floor; BenchmarkDotNet flags some of them as indistinguishable from an empty method.
+
+### 9.1 XxHash64: what was tried, and why it was dropped
+
+**Approach.** An option `Hashing = XxHash64` ran every generated hash core over xxHash64 with 64-bit words and its own
+per-process seed, and folded only the public `GetHashCode` to 32 bits (`FoldNonZero`, so an empty collection never
+hashed like null). A 64-bit leaf was one word and a 128-bit leaf two; nested hashes and unordered sums carried 64
+bits; two 32-bit hashes packed into one word, `((ulong)(uint)a << 32) | (uint)b`, narrow words paired before the
+wide ones. The hypothesis: half the words, so about half the rounds, with each round one instruction on 64-bit
+processors and in WebAssembly.
+
+**Step 11**, the scenario harness (§8 has the table): slower on .NET 10 and .NET 8 in almost every scenario, up to 2.3
+times on `Dictionary<string, decimal>` and 3.3 times on `record struct Money`; faster only on .NET Framework for a few
+scenarios and in the browser for the decimal-heavy ones; level on bit-block sequences, which hash through XxHash3 at
+either width.
+
+**Why**, from the generated code, the disassembly and a focused probe (`hashprobe`):
+
+- An xxHash64 tail round costs three multiplies where xxHash32's costs two, and a 64-bit multiply is no cheaper on
+  x64. Packing pushes most objects under four words, where both hashes run serial tail rounds instead of four
+  parallel lanes: Point3 is six words and lanes under XxHash32, three serial rounds under XxHash64.
+- Where xxHash64 does use lanes it merges them with four extra rounds xxHash32 has no counterpart for.
+- A wide leaf outside a member stream was a nested hash with its own finalization.
+- A store-forwarding stall on decimals, the largest single cost. Probe on .NET 8, Money's hash:
+
+| Shape | XxHash32 | XxHash64 | XxHash64, words from two 32-bit reads |
+|---|---|---|---|
+| public `GetHashCode`, decimal as a nested hash | 26.3 ns | 64.7 ns | 29.0 ns |
+| member stream, decimal as words | 24.9 ns | 33.2 ns | 24.7 ns |
+| a decimal alone | 7.2 ns | 6.4 ns | |
+| three doubles | 11.3 ns | 11.4 ns | |
+
+**Large objects.** Asked whether it paid off on wide objects, the last commit with XxHash64 was checked out into a
+scratch worktree with the decimal readers patched as above, and objects of 8 to 24 properties were timed (`probe64`):
+
+| Object | .NET 10, XxHash32 / XxHash64 | .NET 8, XxHash32 / XxHash64 |
+|---|---|---|
+| 12 `int` | 4.35 / 7.78 ns | 4.25 / 7.63 ns |
+| 24 `int` | 9.91 / 10.24 ns | 9.75 / 9.78 ns |
+| 12 `double` | 9.93 / 8.09 ns | 9.74 / 8.02 ns |
+| 16 `long` | 13.18 / 9.65 ns | 13.14 / 9.42 ns |
+| 12 mixed: 3 strings, 3 ints, 2 longs, double, decimal, DateTime, Guid | 22.54 / 24.40 ns | 22.00 / 24.47 ns |
+| 24 mixed | 47.60 / 45.74 ns | 47.22 / 46.59 ns |
+| Customer, 8 properties | 15.03 / 17.94 ns | 15.39 / 18.64 ns |
+| `record struct Money` | 5.04 / 7.34 ns | 5.45 / 17.34 ns |
+
+XxHash64 won 19 to 27% only where most fields are `long` or `double`, lost up to 79% where narrow fields dominate, and
+came within a few nanoseconds either way on realistic objects, where the string hash dominates. On .NET 8 the patched
+decimal readers still stalled, because the JIT copied the decimal with one 16-byte vector store and the 4-byte reads
+from it do not forward.
+
+**Decision:** dropped in step 13. The gain was a few nanoseconds on numeric-heavy types, against a second code path
+through every hash core.
+
+### 9.2 Equality at least as fast as a record's own `Equals`
+
+**How the runtime does it**, from the .NET 10 disassembly of `record struct Money(decimal Amount, string Currency)`:
+the record's `Equals` inlines into its caller; `EqualityComparer<decimal>.Default` devirtualizes to `decimal.Equals`,
+which reads the backing field's `_flags`, `_hi32` and `_lo64` at their own widths and calls `VarDecCmpSub` only for two
+nonzero values of the same sign; the string compare inlines to reference, null and length checks and one
+`SequenceEqual`.
+
+**The decimal compare alone was not the problem.** `DecimalEquals` (two 64-bit compares) against the alternatives,
+reading through the record struct's property as generated cores did, .NET 10:
+
+| Compare | Time |
+|---|---|
+| `DecimalEquals`, two 64-bit reads | 1.00 ns |
+| four 32-bit reads | 1.03 ns |
+| `MemoryMarshal.AsBytes(...).SequenceEqual` | 0.75 ns |
+| `Vector128` equality | 0.96 ns |
+| `decimal.Equals`, numeric | 2.59 ns |
+| the record's whole `Equals` | 2.20 ns |
+| `DecimalEquals` on a class field, in place | 0.05 ns |
+
+**The comparer around it was.** The generated `MoneyEqualityComparer.Equals` took 3.97 ns against the record's 2.38 ns,
+and 5.67 ns through `IEqualityComparer<Money>`. Its disassembly: the JIT inlined it and kept both Money values in
+registers, then, because `DecimalEquals` takes the decimal's address, zeroed two stack slots, stored the fields back
+as 32- and 64-bit pieces, and read the first eight bytes of each as one 64-bit load spanning two 32-bit stores: a
+store-forwarding stall per operand. The record's code spills too but reads every field back at the width it stored.
+
+**What fixes it.** Every compare shape, with the decimal copied through the getter or read in place through
+`[UnsafeAccessor]`, and with and without `AggressiveInlining` on the comparer:
+
+| Shape | .NET 10 | .NET 8 |
+|---|---|---|
+| record `Equals` | 2.00 ns | 2.55 ns |
+| generated, getter, two 64-bit reads (as shipped) | 3.53 ns | 4.65 ns |
+| getter, runtime field widths (int, int, long) | 0.61 ns | 4.95 ns |
+| getter, `Unsafe.BitCast` to `UInt128` | 3.31 ns | 3.12 ns |
+| in place, two 64-bit reads | 0.44 ns | 0.34 ns |
+| in place, field widths | 0.82 ns | 0.64 ns |
+| inlined, getter, field widths | 0.61 ns | 0.64 ns |
+| inlined, in place, two 64-bit reads | 0.67 ns | 0.35 ns |
+| record through `IEqualityComparer<T>` | 3.26 ns | 2.64 ns |
+| in place, field widths, through `IEqualityComparer<T>` | 1.57 ns | 1.44 ns |
+
+Field widths win only when the JIT keeps the fields in registers (.NET 10); on .NET 8 the copy is one vector store and
+the same reads stall. Reading in place is fast on both, whatever the compare. Step 16 therefore reads every
+auto-property of a value type wider than a register through `[UnsafeAccessor]`, reaches a nullable's struct or decimal
+payload by reference, and inlines stateless struct comparers. Money after the change: .NET 10 0.71 ns direct and 1.42
+ns through the interface, against 2.19 and 3.04 for the record; .NET 8 1.29 and 1.57 against 2.63 and 2.80.
+
+**The record models**, with the downstream data (distinct string instances), generated against the record, direct and
+through `IEqualityComparer<T>`:
+
+| Model | Decimal in place only (.NET 10) | Final, .NET 10 | Final, .NET 8 |
+|---|---|---|---|
+| Money | 3.19 → 1.52; 4.14 → 2.38 | 3.85 → 1.93; 4.61 → 2.90 | 4.40 → 3.09; 5.07 → 3.68 |
+| Invoice | 10.6 → 9.1; 11.4 → 10.1 | 11.1 → 9.0; 11.7 → 9.5 | 14.4 → 14.9; 15.4 → 14.8 |
+| Person | 11.4 → 16.4; 11.8 → 17.1 | 11.5 → 9.6; 12.3 → 9.6 | 14.2 → 13.9; 15.3 → 13.8 |
+| Point3 | 0.33 → 0.51 | 0.37 → 0.27 | 0.36 → 0.52 |
+
+Each cell is record → generated in nanoseconds, direct then through the interface. Person was slower until struct
+members were read in place: through getters each `x.Position.X` copied the whole `Point3` and each `x.Balance` access
+the whole `Money?`. Point3 alone compiles to the same six loads and three compares on both runtimes and moves below
+the harness's resolution from run to run. Reading doubles in place too was tried: the JIT emitted the identical load,
+and on .NET 8 Point3 lost its use-site inlining (1.38 ns against 0.30), so it was reverted.
+
+The scenario harness, which calls through delegates over captured copies and adds a few nanoseconds of its own, after
+the change on .NET 10: Money 2.51 → 2.19 ns (Step 11: 1.75 → 3.65), Invoice 11.9 → 9.9, Person 11.4 → 10.1, Customer
+7.6 → 5.4, Order 252 → 218, Point3 1.39 → 1.67.
+
+### 9.3 Generated size after the header changes (step 14)
+
+| Declared types | Files | Before, one root / every type a root | After, one root / every type a root |
+|---|---|---|---|
+| 100 | 190 | 1.74 / 2.00 MB | 1.32 / 1.32 MB |
+| 1,000 | 1,834 | 16.7 / 44.0 MB | 12.6 / 12.6 MB |
+| 2,000 | 3,663 | 33.4 / 146 MB | 25.3 / 25.3 MB |
+
+Output no longer depends on the number of roots: every type file used to repeat the registered roots in its header.
 
