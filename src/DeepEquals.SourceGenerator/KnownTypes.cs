@@ -25,16 +25,31 @@ internal static class KnownTypes
     public const string Collections = $"{FrameworkNamespace}.DeepEqualsCollections";
     public const string HashCode = $"{FrameworkNamespace}.DeepEqualsHashCode";
     public const string Blocks = $"{FrameworkNamespace}.DeepEqualsBlocks";
-    public const string GlobalBlocks = $"global::{Blocks}";
+
+    // Emitted through an alias: the framework classes generated code names most often. Each file declares the aliases
+    // it uses, inside its namespace declaration (see FrameworkAliases).
+    public const string DeqState = "DeqState";
+    public const string DeqHashCode = "DeqHashCode";
+    public const string DeqHelpers = "DeqHelpers";
+    public const string DeqCollections = "DeqCollections";
+    public const string DeqUnordered = "DeqUnordered";
+    public const string DeqReflection = "DeqReflection";
+    public const string DeqBlocks = "DeqBlocks";
+
+    /// <summary>Each alias and the global::-qualified class it names.</summary>
+    public static readonly (string Alias, string Target)[] FrameworkAliases =
+    [
+        (DeqBlocks, $"global::{Blocks}"),
+        (DeqCollections, $"global::{FrameworkNamespace}.DeepEqualsCollections"),
+        (DeqHashCode, $"global::{FrameworkNamespace}.DeepEqualsHashCode"),
+        (DeqHelpers, $"global::{FrameworkNamespace}.DeepEqualsHelpers"),
+        (DeqReflection, $"global::{FrameworkNamespace}.DeepEqualsReflection"),
+        (DeqState, $"global::{FrameworkNamespace}.DeepEqualsState"),
+        (DeqUnordered, $"global::{FrameworkNamespace}.DeepEqualsUnordered"),
+    ];
 
     // Emitted, global::-qualified.
     public const string GlobalFramework = $"global::{FrameworkNamespace}";
-    public const string GlobalState = $"{GlobalFramework}.DeepEqualsState";
-    public const string GlobalHashCode = $"{GlobalFramework}.DeepEqualsHashCode";
-    public const string GlobalHelpers = $"{GlobalFramework}.DeepEqualsHelpers";
-    public const string GlobalCollections = $"{GlobalFramework}.DeepEqualsCollections";
-    public const string GlobalUnordered = $"{GlobalFramework}.DeepEqualsUnordered";
-    public const string GlobalReflection = $"{GlobalFramework}.DeepEqualsReflection";
     public const string GlobalFieldGetter = $"{GlobalFramework}.FieldGetter";
     public const string GlobalHashOps = $"{GlobalFramework}.IDeepEqualsHashOps";
     public const string GlobalElementOps = $"{GlobalFramework}.IDeepEqualsElementOps";

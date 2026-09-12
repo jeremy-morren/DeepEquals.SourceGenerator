@@ -43,13 +43,13 @@ public sealed class SpanGateTests
         run.CompileErrors.Should().BeEmpty(run.GeneratedSource);
         var source = run.GeneratedSource;
         string SpanCore(string element) => source.Substring(source.IndexOf($"private static bool Equals_SpanOf{element}(", StringComparison.Ordinal));
-        SpanCore("Int32").Substring(0, 400).Should().Contain("DeepEqualsBlocks.BlockEquals<int>", "an int is its bytes");
+        SpanCore("Int32").Substring(0, 400).Should().Contain("DeqBlocks.BlockEquals<int>", "an int is its bytes");
         SpanCore("String").Substring(0, 400).Should().Contain("SequenceEqual", "string implements IEquatable<string> and is not a bit block");
         SpanCore("Type").Substring(0, 400).Should().NotContain("SequenceEqual", "Type does not implement IEquatable<Type>");
         SpanCore("Type").Substring(0, 400).Should().NotContain("BlockEquals");
-        SpanCore("Colour").Substring(0, 400).Should().Contain("DeepEqualsBlocks.BlockEquals<", "an enum is the bytes of its underlying integer");
+        SpanCore("Colour").Substring(0, 400).Should().Contain("DeqBlocks.BlockEquals<", "an enum is the bytes of its underlying integer");
         SpanCore("IPAddress").Substring(0, 400).Should().NotContain("SequenceEqual").And.NotContain("BlockEquals");
-        SpanCore("Double").Substring(0, 400).Should().Contain("DeepEqualsBlocks.BlockEquals<double>", "a bitwise leaf compares as bytes, not through double.Equals");
+        SpanCore("Double").Substring(0, 400).Should().Contain("DeqBlocks.BlockEquals<double>", "a bitwise leaf compares as bytes, not through double.Equals");
 
         var comparer = run.Comparer("Ctx", "Arrays");
         var a = run.New("Arrays"); var b = run.New("Arrays");

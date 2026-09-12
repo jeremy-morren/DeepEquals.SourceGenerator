@@ -175,6 +175,9 @@ internal sealed class CodeWriter
     /// <summary>The number of characters written so far; a caller compares two readings to learn whether anything was written between them.</summary>
     public int Length => _builder.Length;
 
+    /// <summary>The text so far ends with an empty line, so a separator would make two.</summary>
+    public bool EndsWithBlankLine => _builder.Length >= 2 && _builder[_builder.Length - 1] == '\n' && _builder[_builder.Length - 2] == '\n';
+
     /// <summary>Drops everything written after <paramref name="length"/>.</summary>
     public void Truncate(int length)
     {

@@ -287,7 +287,7 @@ public sealed class CycleHandlingTests
     {
         var run = TreeRun();
         var source = run.GeneratedSource;
-        source.Should().NotContain("DeepEqualsState").And.NotContain("TryEnter").And.NotContain("try\n");
+        source.Should().NotContain("DeqState").And.NotContain("TryEnter").And.NotContain("try\n");
         source.Should().Contain("int depth").And.Contain("private const int MaxDepth = 512;");
         source.Should().Contain("if (++depth > MaxDepth)");
         source.Should().NotContain("ShallowHashCode_").And.NotContain("MatchHashCode_", "a Tree hash walks the whole value");
@@ -459,7 +459,7 @@ public sealed class CycleHandlingTests
                           public partial class Ctx : DeepEqualsContextBase { }
                           """);
 
-        run.GeneratedSource.Should().Contain("DeepEqualsHelpers.Descend(depth, MaxDepth, typeof(global::Tests.Cell))", "the hash guards the boxed struct in its argument");
+        run.GeneratedSource.Should().Contain("DeqHelpers.Descend(depth, MaxDepth, typeof(global::Tests.Cell))", "the hash guards the boxed struct in its argument");
         var cellType = run.Assembly!.GetTypes().Single(t => t.Name == "Cell");
         object SelfCell()
         {

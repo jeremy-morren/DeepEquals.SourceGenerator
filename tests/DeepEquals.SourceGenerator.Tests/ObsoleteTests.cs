@@ -122,8 +122,8 @@ public sealed class ObsoleteTests
         InGenerated(run).Should().BeEmpty("generated code uses the obsolete type under the header's suppressions");
 
         var file = File(run, "Tests.Ctx.Legacy.g.cs");
-        file.Should().Contain("[global::System.Obsolete(\"Use Current\")]\n        public static LegacyEqualityComparer Legacy =>");
-        file.Should().Contain("[global::System.Obsolete(\"Use Current\")]\n        [global::System.CodeDom.Compiler.GeneratedCode(");
+        file.Should().Contain("[global::System.Obsolete(\"Use Current\")]\n    public static LegacyEqualityComparer Legacy =>");
+        file.Should().Contain("[global::System.Obsolete(\"Use Current\")]\n    [global::System.CodeDom.Compiler.GeneratedCode(");
         File(run, "Tests.Ctx.ListOfLegacy.g.cs").Should().Contain("[global::System.Obsolete(\"Use Current\")]",
             "a name built from an obsolete type argument uses it too");
         File(run, "Tests.Ctx.Int32.g.cs").Should().NotContain("[global::System.Obsolete");
@@ -213,7 +213,7 @@ public sealed class ObsoleteTests
 
         run.GeneratorDiagnosticIds.Should().NotContain("DEQ038", "every generated member is inside the obsolete context");
         run.CompileErrors.Should().BeEmpty();
-        File(run, "Tests.Ctx.Gone.g.cs").Should().Contain("[global::System.Obsolete(\"Gone\", true)]\n        [global::System.CodeDom.Compiler.GeneratedCode(");
+        File(run, "Tests.Ctx.Gone.g.cs").Should().Contain("[global::System.Obsolete(\"Gone\", true)]\n    [global::System.CodeDom.Compiler.GeneratedCode(");
 
         var comparer = run.Comparer("Ctx", "Gone");
         var a = run.New("Gone"); var b = run.New("Gone");

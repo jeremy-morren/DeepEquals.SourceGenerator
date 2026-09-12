@@ -47,7 +47,7 @@ public sealed class BitBlockTests
     {
         var start = source.IndexOf($"private static bool Equals_SpanOf{element}(", StringComparison.Ordinal);
         start.Should().BeGreaterThanOrEqualTo(0, $"a span core for {element} is emitted");
-        return source.Substring(start, source.IndexOf("\n        }", start, StringComparison.Ordinal) - start);
+        return source.Substring(start, source.IndexOf("\n    }", start, StringComparison.Ordinal) - start);
     }
 
     [Theory]
@@ -96,7 +96,7 @@ public sealed class BitBlockTests
 
         var core = SpanCore(run.GeneratedSource, shortName);
         if (bitBlock)
-            core.Should().Contain("DeepEqualsBlocks.BlockEquals<", $"{type} is its bytes");
+            core.Should().Contain("DeqBlocks.BlockEquals<", $"{type} is its bytes");
         else
             core.Should().NotContain("BlockEquals", $"{type} is not a bit block");
     }
@@ -129,8 +129,8 @@ public sealed class BitBlockTests
         var core = SpanCore(run.GeneratedSource, "S");
         if (bitBlock)
         {
-            core.Should().Contain("if (S_IsBitBlock)").And.Contain("DeepEqualsBlocks.BlockEquals<global::Tests.S>(xs, ys)");
-            run.GeneratedSource.Should().Contain("private static readonly bool S_IsBitBlock = global::DeepEquals.SourceGeneration.Framework.DeepEqualsBlocks.HasSize<global::Tests.S>(");
+            core.Should().Contain("if (S_IsBitBlock)").And.Contain("DeqBlocks.BlockEquals<global::Tests.S>(xs, ys)");
+            run.GeneratedSource.Should().Contain("private static readonly bool S_IsBitBlock = DeqBlocks.HasSize<global::Tests.S>(");
             core.Should().Contain("for (int i = 0;", "a struct keeps its per-element path behind the flag");
         }
         else
@@ -151,7 +151,7 @@ public sealed class BitBlockTests
                                        public partial class Ctx : DeepEqualsContextBase { }
                                        """);
 
-        run.GeneratedSource.Should().Contain("HasSize<global::Tests.S>(16) && global::DeepEquals.SourceGeneration.Framework.DeepEqualsBlocks.HasSize<global::Tests.Inner>(8)");
+        run.GeneratedSource.Should().Contain("HasSize<global::Tests.S>(16) && DeqBlocks.HasSize<global::Tests.Inner>(8)");
     }
 
     [Fact]
@@ -170,14 +170,14 @@ public sealed class BitBlockTests
                                          """);
 
         var source = run.GeneratedSource;
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock<double>(o)", "an array hashes its own span");
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock<global::System.Guid>(global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(o))");
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock<decimal>(o.AsSpan())");
-        source.Should().Contain($"DeepEqualsBlocks.HashReadOnlyList<float>(");
-        source.Should().Contain($"DeepEqualsBlocks.HashList<long>(");
-        source.Should().Contain($"DeepEqualsBlocks.HashEnumerable<global::Tests.Point3>(");
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock<int>(o.Span)");
-        Regex.IsMatch(source, @"DeepEqualsBlocks\.\w+<(string|bool|int\?)>").Should().BeFalse("strings, bools and nullables are not bit blocks");
+        source.Should().Contain($"DeqBlocks.HashBlock<double>(o)", "an array hashes its own span");
+        source.Should().Contain($"DeqBlocks.HashBlock<global::System.Guid>(global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(o))");
+        source.Should().Contain($"DeqBlocks.HashBlock<decimal>(o.AsSpan())");
+        source.Should().Contain($"DeqBlocks.HashReadOnlyList<float>(");
+        source.Should().Contain($"DeqBlocks.HashList<long>(");
+        source.Should().Contain($"DeqBlocks.HashEnumerable<global::Tests.Point3>(");
+        source.Should().Contain($"DeqBlocks.HashBlock<int>(o.Span)");
+        Regex.IsMatch(source, @"DeqBlocks.\w+<(string|bool|int\?)>").Should().BeFalse("strings, bools and nullables are not bit blocks");
     }
 
     /// <summary>An IReadOnlyList that is neither an array nor a List.</summary>
