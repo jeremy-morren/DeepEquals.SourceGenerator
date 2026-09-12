@@ -111,7 +111,7 @@ internal sealed class ModelBuilder
         var ns = string.Join(".", segments);
         var containing = new List<string>();
         for (var outer = _context.ContainingType; outer is not null; outer = outer.ContainingType)
-            containing.Add($"{DeclarationKeyword(outer)} {Naming.Identifier(outer.Name)}");
+            containing.Add($"{DeclarationKeyword(outer)} {Naming.TypeIdentifier(outer.Name)}");
 
         containing.Reverse();
 
@@ -1114,18 +1114,15 @@ internal sealed class ModelBuilder
     // ----- suppressed diagnostics ---------------------------------------------------------------------------------------
 
     /// <summary>
-    /// The warnings the compared types' own APIs raise in generated code, which the consuming project already chose to
-    /// accept by using them: obsolete members, and the diagnostic ids of custom obsoletes, [Experimental] and preview
-    /// features, each with the symbol that brings it. CS0612 and CS0618 are always listed: a member read or a type
-    /// named in generated code may be obsolete without being one of the symbols visited here.
+    /// The warnings generated code cannot avoid, because it has to name what the compared types use: an obsolete type,
+    /// containing type or type argument; a member obsolete at warning level where no accessor can read its storage
+    /// instead; a custom comparer type; and anything [Experimental] or a preview feature. Each is listed once, with the
+    /// symbol that brings it. Nothing is listed inside an obsolete context, where the compiler reports no obsolete use.
     /// </summary>
     private List<SuppressedDiagnostic> CollectSuppressedIds()
     {
-        var ids = new Dictionary<string, SuppressedDiagnostic>(StringComparer.Ordinal)
-        {
-            ["CS0612"] = new("CS0612", "Suppress the warning for a compared type or member marked [Obsolete] without a message"),
-            ["CS0618"] = new("CS0618", "Suppress the warning for a compared type or member marked [Obsolete] with a message"),
-        };
+        var ids = new Dictionary<string, SuppressedDiagnostic>(StringComparer.Ordinal);
+        var obsoleteContext = ObsoleteInfo.InObsoleteContext(_context);
 
         void Add(string id, string reason)
         {
@@ -1133,22 +1130,32 @@ internal sealed class ModelBuilder
                 ids[id] = new SuppressedDiagnostic(id, reason);
         }
 
-        void Visit(ISymbol? symbol)
+        void Obsolete(AttributeData attribute, ISymbol owner)
+        {
+            if (!obsoleteContext && ObsoleteInfo.WarningId(attribute) is { } id)
+                Add(id, $"Suppress the {id} warning for [Obsolete] on {owner.ToDisplayString()}, which generated code names");
+        }
+
+        void ObsoleteName(ITypeSymbol type)
+        {
+            foreach (var attribute in ObsoleteInfo.All(type))
+            {
+                var owner = attribute.AttributeClass is not null
+                    ? AttributeOwner(type, attribute) ?? type
+                    : type;
+                Obsolete(attribute, owner);
+            }
+        }
+
+        void Other(ISymbol? symbol)
         {
             if (symbol is null) return;
 
             foreach (var attribute in symbol.GetAttributes())
             {
-                var name = attribute.AttributeClass?.ToDisplayString();
                 var display = symbol.ToDisplayString();
-                switch (name)
+                switch (attribute.AttributeClass?.ToDisplayString())
                 {
-                    case KnownTypes.ObsoleteAttribute:
-                        foreach (var argument in attribute.NamedArguments)
-                            if (argument is { Key: "DiagnosticId", Value.Value: string { Length: > 0 } id })
-                                Add(id, $"Suppress the {id} warning for [Obsolete] on {display}");
-
-                        break;
                     case KnownTypes.ExperimentalAttribute:
                         if (attribute.ConstructorArguments.Length > 0 &&
                             attribute.ConstructorArguments[0].Value is string { Length: > 0 } experimental)
@@ -1164,23 +1171,57 @@ internal sealed class ModelBuilder
 
         foreach (var type in _types)
         {
-            Visit(type.Symbol);
+            ObsoleteName(type.Symbol);
+            Other(type.Symbol);
             if (type.Symbol is INamedTypeSymbol named)
                 foreach (var argument in named.TypeArguments)
-                    Visit(argument);
+                    Other(argument);
 
             foreach (var member in type.Members)
             {
-                Visit(member.Field);
-                Visit(member.Field.AssociatedSymbol);
-                if (member.Field.AssociatedSymbol is IPropertySymbol { GetMethod: { } getter })
-                    Visit(getter);
+                // An accessor names the declaring type; the member itself only when it is read directly or through its getter.
+                ObsoleteName(member.Field.ContainingType);
+                Other(member.Field);
+                Other(member.Field.AssociatedSymbol);
+                if (member.Access is MemberAccess.Direct or MemberAccess.Getter)
+                {
+                    foreach (var symbol in new ISymbol?[] { member.Field, member.Field.AssociatedSymbol, (member.Field.AssociatedSymbol as IPropertySymbol)?.GetMethod })
+                        if (ObsoleteInfo.Of(symbol) is { } attribute)
+                            Obsolete(attribute, symbol!);
+                }
             }
         }
 
         foreach (var custom in _closure.Registrations.Custom.Where(c => !c.Ignored))
-            Visit(custom.ComparerType);
+        {
+            ObsoleteName(custom.ComparerType);
+            Other(custom.ComparerType);
+        }
 
         return ids.Values.OrderBy(s => s.Id, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>The type in <paramref name="type"/>'s name that carries <paramref name="attribute"/>, for the pragma's comment.</summary>
+    private static ISymbol? AttributeOwner(ITypeSymbol type, AttributeData attribute)
+    {
+        switch (type)
+        {
+            case IArrayTypeSymbol array:
+                return AttributeOwner(array.ElementType, attribute);
+
+            case INamedTypeSymbol named:
+                for (var current = named; current is not null; current = current.ContainingType)
+                    if (current.GetAttributes().Contains(attribute))
+                        return current;
+
+                foreach (var argument in named.TypeArguments)
+                    if (AttributeOwner(argument, attribute) is { } owner)
+                        return owner;
+
+                return null;
+
+            default:
+                return null;
+        }
     }
 }

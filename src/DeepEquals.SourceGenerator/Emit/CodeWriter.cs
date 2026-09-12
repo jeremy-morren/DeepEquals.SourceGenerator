@@ -132,6 +132,9 @@ internal sealed class CodeWriter
     /// <summary>The number of characters written so far; a caller compares two readings to learn whether anything was written between them.</summary>
     public int Length => _builder.Length;
 
+    /// <summary>Drops everything written after <paramref name="length"/>.</summary>
+    public void Truncate(int length) => _builder.Length = length;
+
     public override string ToString() => _builder.ToString();
 
     private void Write(string text)

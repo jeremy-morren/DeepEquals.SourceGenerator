@@ -954,17 +954,20 @@ internal sealed class ClosureBuilder
                 var accessorAvailable = _capabilities.HasUnsafeAccessor &&
                     (!genericDeclaring || (_capabilities.HasGenericUnsafeAccessor && ConstraintsNameable(declaring)));
 
-                // An [Obsolete] member at warning level is read as usual under the header's suppressions; one at error
-                // level cannot be named at all, so its storage is read through an accessor or delegate, never the member.
-                var obsoleteError = !_contextObsolete && (
-                    ObsoleteInfo.IsError(ObsoleteInfo.Of(field)) ||
-                    ObsoleteInfo.IsError(ObsoleteInfo.Of(field.AssociatedSymbol)) ||
-                    field.AssociatedSymbol is IPropertySymbol { GetMethod: { } getter } && ObsoleteInfo.IsError(ObsoleteInfo.Of(getter)));
+                // Naming an [Obsolete] member raises a warning, or at error level CS0619, which nothing suppresses. Its
+                // storage is read through an accessor instead wherever one exists, so no warning arises; at error level
+                // a delegate is the fallback, at warning level the member itself under the header's suppression.
+                var obsolete = !_contextObsolete
+                    ? new[] { ObsoleteInfo.Of(field), ObsoleteInfo.Of(field.AssociatedSymbol), (field.AssociatedSymbol as IPropertySymbol)?.GetMethod is { } getter ? ObsoleteInfo.Of(getter) : null }
+                        .Where(a => a is not null).ToList()
+                    : [];
+                var obsoleteError = obsolete.Any(ObsoleteInfo.IsError);
+                var avoidMember = obsoleteError || (obsolete.Count > 0 && accessorAvailable);
 
                 MemberAccess access;
-                if (!compilerStorage && !obsoleteError && _compilation.IsSymbolAccessibleWithin(field, _context))
+                if (!compilerStorage && !avoidMember && _compilation.IsSymbolAccessibleWithin(field, _context))
                     access = MemberAccess.Direct;
-                else if (compilerStorage && !obsoleteError && ReadableThroughGetter(field, type.Symbol) && !(accessorAvailable && ComparedInPlace(field.Type)))
+                else if (compilerStorage && !avoidMember && ReadableThroughGetter(field, type.Symbol) && !(accessorAvailable && ComparedInPlace(field.Type)))
                     access = MemberAccess.Getter;
                 else if (accessorAvailable)
                     access = MemberAccess.UnsafeAccessor;

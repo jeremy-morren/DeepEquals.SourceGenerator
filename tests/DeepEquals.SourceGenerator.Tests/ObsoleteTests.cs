@@ -67,7 +67,21 @@ public sealed class ObsoleteTests
     }
 
     [Fact]
-    public void Header_lists_each_suppression_on_its_own_line_and_the_user_code_ones_after_a_blank_line()
+    public void Header_suppresses_nothing_when_the_compared_types_use_nothing_obsolete_or_experimental()
+    {
+        var run = Run("""
+                      public sealed class Holder { public int N { get; set; } public string? S; public List<decimal>? Amounts; }
+
+                      [GenerateDeepEquals(typeof(Holder))]
+                      public partial class Ctx : DeepEqualsContextBase { }
+                      """);
+
+        InGenerated(run).Should().BeEmpty();
+        run.GeneratedSource.Should().NotContain("#pragma warning", "generated code is written to raise no warning of its own");
+    }
+
+    [Fact]
+    public void Header_lists_only_the_warnings_the_compared_types_bring_one_per_line()
     {
         var run = Run("""
                       #pragma warning disable EXP001
@@ -81,20 +95,8 @@ public sealed class ObsoleteTests
                       """);
 
         InGenerated(run).Should().BeEmpty();
-        var file = File(run, "Tests.Ctx.Holder.g.cs");
-        var lines = file.Split('\n');
-        var pragmas = lines.Select((line, index) => (line, index)).Where(x => x.line.StartsWith("#pragma warning disable", StringComparison.Ordinal)).ToList();
-
-        pragmas.Should().OnlyContain(p => Regex.IsMatch(p.line, @"^#pragma warning disable [A-Z]+[0-9]+ // Suppress "), "one warning per line, each with its reason");
-        pragmas.Select(p => p.line).Should().Contain(l => l.StartsWith("#pragma warning disable CS8632 // Suppress the warning for nullable annotations", StringComparison.Ordinal));
-
-        // The generator's own group, a blank line, then the warnings the compared types' APIs raise.
-        var own = pragmas.FindIndex(p => p.line.Contains(" CS8632 "));
-        var user = pragmas.FindIndex(p => p.line.Contains(" CS0612 "));
-        user.Should().BeGreaterThan(own);
-        lines[pragmas[user].index - 1].Should().BeEmpty("a blank line separates the two groups");
-        pragmas.Select(p => p.line).Should().Contain("#pragma warning disable EXP001 // Suppress the EXP001 warning for [Experimental] on Tests.Trial");
-        pragmas.FindIndex(p => p.line.Contains(" EXP001 ")).Should().BeGreaterThan(user, "a user-code suppression belongs to the second group");
+        var pragmas = File(run, "Tests.Ctx.Holder.g.cs").Split('\n').Where(l => l.StartsWith("#pragma warning", StringComparison.Ordinal)).ToList();
+        pragmas.Should().Equal("#pragma warning disable EXP001 // Suppress the EXP001 warning for [Experimental] on Tests.Trial");
     }
 
     [Fact]
@@ -158,7 +160,8 @@ public sealed class ObsoleteTests
         InGenerated(run).Should().BeEmpty();
         var file = File(run, "Tests.Ctx.Retired.g.cs");
         file.Should().Contain("[global::System.Obsolete(\"Retired\", DiagnosticId = \"OLD001\", UrlFormat = \"https://example.com/{0}\")]");
-        file.Should().Contain("#pragma warning disable OLD001 // Suppress the OLD001 warning for [Obsolete] on Tests.Retired");
+        file.Should().Contain("#pragma warning disable OLD001 // Suppress the OLD001 warning for [Obsolete] on Tests.Retired, which generated code names");
+        file.Should().NotContain("CS0618", "a custom id replaces the default warning");
         InSource(run).Should().Contain("OLD001", "the custom id reaches the caller, as the type's own would");
     }
 
@@ -179,11 +182,12 @@ public sealed class ObsoleteTests
                       """);
 
         run.CompileErrors.Should().BeEmpty("an error-level obsolete member is never named in generated code");
-        InGenerated(run).Should().BeEmpty("a warning-level one is named under the header's suppressions");
+        InGenerated(run).Should().BeEmpty();
         var source = run.GeneratedSource;
-        source.Should().Contain("x.Soft == y.Soft", "a warning-level member keeps its getter");
-        source.Should().NotContain("x.Hard").And.NotContain("x.Field");
-        source.Should().Contain("Name = \"<Hard>k__BackingField\"").And.Contain("Name = \"Field\"");
+        source.Should().NotContain("x.Soft").And.NotContain("x.Hard").And.NotContain("x.Field",
+            "an obsolete member's storage is read through an accessor, so no warning arises to suppress");
+        source.Should().Contain("Name = \"<Soft>k__BackingField\"").And.Contain("Name = \"<Hard>k__BackingField\"").And.Contain("Name = \"Field\"");
+        source.Should().NotContain("#pragma warning");
 
         var comparer = run.Comparer("Ctx", "Holder");
         var a = run.New("Holder"); var b = run.New("Holder");

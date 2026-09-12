@@ -92,19 +92,31 @@ internal static class GeneratorHost
 
     public static GeneratorRun Run(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool load = true, string assemblyName = "GeneratedTests", bool checkedArithmetic = false)
     {
-        var parseOptions = new CSharpParseOptions(languageVersion);
+        // Every warning wave, and documentation diagnostics, so a generated file cannot hide a warning behind the defaults.
+        var parseOptions = new CSharpParseOptions(languageVersion, DocumentationMode.Diagnose);
         var tree = CSharpSyntaxTree.ParseText(source, parseOptions, path: "Input.cs");
         var compilation = CSharpCompilation.Create(
             $"{assemblyName}_{Guid.NewGuid():N}",
             [tree],
             s_references.Value,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable, allowUnsafe: true, checkOverflow: checkedArithmetic));
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable, allowUnsafe: true, checkOverflow: checkedArithmetic, warningLevel: 9999));
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new DeepEqualsGenerator().AsSourceGenerator()], parseOptions: parseOptions);
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var output, out _);
         var result = driver.GetRunResult();
 
         var compileDiagnostics = output.GetDiagnostics();
+
+        // Generated code is written to raise no warning of its own, for every test's source: a consumer compiling with
+        // warnings as errors must never fail on it.
+        var generated = new HashSet<SyntaxTree>(result.GeneratedTrees);
+        var warnings = compileDiagnostics
+            .Where(d => d.Severity == DiagnosticSeverity.Warning && d.Location.SourceTree is { } t && generated.Contains(t))
+            .ToList();
+        if (warnings.Count > 0)
+            throw new InvalidOperationException("Generated code raised warnings:\n" + string.Join("\n", warnings.Take(20).Select(w =>
+                $"{w.Id} {Path.GetFileName(w.Location.SourceTree!.FilePath)} {w.Location.GetLineSpan().StartLinePosition}: {w.GetMessage()} | {LineOf(w)}")));
+
         Assembly? assembly = null;
         if (load && !compileDiagnostics.Any(d => d.Severity == DiagnosticSeverity.Error) && !result.Diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error))
         {
@@ -115,5 +127,12 @@ internal static class GeneratorHost
         }
 
         return new GeneratorRun(result, output, compileDiagnostics, assembly);
+    }
+
+    private static string LineOf(Diagnostic diagnostic)
+    {
+        var tree = diagnostic.Location.SourceTree!;
+        var line = diagnostic.Location.GetLineSpan().StartLinePosition.Line;
+        return tree.GetText().Lines[line].ToString().Trim();
     }
 }

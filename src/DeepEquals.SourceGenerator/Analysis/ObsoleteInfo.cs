@@ -41,9 +41,34 @@ internal static class ObsoleteInfo
     /// </summary>
     public static AttributeData? Find(ITypeSymbol type)
     {
+        var found = All(type);
+        return found.FirstOrDefault(IsError) ?? found.FirstOrDefault();
+    }
+
+    /// <summary>Every <c>[Obsolete]</c> that naming <paramref name="type"/> uses, with the symbol that carries it.</summary>
+    public static List<AttributeData> All(ITypeSymbol type)
+    {
         var found = new List<AttributeData>();
         Collect(type, found, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default));
-        return found.FirstOrDefault(IsError) ?? found.FirstOrDefault();
+        return found;
+    }
+
+    /// <summary>
+    /// The warning a use of <paramref name="attribute"/> raises: its own <c>DiagnosticId</c> when it has one, otherwise
+    /// CS0618 with a message and CS0612 without. Null at error level, which no pragma suppresses.
+    /// </summary>
+    public static string? WarningId(AttributeData attribute)
+    {
+        if (IsError(attribute))
+            return null;
+
+        foreach (var named in attribute.NamedArguments)
+            if (named is { Key: "DiagnosticId", Value.Value: string { Length: > 0 } id })
+                return id;
+
+        return attribute.ConstructorArguments.Length > 0 && attribute.ConstructorArguments[0].Value is string { Length: > 0 }
+            ? "CS0618"
+            : "CS0612";
     }
 
     private static void Collect(ITypeSymbol type, List<AttributeData> found, HashSet<ITypeSymbol> seen)

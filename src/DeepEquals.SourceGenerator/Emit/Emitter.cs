@@ -135,26 +135,9 @@ internal sealed class Emitter
             ("[UnconditionalSuppressMessage]", c.HasUnconditionalSuppressMessage)
         ];
 
-        // The warnings the generator's own code can raise, one pragma line each.
-        var generator = new List<SuppressedDiagnostic>
-        {
-            new("CS0108", "Suppress the warning for a comparer or property whose name hides an inherited member"),
-            new("CS0162", "Suppress the warning for code after a predicate that is constant for a type"),
-            new("CS0168", "Suppress the warning for a variable declared and never used"),
-            new("CS0219", "Suppress the warning for a variable assigned and never read"),
-            new("CS1591", "Suppress the warning for public generated members without XML documentation"),
-            new("CS8019", "Suppress the warning for an unnecessary using directive"),
-            new("CS8632", "Suppress the warning for nullable annotations outside a '#nullable' context"),
-        };
-
-        // Nullable.GetValueRefOrDefaultRef takes `ref readonly` from .NET 8. Generated code passes it an accessor's
-        // reference without `in` (CS9192) or a getter's value (CS9193); both bind as intended, so the warnings go.
-        if (c.HasNullableGetValueRefOrDefaultRef)
-        {
-            generator.Add(new("CS9192", "Suppress the warning for a reference passed to Nullable.GetValueRefOrDefaultRef without 'in'"));
-            generator.Add(new("CS9193", "Suppress the warning for a getter's value passed to Nullable.GetValueRefOrDefaultRef"));
-        }
-
+        // Generated code is written to raise no warning of its own; the tests compile every generated file at the highest
+        // warning level with documentation diagnostics and fail on any. What remains are the warnings the compared
+        // types' own APIs raise, which the consuming project already accepted by using them.
         static string Pragmas(IEnumerable<SuppressedDiagnostic> diagnostics) =>
             string.Join("\n", diagnostics.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d => $"#pragma warning disable {d.Id} // {d.Reason}"));
 
@@ -186,10 +169,9 @@ internal sealed class Emitter
             ["CapabilitiesAbsent"] = string.Join(", ", capabilities.Where(x => !x.Present).Select(x => x.Name)).OrDefault("(none)"),
             ["Diagnostics"] = CommentList(_model.Diagnostics.Select(d => 
                 $"{d.Descriptor.Id}: {string.Format(System.Globalization.CultureInfo.InvariantCulture, d.Descriptor.MessageFormat.ToString(System.Globalization.CultureInfo.InvariantCulture), d.Arguments.Cast<object>().ToArray()).Replace("*/", "* /")}")),
-            ["GeneratorSuppressions"] = Pragmas(generator),
             ["UserSuppressions"] = Pragmas(_model.SuppressedDiagnostics),
             ["NullableDirective"] = Annotations
-                ? "// Annotations only: generated code declares nullability for its callers but opts out of flow analysis,\n// so the consuming project's warning policy cannot fail the build on emitted source.\n#nullable enable annotations\n"
+                ? "#nullable enable\n"
                 : string.Empty,
         };
     }
@@ -267,6 +249,9 @@ internal sealed class Emitter
         public TypeModel? Type { get; }
 
         public CodeWriter Body { get; }
+
+        /// <summary>The body has passed its public surface; what follows is written oblivious.</summary>
+        public bool PrivateRegion { get; set; }
     }
 
     private List<GeneratedFile> EmitFiles()
@@ -287,23 +272,35 @@ internal sealed class Emitter
 
             var file = typeFiles[type.Id] = Open(hintName, type, 2048);
             _w = file.Body;
+            _oblivious = false;
             EmitKinds(type);
             EmitConvenienceProperty(type);
             if (type.EmitWrapper)
                 EmitWrapper(type);
 
+            // The private region starts here; a type with no private code leaves no directive behind.
+            var beforePrivate = file.Body.Length;
+            EnterPrivate(file);
+            var afterDirective = file.Body.Length;
             EmitCores(type);
             EmitDispatchHolders();
+            if (file.Body.Length == afterDirective)
+            {
+                file.Body.Truncate(beforePrivate);
+                file.PrivateRegion = false;
+            }
         }
 
         // Span cores are requested by the containers emitted above and belong to the element they compare.
         foreach (var element in _spanCores.OrderBy(i => i))
         {
             _w = typeFiles[element].Body;
+            EnterPrivate(typeFiles[element]);
             EmitSpanCores(Type(element));
         }
 
         _w = contextFile.Body;
+        EnterPrivate(contextFile);
         EmitConstants();
         EmitBlockGuards();
         EmitLookup();
@@ -352,7 +349,7 @@ internal sealed class Emitter
         foreach (var containing in _model.ContainingTypes)
             _w.Open($"partial {containing}");
 
-        _w.Open($"{_model.Accessibility} partial class {Identifier(_model.Name)}");
+        _w.Open($"{_model.Accessibility} partial class {Analysis.Naming.TypeIdentifier(_model.Name)}");
         _w.AppendRaw(body);
         for (var i = 0; i < SkeletonDepth; i++)
             _w.Close();
@@ -405,10 +402,23 @@ internal sealed class Emitter
                 using (_w.Block("private static class Cache<T>"))
             _w.Line($"internal static readonly {KnownTypes.GlobalIEqualityComparer}<T>{Q()} Value = LookupEqualityComparer<T>(ComparerMap.Value);");
         _w.Line();
+        // The public lookup keeps its annotations, inside the context file's private region.
+        if (Annotations)
+            _w.Line("#nullable enable annotations");
+
+        _oblivious = false;
+        _w.Line("/// <summary>");
+        _w.Line("/// The deep, by-value comparer for <typeparamref name=\"T\"/>. Throws");
+        _w.Line($"/// <see cref=\"{KnownTypes.GlobalFramework}.DeepEqualsMissingComparerException\"/> when <typeparamref name=\"T\"/> has no comparer in this context.");
+        _w.Line("/// </summary>");
         EmitUnsafeAttributes(_model.HasUnsafeTypes);
         _w.Arrow(
             $"public static {KnownTypes.GlobalIEqualityComparer}<T> GetEqualityComparer<T>()", 
             "RequireEqualityComparer<T>(Cache<T>.Value)");
+        _oblivious = true;
+        if (Annotations)
+            _w.Line(ObliviousDirective);
+
         _w.Line();
     }
 
@@ -417,6 +427,7 @@ internal sealed class Emitter
         if (!type.EmitConvenienceProperty)
             return;
 
+        _w.Line($"/// <summary>The deep, by-value comparer for <c>{DocName(type)}</c>.</summary>");
         if (type.ObsoleteAttribute is { } obsolete)
             _w.Line(obsolete);
 
@@ -564,7 +575,28 @@ internal sealed class Emitter
     // ----- helpers -----------------------------------------------------------------------------------------------------
 
     /// <summary>Returns the nullable annotation symbol if it is availble, otherwise empty string.</summary>
-    private string Q() => Annotations ? "?" : string.Empty;
+    private string Q() => Annotations && !_oblivious ? "?" : string.Empty;
+
+    /// <summary>
+    /// Writing the private implementation: its declarations are nullability-oblivious, so no <c>?</c> is written. One
+    /// core serves every nullability spelling of a type, since <c>List&lt;string&gt;</c> and <c>List&lt;string?&gt;</c> are
+    /// one runtime type, and C# checks the nested nullability of a generic or tuple argument at every call (CS8620); an
+    /// oblivious parameter accepts every spelling. Bodies keep full flow analysis.
+    /// </summary>
+    private bool _oblivious;
+
+    private const string ObliviousDirective = "#nullable disable annotations";
+
+    /// <summary>Starts the private region of a file once: its declarations are oblivious from here on.</summary>
+    private void EnterPrivate(OpenFile file)
+    {
+        _oblivious = true;
+        if (file.PrivateRegion || !Annotations)
+            return;
+
+        file.Body.Line(ObliviousDirective);
+        file.PrivateRegion = true;
+    }
 
     private string Param(TypeModel type) => type.IsValueType ? type.GlobalName : type.GlobalName + Q();
 
@@ -716,10 +748,15 @@ internal sealed class Emitter
     /// No <c>in</c> at the call site: a getter's value then binds through a temporary, and the header suppresses the
     /// warnings the <c>ref readonly</c> parameter raises for either argument.
     /// </summary>
-    private string NullablePayload(TypeModel payload, string nullable) =>
-        _model.Capabilities.HasNullableGetValueRefOrDefaultRef && (payload.Kind == TypeKind.Struct || payload.LeafRule == LeafRule.Decimal)
-            ? $"global::System.Nullable.GetValueRefOrDefaultRef({nullable})"
+    private string NullablePayload(TypeModel payload, string nullable, bool reference) =>
+        _model.Capabilities.HasNullableGetValueRefOrDefaultRef && (reference || IsIdentifier(nullable)) &&
+        (payload.Kind == TypeKind.Struct || payload.LeafRule == LeafRule.Decimal)
+            ? $"global::System.Nullable.GetValueRefOrDefaultRef(in {nullable})"
             : $"{nullable}.GetValueOrDefault()";
+
+    /// <summary>A parameter or local: a variable that <c>in</c> can pass by reference.</summary>
+    private static bool IsIdentifier(string expression) =>
+        expression.Length > 0 && (char.IsLetter(expression[0]) || expression[0] == '_') && expression.All(c => char.IsLetterOrDigit(c) || c == '_');
 
     private static string WritableReceiver(string receiver, bool inReceiver) =>
         inReceiver ? $"global::System.Runtime.CompilerServices.Unsafe.AsRef(in {receiver})" : receiver;
@@ -727,7 +764,11 @@ internal sealed class Emitter
     // ----- equality expressions ---------------------------------------------------------------------------------------------
 
     /// <summary>A boolean expression comparing two values of <paramref name="type"/>; state is passed when the type needs it.</summary>
-    private string Eq(TypeModel type, string x, string y)
+    /// <param name="references">
+    /// The operands are variables, a field read directly or through an accessor, so a nullable's payload can be reached
+    /// by reference; a getter's result is a value and is copied instead.
+    /// </param>
+    private string Eq(TypeModel type, string x, string y, bool references = false)
     {
         switch (type.Kind)
         {
@@ -736,7 +777,7 @@ internal sealed class Emitter
             
             case TypeKind.Nullable:
                 var payload = Type(type.PayloadTypeId);
-                return $"({x}.HasValue == {y}.HasValue && (!{x}.HasValue || {Eq(payload, NullablePayload(payload, x), NullablePayload(payload, y))}))";
+                return $"({x}.HasValue == {y}.HasValue && (!{x}.HasValue || {Eq(payload, NullablePayload(payload, x, references), NullablePayload(payload, y, references))}))";
             
             case TypeKind.Struct:
                 if (type.InlineAsSmallStruct)
@@ -945,7 +986,7 @@ internal sealed class Emitter
     // ----- hash expressions ------------------------------------------------------------------------------------------------
 
     /// <summary>The hash of a value reached through an edge; null means the edge is omitted at this level.</summary>
-    private string? HashOrOmit(TypeModel type, string value, int level, bool sameScc)
+    private string? HashOrOmit(TypeModel type, string value, int level, bool sameScc, bool reference = false)
     {
         switch (type.Kind)
         {
@@ -953,7 +994,7 @@ internal sealed class Emitter
                 return LeafHash(type, value);
 
             case TypeKind.Nullable:
-                var payload = HashOrOmit(Type(type.PayloadTypeId), NullablePayload(Type(type.PayloadTypeId), value), level, sameScc);
+                var payload = HashOrOmit(Type(type.PayloadTypeId), NullablePayload(Type(type.PayloadTypeId), value, reference), level, sameScc);
                 return payload is { } p ? $"({value}.HasValue ? {p} : 0)" : null;
 
             case TypeKind.Struct:
@@ -1035,7 +1076,7 @@ internal sealed class Emitter
     /// seeded stream instead of finishing a nested hash per member; an inlined struct contributes its members' words.
     /// Everything else contributes the single word of its own hash, or nothing when the level omits it.
     /// </summary>
-    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<string> words)
+    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<string> words, bool reference = false)
     {
         switch (type.Kind)
         {
@@ -1050,7 +1091,7 @@ internal sealed class Emitter
                 return;
         }
 
-        var single = HashOrOmit(type, value, level, sameScc);
+        var single = HashOrOmit(type, value, level, sameScc, reference);
         if (single is { } word)
             words.Add(word);
     }
@@ -1242,6 +1283,10 @@ internal sealed class Emitter
 
     // ----- wrappers -----------------------------------------------------------------------------------------------------
 
+    /// <summary>A type's name for an XML documentation comment: no <c>global::</c>, and markup characters escaped.</summary>
+    private static string DocName(TypeModel type) =>
+        Display(type.GlobalName).Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
     private const string AggressiveInlining =
         "[global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]";
 
@@ -1249,6 +1294,7 @@ internal sealed class Emitter
     {
         var name = $"{type.ShortName}EqualityComparer";
 
+        _w.Line($"/// <summary>Deep, by-value equality for <c>{DocName(type)}</c>.</summary>");
         // The comparer of an obsolete type is as obsolete as the type: a caller sees the same warning or error, and the
         // comparer's own members, an obsolete context, name the type without one.
         if (type.ObsoleteAttribute is { } obsolete)
@@ -1259,6 +1305,7 @@ internal sealed class Emitter
         // A reference-type wrapper accepts null on both sides, so under nullable annotations it implements IEqualityComparer<T?>.
         using (_w.Block($"{type.Accessibility} sealed class {name} : {KnownTypes.GlobalIEqualityComparer}<{Param(type)}>"))
         {
+            _w.Line("/// <summary>The comparer's single instance.</summary>");
             _w.Line($"public static readonly {name} Instance = new {name}();");
             _w.Line($"private {name}() {{ }}");
             _w.Line();
@@ -1270,6 +1317,7 @@ internal sealed class Emitter
 
             // The comparer for object declares an instance Equals(object, object),
             // which hides the static one every class inherits from object; `new` states that this is meant.
+            _w.Line("/// <inheritdoc/>");
             if (inline)
                 _w.Line(AggressiveInlining);
 
@@ -1301,6 +1349,7 @@ internal sealed class Emitter
             }
             
             _w.Line();
+            _w.Line("/// <inheritdoc/>");
             if (inline)
                 _w.Line(AggressiveInlining);
 
@@ -1617,8 +1666,12 @@ internal sealed class Emitter
         return Eq(
             Type(member.TypeId),
             HoistedRead(member, x, inReceiver, "X"),
-            HoistedRead(member, y, inReceiver, "Y"));
+            HoistedRead(member, y, inReceiver, "Y"),
+            IsReference(member));
     }
+
+    /// <summary>A member read that yields a variable: the field itself, or the reference an accessor returns.</summary>
+    private static bool IsReference(MemberModel member) => member.Access is MemberAccess.Direct or MemberAccess.UnsafeAccessor;
 
     /// <summary>A delegate-accessor read of a struct or nullable member is evaluated once into a local; every other read is inline.</summary>
     private string HoistedRead(MemberModel member, string receiver, bool inReceiver, string suffix)
@@ -1663,7 +1716,7 @@ internal sealed class Emitter
 
             var inputs = new List<string>(type.Members.Count);
             foreach (var member in type.Members)
-                HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), level, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
+                HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), level, member.IsSameScc, $"w{member.DeclarationOrder}", inputs, IsReference(member));
 
             _w.Return(Combine(inputs));
         }
@@ -1686,7 +1739,7 @@ internal sealed class Emitter
         {
             var inputs = new List<string>(type.Members.Count);
             foreach (var member in type.Members.Where((_, i) => i != type.TailMemberIndex))
-                HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), 1, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
+                HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), 1, member.IsSameScc, $"w{member.DeclarationOrder}", inputs, IsReference(member));
 
             _w.Line($"h.Add({Combine(inputs)});");
             EmitBrentStep(type, "o");

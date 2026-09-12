@@ -82,7 +82,9 @@ Hash loops over interface-typed collection views still use streaming and indexer
 the affected type's convenience property getter and `GetEqualityComparer<T>()` carry `[RequiresUnreferencedCode]`/`[RequiresDynamicCode]`, 
 so the warning appears on access of that type and nowhere else. Safe types in the same context produce no warning.
 
-**Warnings as errors.** Generated files disable `CS0612`, `CS0618`, `CS8632` and every custom obsolete, `[Experimental]` and preview-feature diagnostic id carried by a type they reference.
+**Warnings as errors.** Generated code is written to raise no warning of its own, with full nullable analysis and XML documentation on every public member.
+A generated file disables a warning only where it has to name something your types use: an `[Obsolete]` type (`CS0612`, `CS0618` or its custom id), an `[Experimental]` type or a preview feature, one `#pragma` line each, naming the symbol.
+An `[Obsolete]` member is read through its storage, so it needs no suppression wherever `[UnsafeAccessor]` exists.
 
 ## Usage
 

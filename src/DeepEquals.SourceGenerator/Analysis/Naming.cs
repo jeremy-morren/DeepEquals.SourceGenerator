@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
+using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -26,6 +27,14 @@ internal static class Naming
     /// <summary>A C#-safe identifier for a name: <c>@</c>-prefixed when the name is a keyword.</summary>
     public static string Identifier(string name) =>
         SyntaxFacts.GetKeywordKind(name) != SyntaxKind.None ? $"@{name}" : name;
+
+    /// <summary>
+    /// A type name as a declaration writes it: a keyword, or a name of lower-case ASCII letters only, is written with
+    /// <c>@</c>. The compiler warns on every declaration of a lower-case type name (CS8981, such names may become
+    /// keywords) unless it is verbatim, and the generator redeclares the user's types.
+    /// </summary>
+    public static string TypeIdentifier(string name) =>
+        name.Length > 0 && name.All(c => c is >= 'a' and <= 'z') ? $"@{name}" : Identifier(name);
 
     /// <summary>Escapes one metadata-name segment: literal underscores and every non-identifier character become _uXXXX.</summary>
     public static string EscapeSegment(string segment)

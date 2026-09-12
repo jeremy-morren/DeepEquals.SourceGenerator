@@ -55,6 +55,4 @@ Diagnostics reported while generating this context
 */
 
 {{NullableDirective}}
-{{GeneratorSuppressions}}
-
 {{UserSuppressions}}
