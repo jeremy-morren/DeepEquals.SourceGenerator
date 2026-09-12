@@ -118,6 +118,32 @@ public sealed class BasicGenerationTests
     }
 
     [Fact]
+    public void A_member_whose_body_is_one_return_is_written_as_an_expression_body()
+    {
+        var run = RunAndAssertClean(
+            """
+            public sealed class Person { public string? Name; public int Age; }
+            public sealed class Node { public int Value; public Node? Next; public List<Node>? Children; }
+
+            [GenerateDeepEquals(typeof(Person))]
+            [GenerateDeepEquals(typeof(Node))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        var source = run.GeneratedSource.Replace("\r\n", "\n");
+        source.Should().Contain("public bool Equals(global::Tests.Person? x, global::Tests.Person? y) => Equals_Person(x, y);\n")
+            .And.Contain("public int GetHashCode(global::Tests.Person? o) => GetHashCode_Person(o);\n")
+            .And.Contain("private static bool EqualsMembers_Person(global::Tests.Person x, global::Tests.Person y) =>\n            x.Age == y.Age &&\n            x.Name == y.Name;\n",
+                "a multi-line expression starts on the line after the arrow");
+        source.Should().Contain("private static bool Equals_Person(global::Tests.Person x, global::Tests.Person y)\n        {\n",
+            "a body with a prelude keeps its block");
+
+        // No member anywhere is left as a block holding only a return; a try block still holds one.
+        System.Text.RegularExpressions.Regex.Matches(source, @"\)\n *\{\n *return\b[^;]*;\n *\}").Should().BeEmpty();
+        source.Should().Contain("try\n", "a stateful comparer keeps its try/finally block");
+    }
+
+    [Fact]
     public void Sealed_class_with_leaf_members_compares_by_value()
     {
         var run = RunAndAssertClean(

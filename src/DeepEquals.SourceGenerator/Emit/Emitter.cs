@@ -389,7 +389,7 @@ internal sealed class Emitter
         {
             _w.Line("static ComparerMap() { }");
             _w.Line($"internal static readonly global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, object> Value = Build();");
-            using (_w.Block($"private static global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, object> Build()"))
+            using (_w.Member($"private static global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, object> Build()"))
             {
                 _w.Line($"global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, object> map = new global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, object>({mapped.Count});");
                 foreach (var type in mapped)
@@ -476,7 +476,7 @@ internal sealed class Emitter
     private IDisposable Method(TypeModel type, string signature)
     {
         EmitSuppressions(type);
-        return _w.Block(signature);
+        return _w.Member(signature);
     }
 
     /// <summary>Same reference is equal and one null is not; every reference-type Equals_ starts here.</summary>
@@ -685,16 +685,17 @@ internal sealed class Emitter
         var arity = _model.Options.MaxBinaryExpressionArity;
         if (predicates.Count == 0)
         {
-            if (terminalReturnTrue) 
-                _w.Line("return true;");
+            if (terminalReturnTrue)
+                _w.Return("true");
 
             return;
         }
 
         if (predicates.Count <= arity && terminalReturnTrue)
         {
-            // "return" alone on the first line, since a single predicate is the only case that fits beside it.
-            _w.Line(ItemList(predicates.Count == 1 ? "return " : "return", predicates, " &&", ";"));
+            // Several predicates start on the line after "return" (or after the arrow), since a single one is the only
+            // case that fits beside it.
+            _w.Return(ItemList(string.Empty, predicates, " &&", string.Empty));
             return;
         }
 
@@ -704,8 +705,8 @@ internal sealed class Emitter
             _w.Line(ItemList("if (!(", chunk, " &&", ")) return false;"));
         }
 
-        if (terminalReturnTrue) 
-            _w.Line("return true;");
+        if (terminalReturnTrue)
+            _w.Return("true");
     }
 
     // ----- member reads ---------------------------------------------------------------------------------------------------
@@ -1443,7 +1444,7 @@ internal sealed class Emitter
         var unboxX = Unbox(type, "x");
         var unboxY = Unbox(type, "y");
         var stateParam = type.BoxedAdapterGuarded || type.NeedsState ? StateParamAlways : string.Empty;
-        using (_w.Block($"private static bool EqualsBoxed_{type.ShortName}(object x, object y{stateParam})"))
+        using (_w.Member($"private static bool EqualsBoxed_{type.ShortName}(object x, object y{stateParam})"))
         {
             using (GuardScope(type, boxed: true))
                 _w.Return($"Equals_{type.ShortName}({unboxX}, {unboxY}{StateArg(type)})");
@@ -1460,7 +1461,7 @@ internal sealed class Emitter
         var spans = type.Kind == TypeKind.ImmutableArray ? ImmutableSpans : _model.Capabilities.HasReadOnlySpan;
         var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
 
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             switch (type.Kind)
             {
@@ -1509,7 +1510,7 @@ internal sealed class Emitter
 
         // Level 1 hash over the represented sequence; ImmutableArray default hashes to 0.
         var valueBlockOnly = false;
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Member($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             if (type.Kind == TypeKind.ImmutableArray)
                 _w.Line("if (o.IsDefault) return 0;");
@@ -1635,7 +1636,7 @@ internal sealed class Emitter
 
         if (type.IsGuarded)
         {
-            using (_w.Block($"private static bool EqualsExact_{type.ShortName}({type.GlobalName} x, {type.GlobalName} y{StateParamAlways})"))
+            using (_w.Member($"private static bool EqualsExact_{type.ShortName}({type.GlobalName} x, {type.GlobalName} y{StateParamAlways})"))
             {
                 using (GuardScope(type))
                     _w.Return($"EqualsMembers_{type.ShortName}(x, y{StateArgAlways})");
@@ -1773,7 +1774,7 @@ internal sealed class Emitter
     private void EmitDispatchCores(TypeModel type)
     {
         var p = Param(type);
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})")) EmitDispatchEqualsBody(type);
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})")) EmitDispatchEqualsBody(type);
         
         foreach (var level in HashLevels(type))
             EmitDispatchHash(type, level);
@@ -1912,7 +1913,7 @@ internal sealed class Emitter
             {
                 _w.Line($"static {type.ShortName}_Dispatch() {{ }}");
                 _w.Line($"internal static readonly global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, int> CaseIndex = Build();");
-                using (_w.Block($"private static global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, int> Build()"))
+                using (_w.Member($"private static global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, int> Build()"))
                 {
                     _w.Line($"global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, int> map = new global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, int>({exact.Count});");
                     for (var k = 0; k < exact.Count; k++)
@@ -2001,7 +2002,7 @@ internal sealed class Emitter
 
     private void EmitDispatchHash(TypeModel type, int level)
     {
-        using (_w.Block($"private static int {HashName(type, level)}({Param(type)} o{HashDepthParam(type)})"))
+        using (_w.Member($"private static int {HashName(type, level)}({Param(type)} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             var assignable = type.Cases.Where(c => !c.IsExact).ToList();
@@ -2125,7 +2126,7 @@ internal sealed class Emitter
         var p = Param(type);
         var count = type.Kind == TypeKind.Array ? "Length" : "Count";
 
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             _w.Line($"if ({RefEq("x", "y")}) return true;");
             _w.Line($"if (x is null || y is null || x.{count} != y.{count}) return false;");
@@ -2148,7 +2149,7 @@ internal sealed class Emitter
 
         // Level 1 hash.
         var blockOnly = false;
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Member($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2197,7 +2198,7 @@ internal sealed class Emitter
         {
             string Item(string value) => HashWordExpr(element, value, level, type.ElementIsSameScc);
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
-            using (_w.Block($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
+            using (_w.Member($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
                 switch (type.Kind)
                 {
@@ -2260,7 +2261,7 @@ internal sealed class Emitter
     {
         var stateParam = StateParam(element);
         var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
-        using (_w.Block($"private static bool Equals_SpanOf{element.ShortName}({span} xs, {span} ys{stateParam})"))
+        using (_w.Member($"private static bool Equals_SpanOf{element.ShortName}({span} xs, {span} ys{stateParam})"))
         {
             _w.Line("if (xs.Length != ys.Length) return false;");
 
@@ -2289,7 +2290,7 @@ internal sealed class Emitter
         var p = Param(type);
         var iface = type.CollectionInterfaceGlobalName.Length > 0 ? type.CollectionInterfaceGlobalName : type.GlobalName;
 
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             EmitReferencePrelude();
             EmitSpanCapture(element, "x", "y");
@@ -2306,7 +2307,7 @@ internal sealed class Emitter
         }
 
         var listBlockOnly = false;
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Member($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2417,7 +2418,7 @@ internal sealed class Emitter
         var p = Param(type);
         var enumerable = $"global::System.Collections.Generic.IEnumerable<{element.GlobalName}>";
 
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             EmitReferencePrelude();
             EmitSpanCapture(element, "x", "y");
@@ -2458,7 +2459,7 @@ internal sealed class Emitter
         }
 
         var enumerableBlockOnly = false;
-        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Member($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2476,7 +2477,7 @@ internal sealed class Emitter
 
         if (type.HasShallowHash)
         {
-            using (_w.Block($"private static int ShallowHashCode_{type.ShortName}({p} o)"))
+            using (_w.Member($"private static int ShallowHashCode_{type.ShortName}({p} o)"))
             {
                 _w.Line("if (o is null) return 0;");
                 _w.Line($"int count = o is global::System.Collections.Generic.ICollection<{element.GlobalName}> c ? c.Count : (o is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> r ? r.Count : -1);");
@@ -2519,7 +2520,7 @@ internal sealed class Emitter
         // groups by the context's equality and can be walked through its own lookup, with no materialization or sort.
         var keyIsDefault = key is { Kind: TypeKind.Leaf, DefaultCompatible: true } && key.LeafRule != LeafRule.Custom;
 
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             EmitReferencePrelude();
             string xs, ys;
@@ -2590,7 +2591,7 @@ internal sealed class Emitter
 
         // Level 1 hash, and the deeper levels a fingerprint reaches: Combine(Count, sum of entry hashes) with empty-zero finalization.
         foreach (var level in HashLevels(type).Where(l => l != 0))
-        using (_w.Block($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
+        using (_w.Member($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2676,7 +2677,7 @@ internal sealed class Emitter
         else
             items.AddRange(type.ItemTypeIds.Select((t, i) => (Type(t), TupleItem(i), type.ItemsAreSameScc[i])));
 
-        using (_w.Block($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
+        using (_w.Member($"private static bool Equals_{type.ShortName}({p} x, {p} y{StateParam(type)})"))
         {
             if (reference)
                 EmitReferencePrelude();
@@ -2687,7 +2688,7 @@ internal sealed class Emitter
 
         foreach (var level in HashLevels(type))
         {
-            using (_w.Block($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
+            using (_w.Member($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
                 if (reference)
                 {

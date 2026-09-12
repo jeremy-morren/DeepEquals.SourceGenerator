@@ -17,6 +17,9 @@ internal sealed class CodeWriter
     private int _indent;
     private bool _atLineStart = true;
 
+    /// <summary>The span and expression of the last <see cref="Return"/> written.</summary>
+    private (int Start, int End, string Expression)? _lastReturn;
+
     public CodeWriter(int capacity)
     {
         _builder = new StringBuilder(capacity);
@@ -62,10 +65,50 @@ internal sealed class CodeWriter
         }
     }
 
-    public void Return(string expression) => Line($"return {expression};");
+    /// <summary>
+    /// A return statement. An expression that starts on its own line, such as a multi-line <see cref="ItemList"/>
+    /// with an empty opening, leaves <c>return</c> alone on the first. Where it starts and ends is kept, so a
+    /// <see cref="Member"/> closing right after it can tell that it was the whole body.
+    /// </summary>
+    public void Return(string expression)
+    {
+        var start = _builder.Length;
+        Line($"return{Spaced(expression)};");
+        _lastReturn = (start, _builder.Length, expression);
+    }
 
-    /// <summary>An expression-bodied member: the signature, the arrow, the body.</summary>
-    public void Arrow(string signature, string body) => Line($"{signature} => {body};");
+    /// <summary>An expression-bodied member: the signature, the arrow, the body, the arrow on the signature's line.</summary>
+    public void Arrow(string signature, string body) => Line($"{signature} =>{Spaced(body)};");
+
+    /// <summary>The expression after a keyword or arrow: one space, unless it starts on the next line.</summary>
+    private static string Spaced(string expression) => expression.Length > 0 && expression[0] == '\n' ? expression : " " + expression;
+
+    /// <summary>
+    /// A method or accessor body, closed when the returned scope is disposed. A body that turns out to be a single
+    /// <see cref="Return"/> is rewritten as an expression body, <c>signature => expression;</c>: whether it is only
+    /// that often depends on guards and preludes that write nothing for most types, so the choice is made from what
+    /// was written rather than predicted at each call site.
+    /// </summary>
+    public IDisposable Member(string signature)
+    {
+        var start = _builder.Length;
+        var indent = _indent;
+        Open(signature);
+        return new MemberCloser(this, signature, start, indent, _builder.Length);
+    }
+
+    private void CloseMember(string signature, int start, int indent, int bodyStart)
+    {
+        if (_lastReturn is { } last && last.Start == bodyStart && last.End == _builder.Length)
+        {
+            Truncate(start);
+            _indent = indent;
+            Arrow(signature, last.Expression);
+            return;
+        }
+
+        Close();
+    }
 
     /// <summary>
     /// <paramref name="open"/>, then one item per line indented a further level, each but the last followed by
@@ -133,7 +176,12 @@ internal sealed class CodeWriter
     public int Length => _builder.Length;
 
     /// <summary>Drops everything written after <paramref name="length"/>.</summary>
-    public void Truncate(int length) => _builder.Length = length;
+    public void Truncate(int length)
+    {
+        _builder.Length = length;
+        _atLineStart = length == 0 || _builder[length - 1] == '\n';
+        _lastReturn = null;
+    }
 
     public override string ToString() => _builder.ToString();
 
@@ -158,5 +206,25 @@ internal sealed class CodeWriter
         }
 
         public void Dispose() => _writer.Close();
+    }
+
+    private sealed class MemberCloser : IDisposable
+    {
+        private readonly CodeWriter _writer;
+        private readonly string _signature;
+        private readonly int _start;
+        private readonly int _indent;
+        private readonly int _bodyStart;
+
+        public MemberCloser(CodeWriter writer, string signature, int start, int indent, int bodyStart)
+        {
+            _writer = writer;
+            _signature = signature;
+            _start = start;
+            _indent = indent;
+            _bodyStart = bodyStart;
+        }
+
+        public void Dispose() => _writer.CloseMember(_signature, _start, _indent, _bodyStart);
     }
 }
