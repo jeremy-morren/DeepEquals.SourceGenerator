@@ -69,12 +69,6 @@ public static class DeepEqualsHelpers
 #endif
     }
 
-#if NET6_0_OR_GREATER
-    /// <summary>The two bytes of a <see cref="Half"/>.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ushort HalfBits(Half value) => BitConverter.HalfToUInt16Bits(value);
-#endif
-
     /// <summary>
     /// The complete 64-bit storage of a <see cref="DateTime"/>: ticks, kind and the hidden ambiguous-daylight-saving state.
     /// </summary>
@@ -83,17 +77,6 @@ public static class DeepEqualsHelpers
     /// </remarks>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ulong DateTimeBits(DateTime value) => Unsafe.As<DateTime, ulong>(ref value);
-
-#if NET7_0_OR_GREATER
-    /// <summary>
-    /// The payload of a nullable that holds a value, by reference, so a nullable read in place is compared in place.
-    /// The parameter is <c>in</c>, which binds a variable by reference and any other value through a temporary; the
-    /// runtime's own <c>Nullable.GetValueRefOrDefaultRef</c> takes <c>ref readonly</c> from .NET 8 and warns on both
-    /// (CS9192, CS9193), which a consumer compiling with warnings as errors would fail on.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ref readonly T NullableValueRef<T>(in T? nullable) where T : struct => ref Nullable.GetValueRefOrDefaultRef(in nullable);
-#endif
 
     /// <summary>
     /// Bitwise equality of two decimals: the same 96-bit magnitude, scale and sign, so <c>1.0m</c> and <c>1.00m</c>
@@ -126,14 +109,4 @@ public static class DeepEqualsHelpers
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool EquatableEquals<T>(T x, T y) where T : IEquatable<T> => x.Equals(y);
 
-    /// <summary>A writable reference to an <c>in</c> parameter, for field accessors that take their receiver by <c>ref</c>.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ref T AsWritableRef<T>(in T value) => ref Unsafe.AsRef(in value);
-
-#if NET7_0_OR_GREATER
-    /// <summary>A read-only reference to the payload of a nullable, or to its default, without copying a large struct.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ref readonly T GetNullableValueRefOrDefaultRef<T>(in T? value) where T : struct
-        => ref Nullable.GetValueRefOrDefaultRef(in value);
-#endif
 }

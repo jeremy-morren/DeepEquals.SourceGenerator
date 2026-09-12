@@ -127,7 +127,7 @@ internal sealed class Emitter
             ("[UnsafeAccessor] on generic types", c.HasGenericUnsafeAccessor),
             ("framework TryGetSpan/HashSpan", c.HasFrameworkSpanHelpers),
             ("framework Hash(Int128)", c.HasFrameworkHash128),
-            ("framework NullableValueRef", c.HasFrameworkNullableValueRef),
+            ("Nullable.GetValueRefOrDefaultRef", c.HasNullableGetValueRefOrDefaultRef),
             ("decimal.GetBits(Span<int>)", c.HasDecimalGetBitsSpan),
             ("framework bit blocks", c.BitBlocks),
             ("[RequiresUnreferencedCode]", c.HasRequiresUnreferencedCode),
@@ -137,6 +137,14 @@ internal sealed class Emitter
 
         var suppressed = new HashSet<string>(_model.SuppressedDiagnosticIds, StringComparer.Ordinal) 
             { "CS0162", "CS0168", "CS0219", "CS0108", "CS1591", "CS8019" };
+
+        // Nullable.GetValueRefOrDefaultRef takes `ref readonly` from .NET 8. Generated code passes it an accessor's
+        // reference without `in` (CS9192) or a getter's value (CS9193); both bind as intended, so the warnings go.
+        if (c.HasNullableGetValueRefOrDefaultRef)
+        {
+            suppressed.Add("CS9192");
+            suppressed.Add("CS9193");
+        }
 
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -687,17 +695,18 @@ internal sealed class Emitter
 
     /// <summary>
     /// The payload of a nullable whose <c>HasValue</c> has already been checked. A struct or decimal payload is reached by
-    /// reference through the framework's <c>NullableValueRef</c> where the asset has it, so a nullable read in place is
-    /// also compared in place; everything else is the copy <c>GetValueOrDefault()</c> returns. The helper's parameter is
-    /// <c>in</c>, so the call needs no keyword and a getter's value binds through a temporary.
+    /// reference through the runtime's <c>Nullable.GetValueRefOrDefaultRef</c> where it exists (.NET 7 and later), so a
+    /// nullable read in place is also compared in place; everything else is the copy <c>GetValueOrDefault()</c> returns.
+    /// No <c>in</c> at the call site: a getter's value then binds through a temporary, and the header suppresses the
+    /// warnings the <c>ref readonly</c> parameter raises for either argument.
     /// </summary>
     private string NullablePayload(TypeModel payload, string nullable) =>
-        _model.Capabilities.HasFrameworkNullableValueRef && (payload.Kind == TypeKind.Struct || payload.LeafRule == LeafRule.Decimal)
-            ? $"{KnownTypes.GlobalHelpers}.NullableValueRef({nullable})"
+        _model.Capabilities.HasNullableGetValueRefOrDefaultRef && (payload.Kind == TypeKind.Struct || payload.LeafRule == LeafRule.Decimal)
+            ? $"global::System.Nullable.GetValueRefOrDefaultRef({nullable})"
             : $"{nullable}.GetValueOrDefault()";
 
     private static string WritableReceiver(string receiver, bool inReceiver) =>
-        inReceiver ? $"{KnownTypes.GlobalHelpers}.AsWritableRef(in {receiver})" : receiver;
+        inReceiver ? $"global::System.Runtime.CompilerServices.Unsafe.AsRef(in {receiver})" : receiver;
 
     // ----- equality expressions ---------------------------------------------------------------------------------------------
 
@@ -895,7 +904,7 @@ internal sealed class Emitter
 
     private static string DoubleBits(string value) => $"{KnownTypes.GlobalHelpers}.DoubleBits({value})";
 
-    private static string HalfBits(string value) => $"{KnownTypes.GlobalHelpers}.HalfBits({value})";
+    private static string HalfBits(string value) => $"global::System.BitConverter.HalfToUInt16Bits({value})";
 
     /// <summary>The four bytes of a float as a narrow hash word.</summary>
     private static string FloatWord(string value) => $"unchecked((int){FloatBits(value)})";

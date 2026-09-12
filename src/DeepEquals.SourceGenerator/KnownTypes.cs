@@ -23,7 +23,6 @@ internal static class KnownTypes
     public const string IgnoreAttribute = $"{UserNamespace}.DeepEqualsIgnoreAttribute";
     public const string ContextBase = $"{UserNamespace}.DeepEqualsContextBase";
     public const string Collections = $"{FrameworkNamespace}.DeepEqualsCollections";
-    public const string Helpers = $"{FrameworkNamespace}.DeepEqualsHelpers";
     public const string HashCode = $"{FrameworkNamespace}.DeepEqualsHashCode";
     public const string Blocks = $"{FrameworkNamespace}.DeepEqualsBlocks";
     public const string GlobalBlocks = $"global::{Blocks}";

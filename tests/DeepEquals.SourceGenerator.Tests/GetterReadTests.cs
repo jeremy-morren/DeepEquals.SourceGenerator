@@ -85,7 +85,7 @@ public sealed class GetterReadTests
         source.Should().Contain("Name = \"<Position>k__BackingField\"").And.Contain("Name = \"<Balance>k__BackingField\"")
             .And.NotContain("x.Position.X", "each access through the getter copies the struct")
             .And.NotContain("x.Balance.HasValue");
-        source.Should().Contain("DeepEqualsHelpers.NullableValueRef(Person_Balance(")
+        source.Should().Contain("global::System.Nullable.GetValueRefOrDefaultRef(Person_Balance(")
             .And.NotContain("Balance.GetValueOrDefault()", "the payload is compared where it lives");
         source.Should().Contain("x.Name == y.Name").And.Contain("x.Age == y.Age", "primitives and references keep their getters");
 

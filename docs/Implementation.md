@@ -87,7 +87,7 @@ Properties that follow: deep equality is reflexive, symmetric and transitive on 
 
 Hashing never looks at object identity. Null hashes to 0. Every library-defined collection hash returns 0 for null and a nonzero value for empty: if the count is 0 and the raw hash came out as 0, the result is 1. `Combine` and the streaming forms are xxHash32 over 32-bit words with a per-process random seed ([§8](#8-hash-runtime)); a leaf wider than 32 bits contributes each of its 32-bit words. Under `Tree` a hash core that reaches a cycle takes the depth and carries the same guard as the comparison.
 
-Equality and hashing of a built-in leaf operate on its storage bits, never on a numeric conversion: float, double and `Half` go through `DeepEqualsHelpers.FloatBits`, `DoubleBits` and `HalfBits`, and decimal and `Guid` through their 32-bit storage words. The only casts in a hash word are integer reinterpretations and extensions.
+Equality and hashing of a built-in leaf operate on its storage bits, never on a numeric conversion: float and double go through `DeepEqualsHelpers.FloatBits` and `DoubleBits`, which pick the fastest reinterpretation each asset has, `Half` through `BitConverter.HalfToUInt16Bits`, and decimal and `Guid` through their 32-bit storage words. The only casts in a hash word are integer reinterpretations and extensions.
 
 | Kind | Hash |
 |---|---|
@@ -227,7 +227,7 @@ private static bool Equals_Point(Point x, Point y) => x.X == y.X && x.Y == y.Y;
 private static bool Equals_Large(in Large x, in Large y, ref DeepEqualsState state) { … }
 ```
 
-No null, identity, guard or runtime-type check. Struct accessors take `ref S`; an `in` core obtains a writable reference through `DeepEqualsHelpers.AsWritableRef(in x)`. Large struct members are passed as `in x.Field`.
+No null, identity, guard or runtime-type check. Struct accessors take `ref S`; an `in` core obtains a writable reference through `Unsafe.AsRef(in x)`. Large struct members are passed as `in x.Field`.
 
 ### 6.4 Nullable
 
@@ -238,7 +238,7 @@ x.Opt.HasValue == y.Opt.HasValue && (!x.Opt.HasValue || Equals_Point(x.Opt.GetVa
 o.Opt.HasValue ? GetHashCode_Point(o.Opt.GetValueOrDefault()) : 0
 ```
 
-A struct or `decimal` payload is reached by reference instead, through `DeepEqualsHelpers.NullableValueRef(in S?)` on the framework assets that have it (net8.0 and net10.0): `Equals_Point(DeepEqualsHelpers.NullableValueRef(x.Opt), …)`. With the nullable itself read in place ([§6.1](#61-class)), the payload is compared where it lives. The helper wraps `Nullable.GetValueRefOrDefaultRef` behind an `in` parameter, which binds any argument without a keyword; the runtime method takes `ref readonly` from .NET 8 and warns on an argument without `in` (CS9192) or on a value (CS9193).
+A struct or `decimal` payload is reached by reference instead, through the runtime's `Nullable.GetValueRefOrDefaultRef` where it exists (.NET 7 and later): `Equals_Point(global::System.Nullable.GetValueRefOrDefaultRef(x.Opt), …)`. With the nullable itself read in place ([§6.1](#61-class)), the payload is compared where it lives. From .NET 8 the method takes `ref readonly`, which warns on an argument without `in` (CS9192) or on a value (CS9193); both bind as intended, so the header suppresses them rather than the framework shipping a wrapper.
 
 An exact custom rule for `S?` is resolved before this lowering and receives the nullable value. With only an `S` rule registered, `S?` lowers to it; with only an `S?` rule, an `S` value is wrapped as `new S?(v)`. Each reached or registered `Nullable<S>` gets a wrapper-only node.
 
@@ -251,7 +251,7 @@ An exact custom rule for `S?` is resolved before this lowering and receives the 
 | `long`, `ulong`, `nint`, `nuint` | `==` | the two 32-bit words |
 | `Int128`, `UInt128` | `==` | `Hash(v)` over its words |
 | `BigInteger`, `Rune` | `==` | `GetHashCode()` |
-| `float`, `double`, `Half` | the bits from `DeepEqualsHelpers.FloatBits`, `DoubleBits` or `HalfBits` must match; each is `BitConverter`'s intrinsic where the asset has one, otherwise `Unsafe.As` over a reference | the same bits (two 32-bit words for double) |
+| `float`, `double`, `Half` | the bits from `DeepEqualsHelpers.FloatBits` or `DoubleBits`, each `BitConverter`'s intrinsic where the asset has one and `Unsafe.As` otherwise, or from `BitConverter.HalfToUInt16Bits`, must match | the same bits (two 32-bit words for double) |
 | `decimal` | bitwise: `DeepEqualsHelpers.DecimalEquals`, two 64-bit compares over the storage, which is the four `GetBits` words in storage order | the four 32-bit words |
 | `Complex`, `Vector2/3/4`, `Quaternion`, `Plane`, `Matrix3x2`, `Matrix4x4`, `PointF`, `SizeF`, `RectangleF` | each float or double component bitwise | `Combine` of the component bits |
 | enum | `(U)x == (U)y` for the declared underlying type `U` | `(int)(U)x` for 32 bits or less; the words of the value for 64 bits |
@@ -405,7 +405,7 @@ The generator never reads the target framework name. API capabilities are probed
 | `DeepEqualsCollections.TryGetSpan`, `DeepEqualsHashCode.HashSpan` | framework assets netstandard2.1 and later | interface views use indexers or enumerators; hashes use `Streaming` |
 | `CollectionsMarshal.AsSpan` | .NET 5 and later | `List<T>` indexer loop; `TryGetSpan` recognizes arrays only |
 | `IReadOnlySet<T>` | .NET 5 and later | the `ISet<T>` shape |
-| `DeepEqualsHelpers.NullableValueRef` | the net8.0 and net10.0 framework assets | `GetValueOrDefault()`, a copy of the payload |
+| `Nullable.GetValueRefOrDefaultRef` | .NET 7 and later | `GetValueOrDefault()`, a copy of the payload |
 | `decimal.GetBits(decimal, Span<int>)` | .NET 8 and later | the allocating `GetBits(decimal)` |
 | `[UnsafeAccessor]` | core library version 8 and later | expression-tree delegates |
 | `[UnsafeAccessor]` on generic declaring types | core library version 9 and later | delegates for those fields |
