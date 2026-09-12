@@ -215,7 +215,6 @@ internal sealed class Emitter
             ["CycleHandling"] = o.CycleHandling.ToString(),
             ["MaxDepth"] = o.IsTree ? o.MaxDepth.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) : $"{o.MaxDepth.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} (not used under {o.CycleHandling})",
             ["MatchingHashDepth"] = o.IsTree ? $"{o.MatchingHashDepth} (not used under Tree: the fingerprint is the full hash)" : o.MatchingHashDepth.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            ["Hashing"] = o.Hashing.ToString(),
             ["LanguageVersion"] = $"{c.LanguageVersion / 100}.{c.LanguageVersion % 100}",
             ["CapabilitiesPresent"] = string.Join(", ", capabilities.Where(x => x.Present).Select(x => x.Name)).OrDefault("(none)"),
             ["CapabilitiesAbsent"] = string.Join(", ", capabilities.Where(x => !x.Present).Select(x => x.Name)).OrDefault("(none)"),
@@ -604,88 +603,32 @@ internal sealed class Emitter
     /// <summary>Call <see cref="object.ReferenceEquals"/></summary>
     private static string RefEq(string x, string y) => $"{KnownTypes.GlobalObject}.ReferenceEquals({x}, {y})";
 
-    // ----- hash width ---------------------------------------------------------------------------------------------------
-    //
-    // Every hash core, ops struct and stream runs at the context's width. Under XxHash32 a word is an int and a leaf
-    // wider than 32 bits is split into its 32-bit words. Under XxHash64 a word is a ulong: a 64-bit leaf is one word,
-    // a 128-bit leaf two, a nested hash one carrying all its bits, and two narrow hashes pack into one word. The
-    // public GetHashCode folds at the end. The helpers below are the only place the two widths differ.
+    // ----- hash streams -------------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// One input to a hash stream. <paramref name="Wide"/> marks an expression already of the stream's word type; a
-    /// narrow one is an <c>int</c> hash that the 64-bit stream must widen or pack. Under the 32-bit width every word is
-    /// narrow, and no distinction is made.
-    /// </summary>
-    private readonly record struct HashWord(string Expr, bool Wide);
+    /// <summary>A count as a hash: the shallow hash of a collection is its count, 1 when empty.</summary>
+    private static string CountHash(string count) => $"({count} == 0 ? 1 : {count})";
 
-    private bool Hash64 => _model.Options.Is64;
-
-    /// <summary>The word type of the context's hash stream: the return type of every hash core.</summary>
-    private string HashType => Hash64 ? "ulong" : "int";
-
-    private string HashClass => Hash64 ? KnownTypes.GlobalHashCode64 : KnownTypes.GlobalHashCode;
-
-    private string HashOpsInterface => Hash64 ? KnownTypes.GlobalHashOps64 : KnownTypes.GlobalHashOps;
-
-    /// <summary>The hash method of an ordered-container ops struct: the 64-bit interface names its own.</summary>
-    private string HashOpsMethod => Hash64 ? "GetHashCode64" : "GetHashCode";
-
-    /// <summary>A narrow word that is already an <c>int</c> expression.</summary>
-    private static HashWord Narrow(string expr) => new(expr, false);
-
-    /// <summary>A word of the stream's own type: a ulong under XxHash64, an int otherwise.</summary>
-    private HashWord Wide(string expr) => new(expr, Hash64);
-
-    /// <summary>An integer literal, which converts to either word type on its own.</summary>
-    private HashWord Const(string literal) => new(literal, Hash64);
-
-    /// <summary>The expression of <paramref name="word"/> as a value of the stream's word type.</summary>
-    private string WordExpr(HashWord word) => Hash64 && !word.Wide ? $"{HashClass}.Narrow({word.Expr})" : word.Expr;
-
-    /// <summary>A count as a word: the shallow hash of a collection is its count, 1 when empty.</summary>
-    private string CountHash(string count) => Hash64 ? $"({count} == 0 ? 1UL : (ulong){count})" : $"({count} == 0 ? 1 : {count})";
-
-    /// <summary>The public 32-bit value of a stream word: null's 0 stays 0, everything else folds and stays nonzero.</summary>
-    private string ToPublic(string word) => Hash64 ? $"{HashClass}.ToInt32({word})" : word;
-
-    private string Combine<T>(IEnumerable<T> inputs, Func<T, HashWord> selector) =>
+    private string Combine<T>(IEnumerable<T> inputs, Func<T, string> selector) =>
         Combine(inputs.Select(selector).ToList());
 
-    /// <summary>
-    /// One <c>Combine</c> stream over the words, nested above the arity cap. Under XxHash64 the narrow words are paired
-    /// first, in order, then the wide words follow, so no half-empty word sits between two narrow ones.
-    /// </summary>
-    private string Combine(List<HashWord> words)
+    /// <summary>One <c>Combine</c> stream over the words, nested above the arity cap.</summary>
+    private string Combine(List<string> words)
     {
         if (words.Count == 0)
             return "1";
 
-        List<string> inputs;
-        if (Hash64)
-        {
-            var narrow = words.Where(w => !w.Wide).ToList();
-            inputs = new List<string>((narrow.Count + 1) / 2 + words.Count - narrow.Count);
-            for (var i = 0; i < narrow.Count; i += 2)
-                inputs.Add(i + 1 < narrow.Count
-                    ? $"{HashClass}.Pack({narrow[i].Expr}, {narrow[i + 1].Expr})"
-                    : $"{HashClass}.Narrow({narrow[i].Expr})");
-
-            inputs.AddRange(words.Where(w => w.Wide).Select(w => w.Expr));
-        }
-        else
-            inputs = words.Select(w => w.Expr).ToList();
-
+        var inputs = words;
         while (inputs.Count > MaxCombineArity)
         {
             // One round of grouping: each group of at most MaxCombineArity inputs becomes a nested call.
             var nested = new List<string>(capacity: inputs.Count / MaxCombineArity + 1);
             for (var i = 0; i < inputs.Count; i += MaxCombineArity)
-                nested.Add(ItemList($"{HashClass}.Combine(", inputs.GetRange(i, Math.Min(MaxCombineArity, inputs.Count - i)), ",", ")"));
+                nested.Add(ItemList($"{KnownTypes.GlobalHashCode}.Combine(", inputs.GetRange(i, Math.Min(MaxCombineArity, inputs.Count - i)), ",", ")"));
 
             inputs = nested;
         }
 
-        return ItemList($"{HashClass}.Combine(", inputs, ",", ")");
+        return ItemList($"{KnownTypes.GlobalHashCode}.Combine(", inputs, ",", ")");
     }
 
     private void EmitPredicates<T>(IEnumerable<T> items, Func<T, string> selector, bool terminalReturnTrue) => 
@@ -886,8 +829,6 @@ internal sealed class Emitter
         return $"{element.ShortName}_IsBitBlock";
     }
 
-    private string BlockWidth => Hash64 ? "64" : "32";
-
     /// <summary>
     /// Emits <paramref name="body"/>, the byte path of a hash or comparison, ahead of the per-element path. Returns true
     /// when the byte path is unconditional and nothing after it may be emitted; a struct's path runs under its flag and
@@ -924,7 +865,7 @@ internal sealed class Emitter
 
     /// <summary>The block-hash helper call over <paramref name="argument"/>: <c>HashBlock</c>, <c>HashReadOnlyList</c>, <c>HashList</c> or <c>HashEnumerable</c>.</summary>
     private string BlockHash(string helper, TypeModel element, string argument) =>
-        $"{KnownTypes.GlobalBlocks}.{helper}{BlockWidth}<{element.GlobalName}>({argument})";
+        $"{KnownTypes.GlobalBlocks}.{helper}<{element.GlobalName}>({argument})";
 
     /// <summary>
     /// The byte path of an interface-typed sequence's hash: an immutable array through its span, anything else through
@@ -982,21 +923,21 @@ internal sealed class Emitter
     // ----- hash expressions ------------------------------------------------------------------------------------------------
 
     /// <summary>The hash of a value reached through an edge; null means the edge is omitted at this level.</summary>
-    private HashWord? HashOrOmit(TypeModel type, string value, int level, bool sameScc)
+    private string? HashOrOmit(TypeModel type, string value, int level, bool sameScc)
     {
         switch (type.Kind)
         {
             case TypeKind.Leaf:
-                return LeafWord(type, value);
+                return LeafHash(type, value);
 
             case TypeKind.Nullable:
                 var payload = HashOrOmit(Type(type.PayloadTypeId), $"{value}.GetValueOrDefault()", level, sameScc);
-                return payload is { } p ? new HashWord($"({value}.HasValue ? {p.Expr} : 0)", p.Wide) : null;
+                return payload is { } p ? $"({value}.HasValue ? {p} : 0)" : null;
 
             case TypeKind.Struct:
                 if (type.InlineAsSmallStruct)
-                    return Wide(Combine(type.Members,
-                        m => LeafWord(Type(m.TypeId), Read(m, value, false))));
+                    return Combine(type.Members,
+                        m => LeafHash(Type(m.TypeId), Read(m, value, false)));
 
                 break;
         }
@@ -1004,12 +945,12 @@ internal sealed class Emitter
         // An edge that leaves the component calls the full hash. Inside it, a structural edge keeps the caller's level
         // and a payload edge steps one level down, and is left out entirely at level 0.
         if (!sameScc)
-            return Wide($"{HashName(type, 1)}({value}{HashDepthArg(type)})");
+            return $"{HashName(type, 1)}({value}{HashDepthArg(type)})";
 
         if (IsContainerOrProduct(type))
-            return Wide($"{HashName(type, level)}({value}{HashDepthArg(type)})");
+            return $"{HashName(type, level)}({value}{HashDepthArg(type)})";
 
-        return level == 0 ? null : Wide($"{HashName(type, level - 1)}({value}{HashDepthArg(type)})");
+        return level == 0 ? null : $"{HashName(type, level - 1)}({value}{HashDepthArg(type)})";
     }
 
     /// <summary>
@@ -1048,23 +989,23 @@ internal sealed class Emitter
     /// which follows payload edges k deep into a cycle where the public hash follows one. An acyclic type's full hash
     /// already sees everything.
     /// </summary>
-    private HashWord FingerprintWord(TypeModel type, string value)
+    private string FingerprintWord(TypeModel type, string value)
     {
         if (type.Kind == TypeKind.Nullable)
         {
             var payload = FingerprintWord(Type(type.PayloadTypeId), $"{value}.GetValueOrDefault()");
-            return new HashWord($"({value}.HasValue ? {payload.Expr} : 0)", payload.Wide);
+            return $"({value}.HasValue ? {payload} : 0)";
         }
 
         if (type.HasShallowHash && type.MatchHashLevels > 1)
-            return Wide($"{HashName(type, type.MatchHashLevels)}({value}{HashDepthArg(type)})");
+            return $"{HashName(type, type.MatchHashLevels)}({value}{HashDepthArg(type)})";
 
-        return HashOrOmit(type, value, 1, sameScc: false) ?? Const("0");
+        return HashOrOmit(type, value, 1, sameScc: false) ?? "0";
     }
 
     /// <summary>The hash of a value reached through an edge as a word of the stream's type; <c>0</c> when the edge is omitted.</summary>
     private string HashWordExpr(TypeModel type, string value, int level, bool sameScc) =>
-        HashOrOmit(type, value, level, sameScc) is { } word ? WordExpr(word) : "0";
+        HashOrOmit(type, value, level, sameScc) ?? "0";
 
     /// <summary>
     /// The words a member contributes to its owner's hash stream, in statement context. A leaf wider than a word is
@@ -1072,7 +1013,7 @@ internal sealed class Emitter
     /// seeded stream instead of finishing a nested hash per member; an inlined struct contributes its members' words.
     /// Everything else contributes the single word of its own hash, or nothing when the level omits it.
     /// </summary>
-    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<HashWord> words)
+    private void HashWords(TypeModel type, string value, int level, bool sameScc, string local, List<string> words)
     {
         switch (type.Kind)
         {
@@ -1093,10 +1034,10 @@ internal sealed class Emitter
     }
 
     /// <summary>
-    /// Reads a wide leaf into <paramref name="local"/> and appends its words: 32-bit halves under XxHash32, whole 64-bit
-    /// words under XxHash64, always the storage bits and never a numeric conversion. False when the leaf is not wide.
+    /// Reads a wide leaf into <paramref name="local"/> and appends its 32-bit words: always the storage bits and never a
+    /// numeric conversion. False when the leaf is not wide.
     /// </summary>
-    private bool WideLeafWords(TypeModel type, string value, string local, List<HashWord> words)
+    private bool WideLeafWords(TypeModel type, string value, string local, List<string> words)
     {
         switch (type.LeafRule)
         {
@@ -1147,7 +1088,7 @@ internal sealed class Emitter
                     if (component.IsDouble)
                         Bits64($"{local}_{k}", DoubleBits($"{local}.{component.Expression}"), words);
                     else
-                        words.Add(Narrow(FloatWord($"{local}.{component.Expression}")));
+                        words.Add(FloatWord($"{local}.{component.Expression}"));
 
                     k++;
                 }
@@ -1159,84 +1100,25 @@ internal sealed class Emitter
         }
     }
 
-    /// <summary>Sixty-four bits of storage, given as a <c>ulong</c> expression: one wide word, or two narrow halves read from a local.</summary>
-    private void Bits64(string local, string bits, List<HashWord> words)
+    /// <summary>Sixty-four bits of storage, given as a <c>ulong</c> expression: its two 32-bit halves, read from a local.</summary>
+    private void Bits64(string local, string bits, List<string> words)
     {
-        if (Hash64)
-        {
-            words.Add(Wide(bits));
-            return;
-        }
-
         _w.Line($"ulong {local} = {bits};");
-        words.Add(Narrow($"unchecked((int){local})"));
-        words.Add(Narrow($"unchecked((int)({local} >> 32))"));
+        words.Add($"unchecked((int){local})");
+        words.Add($"unchecked((int)({local} >> 32))");
     }
 
-    /// <summary>A 16-byte leaf already read into <paramref name="local"/>: two wide words, or four narrow ones, through the helper readers named <paramref name="prefix"/>.</summary>
-    private void Bits128(string local, string prefix, List<HashWord> words)
+    /// <summary>A 16-byte leaf already read into <paramref name="local"/>: its four 32-bit words, through the helper reader named <paramref name="prefix"/>.</summary>
+    private void Bits128(string local, string prefix, List<string> words)
     {
-        if (Hash64)
-        {
-            words.Add(Wide($"{KnownTypes.GlobalHelpers}.{prefix}Lo64({local})"));
-            words.Add(Wide($"{KnownTypes.GlobalHelpers}.{prefix}Hi64({local})"));
-            return;
-        }
-
         for (var i = 0; i < 4; i++)
-            words.Add(Narrow($"{KnownTypes.GlobalHelpers}.{prefix}Word({local}, {i})"));
+            words.Add($"{KnownTypes.GlobalHelpers}.{prefix}Word({local}, {i})");
     }
 
     private static bool IsContainerOrProduct(TypeModel type) => type.Kind is  
         TypeKind.Array or TypeKind.List or TypeKind.ImmutableArray or TypeKind.ArraySegment or TypeKind.Memory or 
         TypeKind.ListInterface or TypeKind.EnumerableInterface or TypeKind.Set or TypeKind.Dictionary or 
         TypeKind.KeyValuePair or TypeKind.ValueTuple or TypeKind.Tuple;
-
-    /// <summary>
-    /// The hash of a leaf as one word. Under XxHash64 a wide leaf is hashed as its 64-bit words through the 64-bit
-    /// overloads and comes back wide; a narrow leaf comes back as its <c>int</c> hash under either width.
-    /// </summary>
-    private HashWord LeafWord(TypeModel type, string value)
-    {
-        if (!Hash64)
-            return Narrow(LeafHash(type, value));
-
-        var h = HashClass;
-        switch (type.LeafRule)
-        {
-            case LeafRule.WideInteger:
-                if (type.GlobalName.EndsWith("IntPtr", StringComparison.Ordinal))
-                    return Wide(type.GlobalName.EndsWith("UIntPtr", StringComparison.Ordinal) ? $"{h}.Hash((ulong){value})" : $"{h}.Hash((long){value})");
-
-                if (type.GlobalName.EndsWith("Int128", StringComparison.Ordinal) && !_model.Capabilities.HasFrameworkHash128)
-                    return Wide($"{h}.Combine(unchecked((ulong){value}), unchecked((ulong)({value} >> 64)))");
-
-                return Wide($"{h}.Hash({value})");
-
-            case LeafRule.Guid:
-            case LeafRule.Decimal:
-                return Wide($"{h}.Hash({value})");
-
-            case LeafRule.Enum when type.EnumUnderlyingWidth == 8:
-                return Wide(type.EnumUnderlyingUnsigned ? $"{h}.Hash((ulong){value})" : $"{h}.Hash((long){value})");
-
-            case LeafRule.Double:
-                return Wide($"{h}.Hash({value})");
-
-            case LeafRule.DateTime:
-                return Wide($"{h}.Hash({KnownTypes.GlobalHelpers}.DateTimeBits({value}))");
-
-            case LeafRule.DateTimeOffset:
-                return Wide($"{h}.Combine(unchecked((ulong){value}.Ticks), unchecked((ulong){value}.Offset.Ticks))");
-
-            case LeafRule.FloatAggregate:
-                return Wide(Combine(type.AggregateComponents,
-                    c => c.IsDouble ? Wide(DoubleBits($"{value}.{c.Expression}")) : Narrow(FloatWord($"{value}.{c.Expression}"))));
-
-            default:
-                return Narrow(LeafHash(type, value));
-        }
-    }
 
     /// <summary>The 32-bit hash of a leaf: the rule of the documented representation, never a numeric conversion.</summary>
     private string LeafHash(TypeModel type, string value)
@@ -1397,7 +1279,7 @@ internal sealed class Emitter
     private string WrapperHashBody(TypeModel type)
     {
         var hash = HashOrOmit(type, "o", 1, sameScc: false);
-        return hash is { } word ? ToPublic(WordExpr(word)) : "1";
+        return hash ?? "1";
     }
 
     // ----- cores per kind ----------------------------------------------------------------------------------------------------
@@ -1536,7 +1418,7 @@ internal sealed class Emitter
 
         // Level 1 hash over the represented sequence; ImmutableArray default hashes to 0.
         var valueBlockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             if (type.Kind == TypeKind.ImmutableArray)
                 _w.Line("if (o.IsDefault) return 0;");
@@ -1558,7 +1440,7 @@ internal sealed class Emitter
                 if (type.Kind == TypeKind.ArraySegment)
                     _w.Line("if (o.Count == 0) return 1;");
                 var ops = type.ElementIsSameScc ? $"{type.ShortName}ShallowOps" : $"{type.ShortName}Ops";
-                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({spanOf}{HashDepthArg(type)})");
+                _w.Return($"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>({spanOf}{HashDepthArg(type)})");
             }
             else
             {
@@ -1568,7 +1450,7 @@ internal sealed class Emitter
                     : spans
                         ? ($"{span} s = {spanOf};", "s.Length", "s[i]")
                         : ("int n = o.Length;", "n", "o[i]");
-                _w.Line($"{HashClass}.Streaming h = default;");
+                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
                 _w.Line(local);
                 using (_w.For(limit))
                     _w.Line($"h.Add({ElementHashForContainer(type, element, item)});");
@@ -1581,7 +1463,7 @@ internal sealed class Emitter
             var count = type.Kind == TypeKind.ArraySegment ? "o.Count" : "o.Length";
             var guard = type.Kind == TypeKind.ImmutableArray ? "o.IsDefault ? 0 : " : string.Empty;
             _w.Arrow(
-                $"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)",
+                $"private static int ShallowHashCode_{type.ShortName}({p} o)",
                 $"{guard}{CountHash(count)}");
         }
 
@@ -1722,7 +1604,7 @@ internal sealed class Emitter
         var param = type.Kind == TypeKind.Struct 
             ? inReceiver ? $"in {type.GlobalName} o" : $"{type.GlobalName} o" 
             : membersOnly ? $"{type.GlobalName} o" : $"{Param(type)} o";
-        using (Method(type, $"private static {HashType} {name}({param}{HashDepthParam(type)})"))
+        using (Method(type, $"private static int {name}({param}{HashDepthParam(type)})"))
         {
             if (!membersOnly && type.Kind == TypeKind.Class)
                 _w.Line("if (o is null) return 0;");
@@ -1737,7 +1619,7 @@ internal sealed class Emitter
                 return;
             }
 
-            var inputs = new List<HashWord>(type.Members.Count);
+            var inputs = new List<string>(type.Members.Count);
             foreach (var member in type.Members)
                 HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), level, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
 
@@ -1757,10 +1639,10 @@ internal sealed class Emitter
         _w.Line($"{type.GlobalName}{Q()} tortoise = null;");
         _w.Line("int power = 1;");
         _w.Line("int lambda = 1;");
-        _w.Line($"{HashClass}.Streaming h = default;");
+        _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
         using (_w.Block("while (true)"))
         {
-            var inputs = new List<HashWord>(type.Members.Count);
+            var inputs = new List<string>(type.Members.Count);
             foreach (var member in type.Members.Where((_, i) => i != type.TailMemberIndex))
                 HashWords(Type(member.TypeId), HoistedRead(member, "o", inReceiver, "O"), 1, member.IsSameScc, $"w{member.DeclarationOrder}", inputs);
 
@@ -2024,7 +1906,7 @@ internal sealed class Emitter
 
     private void EmitDispatchHash(TypeModel type, int level)
     {
-        using (_w.Block($"private static {HashType} {HashName(type, level)}({Param(type)} o{HashDepthParam(type)})"))
+        using (_w.Block($"private static int {HashName(type, level)}({Param(type)} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             var assignable = type.Cases.Where(c => !c.IsExact).ToList();
@@ -2094,10 +1976,10 @@ internal sealed class Emitter
             case TypeKind.Leaf:
                 var typed = isExact ? $"(({target.GlobalName}){value})" : value;
                 return target.LeafRule == LeafRule.Custom
-                    ? WordExpr(Narrow($"{_model.CustomComparers[target.CustomComparerIndex].HolderName}.Value.GetHashCode({typed})"))
+                    ? $"{_model.CustomComparers[target.CustomComparerIndex].HolderName}.Value.GetHashCode({typed})"
 
                     // UserSimple and Default hash through LeafHash's direct GetHashCode() call, which is all the default comparer does.
-                    : WordExpr(LeafWord(target, typed));
+                    : LeafHash(target, typed);
 
             case TypeKind.Class:
                 if (target.Id == dispatch.Id) return $"{MembersHashName(target, caseLevel)}(o{HashDepthArg(target)})";
@@ -2171,7 +2053,7 @@ internal sealed class Emitter
 
         // Level 1 hash.
         var blockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2186,11 +2068,11 @@ internal sealed class Emitter
             else if (SpanAvailable(type) && _model.Capabilities.HasFrameworkSpanHelpers)
             {
                 var ops = type.ElementIsSameScc ? $"{type.ShortName}ShallowOps" : $"{type.ShortName}Ops";
-                _w.Return($"{HashClass}.HashSpan<{element.GlobalName}, {ops}>({SpanOf(type, "o")}{HashDepthArg(type)})");
+                _w.Return($"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>({SpanOf(type, "o")}{HashDepthArg(type)})");
             }
             else
             {
-                _w.Line($"{HashClass}.Streaming h = default;");
+                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
                 _w.Line($"int n = o.{count};");
                 using (_w.For("n")) _w.Line($"h.Add({ElementHashForContainer(type, element, "o[i]")});");
                 _w.Return("h.ToHashCode()");
@@ -2199,7 +2081,7 @@ internal sealed class Emitter
         }
 
         if (type.HasShallowHash)
-            _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"o.{count}")}");
+            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"o.{count}")}");
 
         EmitMatchSequenceHashes(type, element, p, p);
 
@@ -2220,7 +2102,7 @@ internal sealed class Emitter
         {
             string Item(string value) => HashWordExpr(element, value, level, type.ElementIsSameScc);
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
-            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o{HashDepthParam(type)})"))
+            using (_w.Block($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
                 switch (type.Kind)
                 {
@@ -2237,7 +2119,7 @@ internal sealed class Emitter
                         break;
                 }
 
-                _w.Line($"{HashClass}.Streaming h = default;");
+                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
                 switch (type.Kind)
                 {
                     case TypeKind.EnumerableInterface:
@@ -2272,10 +2154,10 @@ internal sealed class Emitter
     {
         var name = container.ElementIsSameScc ? $"{container.ShortName}ShallowOps" : $"{container.ShortName}Ops";
         var depth = IsTree && container.NeedsState;
-        var opsInterface = !depth ? HashOpsInterface : Hash64 ? KnownTypes.GlobalDepthHashOps64 : KnownTypes.GlobalDepthHashOps;
+        var opsInterface = !depth ? KnownTypes.GlobalHashOps : KnownTypes.GlobalDepthHashOps;
         using (_w.Block($"private struct {name} : {opsInterface}<{element.GlobalName}>"))
         {
-            _w.Arrow($"public {HashType} {HashOpsMethod}({element.GlobalName} value{HashDepthParam(container)})", ElementHashForContainer(container, element, "value"));
+            _w.Arrow($"public int GetHashCode({element.GlobalName} value{HashDepthParam(container)})", ElementHashForContainer(container, element, "value"));
         }
     }
 
@@ -2329,7 +2211,7 @@ internal sealed class Emitter
         }
 
         var listBlockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2340,7 +2222,7 @@ internal sealed class Emitter
             {
                 EmitSpanHash(type, element, "o");
                 _w.Line($"{iface} oi = o;");
-                _w.Line($"{HashClass}.Streaming h = default;");
+                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
                 _w.Line("int n = oi.Count;");
                 using (_w.For("n")) _w.Line($"h.Add({ElementHashForContainer(type, element, "oi[i]")});");
                 _w.Return("h.ToHashCode()");
@@ -2348,7 +2230,7 @@ internal sealed class Emitter
         }
 
         if (type.HasShallowHash)
-            _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"(({iface})o).Count")}");
+            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", $"o is null ? 0 : {CountHash($"(({iface})o).Count")}");
 
         EmitMatchSequenceHashes(type, element, p, iface);
 
@@ -2421,7 +2303,7 @@ internal sealed class Emitter
     {
         var helpers = _model.Capabilities.HasFrameworkSpanHelpers;
         var ops = container.ElementIsSameScc ? $"{container.ShortName}ShallowOps" : $"{container.ShortName}Ops";
-        var hashSpan = $"{HashClass}.HashSpan<{element.GlobalName}, {ops}>";
+        var hashSpan = $"{KnownTypes.GlobalHashCode}.HashSpan<{element.GlobalName}, {ops}>";
         if (_model.Capabilities.HasImmutableArray)
         {
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
@@ -2481,7 +2363,7 @@ internal sealed class Emitter
         }
 
         var enumerableBlockOnly = false;
-        using (_w.Block($"private static {HashType} GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
+        using (_w.Block($"private static int GetHashCode_{type.ShortName}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
@@ -2491,7 +2373,7 @@ internal sealed class Emitter
             if (!enumerableBlockOnly)
             {
                 EmitSpanHash(type, element, "o");
-                _w.Line($"{HashClass}.Streaming h = default;");
+                _w.Line($"{KnownTypes.GlobalHashCode}.Streaming h = default;");
                 using (_w.Block($"foreach ({element.GlobalName} e in ({enumerable})o)")) _w.Line($"h.Add({ElementHashForContainer(type, element, "e")});");
                 _w.Return("h.ToHashCode()");
             }
@@ -2499,7 +2381,7 @@ internal sealed class Emitter
 
         if (type.HasShallowHash)
         {
-            using (_w.Block($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)"))
+            using (_w.Block($"private static int ShallowHashCode_{type.ShortName}({p} o)"))
             {
                 _w.Line("if (o is null) return 0;");
                 _w.Line($"int count = o is global::System.Collections.Generic.ICollection<{element.GlobalName}> c ? c.Count : (o is global::System.Collections.Generic.IReadOnlyCollection<{element.GlobalName}> r ? r.Count : -1);");
@@ -2607,18 +2489,18 @@ internal sealed class Emitter
                 : Eq(key, "a", "b");
             _w.Arrow($"public bool Equals({elementName} a, {elementName} b{stateParam})", entryEq);
             // The matching fingerprint stays 32-bit: it keys the packed (hash, index) entries of the unordered runtime.
-            var fingerprint = WordExpr(EntryHash(type, key, value, "a", forMatching: true));
-            _w.Arrow($"public int GetHashCode({elementName} a{HashDepthParam(type)})", Hash64 ? $"{HashClass}.Fold({fingerprint})" : fingerprint);
+            var fingerprint = EntryHash(type, key, value, "a", forMatching: true);
+            _w.Arrow($"public int GetHashCode({elementName} a{HashDepthParam(type)})", fingerprint);
         }
 
         // Level 1 hash, and the deeper levels a fingerprint reaches: Combine(Count, sum of entry hashes) with empty-zero finalization.
         foreach (var level in HashLevels(type).Where(l => l != 0))
-        using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o{HashDepthParam(type)})"))
+        using (_w.Block($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
         {
             _w.Line("if (o is null) return 0;");
             EmitHashGuard(type);
-            _w.Line($"{HashType} sum = 0;");
-            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {WordExpr(EntryHash(type, key, value, "e", forMatching: false, level))}; }}}} }}}}";
+            _w.Line("int sum = 0;");
+            var entry = $"foreach ({elementName} e in {{0}}) {{{{ unchecked {{{{ sum += {EntryHash(type, key, value, "e", forMatching: false, level)}; }}}} }}}}";
             if (isConcrete)
             {
                 _w.Line("int count = o.Count;");
@@ -2634,12 +2516,12 @@ internal sealed class Emitter
                     _w.Line(string.Format(entry, $"(global::System.Collections.Generic.IEnumerable<{elementName}>)o"));
             }
 
-            _w.Line($"{HashType} h = {HashClass}.Combine({(Hash64 ? "(ulong)count" : "count")}, sum);");
+            _w.Line($"int h = {KnownTypes.GlobalHashCode}.Combine(count, sum);");
             _w.Return("count == 0 && h == 0 ? 1 : h");
         }
 
         if (type.HasShallowHash)
-            _w.Arrow($"private static {HashType} ShallowHashCode_{type.ShortName}({p} o)", isConcrete
+            _w.Arrow($"private static int ShallowHashCode_{type.ShortName}({p} o)", isConcrete
                 ? $"o is null ? 0 : {CountHash("o.Count")}"
                 : $"o is null ? 0 : {CountHash($"(({iface})o).Count")}");
 
@@ -2662,14 +2544,14 @@ internal sealed class Emitter
     /// The hash of one set element or dictionary pair. Matching uses the fingerprint of each part; the container's own
     /// hash at <paramref name="level"/> uses the component rule, like every other edge.
     /// </summary>
-    private HashWord EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching, int level = 1)
+    private string EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching, int level = 1)
     {
         if (value is null)
-            return forMatching ? FingerprintWord(key, entry) : HashOrOmit(key, entry, level, container.ElementIsSameScc) ?? Const("0");
+            return forMatching ? FingerprintWord(key, entry) : HashOrOmit(key, entry, level, container.ElementIsSameScc) ?? "0";
 
-        var k = forMatching ? FingerprintWord(key, $"{entry}.Key") : HashOrOmit(key, $"{entry}.Key", level, container.KeyIsSameScc) ?? Const("0");
-        var v = forMatching ? FingerprintWord(value, $"{entry}.Value") : HashOrOmit(value, $"{entry}.Value", level, container.ValueIsSameScc) ?? Const("0");
-        return Wide(Combine([k, v]));
+        var k = forMatching ? FingerprintWord(key, $"{entry}.Key") : HashOrOmit(key, $"{entry}.Key", level, container.KeyIsSameScc) ?? "0";
+        var v = forMatching ? FingerprintWord(value, $"{entry}.Value") : HashOrOmit(value, $"{entry}.Value", level, container.ValueIsSameScc) ?? "0";
+        return Combine([k, v]);
     }
 
     // ----- products -------------------------------------------------------------------------------------------------------------
@@ -2710,7 +2592,7 @@ internal sealed class Emitter
 
         foreach (var level in HashLevels(type))
         {
-            using (_w.Block($"private static {HashType} {HashName(type, level)}({p} o{HashDepthParam(type)})"))
+            using (_w.Block($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
                 if (reference)
                 {
@@ -2718,7 +2600,7 @@ internal sealed class Emitter
                     EmitHashGuard(type);
                 }
 
-                var inputs = new List<HashWord>(items.Count);
+                var inputs = new List<string>(items.Count);
                 var k = 0;
                 foreach (var (itemType, path, sameScc) in items)
                     HashWords(itemType, $"o.{path}", level, sameScc, $"w{k++}", inputs);

@@ -231,17 +231,15 @@ public sealed class CycleHandlingTests
     }
 
     [Theory]
-    [InlineData("Graph", "")]
-    [InlineData("Path", "")]
-    [InlineData("Graph", "Hashing = DeepEqualsHashing.XxHash64")]
-    [InlineData("Path", "Hashing = DeepEqualsHashing.XxHash64")]
-    public void Every_strategy_agrees_on_acyclic_data(string mode, string width)
+    [InlineData("Graph")]
+    [InlineData("Path")]
+    public void Every_strategy_agrees_on_acyclic_data(string mode)
     {
         var run = Clean(TreeModel + $$"""
                                     public sealed class Mixed { public TreeNode? Tree; public Dictionary<string, Chain>? Named; public HashSet<Chain>? Set; public (int, Chain?) Pair; public object? Any; }
                                     [GenerateDeepEquals(typeof(Mixed))]
                                     [GenerateDeepEquals(typeof(Chain))]
-                                    {{Options(mode, width)}}
+                                    {{Options(mode)}}
                                     public partial class Ctx : DeepEqualsContextBase { }
                                     """);
 
@@ -429,7 +427,7 @@ public sealed class CycleHandlingTests
     [Fact]
     public void Tree_hash_walks_the_whole_tree()
     {
-        using var _ = Hashing64Tests.Seed64(1);
+        using var _ = RawBitsTests.Seed(1);
         var tree = TreeRun();
         var graph = Clean(TreeModel + """
                                       [GenerateDeepEquals(typeof(TreeNode))]
@@ -487,15 +485,13 @@ public sealed class CycleHandlingTests
         run.Hash(comparer, g3).Should().Be(run.Hash(comparer, g4));
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData("Hashing = DeepEqualsHashing.XxHash64")]
-    public void Tree_sets_and_dictionaries_of_recursive_types_compare_and_hash(string width)
+    [Fact]
+    public void Tree_sets_and_dictionaries_of_recursive_types_compare_and_hash()
     {
         var run = Clean(TreeModel + $$"""
                                     public sealed class Holder { public HashSet<TreeNode>? Set; public Dictionary<string, Chain>? Map; public IEnumerable<TreeNode>? Seq; }
                                     [GenerateDeepEquals(typeof(Holder))]
-                                    {{Options("Tree", width)}}
+                                    {{Options("Tree")}}
                                     public partial class Ctx : DeepEqualsContextBase { }
                                     """);
 

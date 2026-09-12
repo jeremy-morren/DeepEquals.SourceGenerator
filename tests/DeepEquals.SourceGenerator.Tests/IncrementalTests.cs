@@ -66,7 +66,6 @@ public sealed class IncrementalTests
     [Theory]
     [InlineData("CycleHandling = DeepEqualsCycleHandling.Tree")]
     [InlineData("CycleHandling = DeepEqualsCycleHandling.Path")]
-    [InlineData("Hashing = DeepEqualsHashing.XxHash64")]
     [InlineData("MatchingHashDepth = 2")]
     [InlineData("MaxDepth = 64")]
     public void Changing_an_option_reruns_the_output(string option)

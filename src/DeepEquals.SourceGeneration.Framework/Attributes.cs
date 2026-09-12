@@ -98,9 +98,6 @@ public sealed class DeepEqualsSourceGenerationOptionsAttribute : Attribute
     /// is the full hash and this option has no effect; setting it there reports <c>DEQ037</c>.
     /// </summary>
     public int MatchingHashDepth { get; set; } = DefaultMatchingHashDepth;
-
-    /// <summary>The width of the hash stream every generated hash core runs. See <see cref="DeepEqualsHashing"/>.</summary>
-    public DeepEqualsHashing Hashing { get; set; } = DeepEqualsHashing.XxHash32;
 }
 
 /// <summary>How a generated comparison remembers where it has been.</summary>
@@ -128,20 +125,6 @@ public enum DeepEqualsCycleHandling
     /// member is unequal, does not. For deserialized data, which cannot hold cycles.
     /// </summary>
     Tree = 2,
-}
-
-/// <summary>The width of the hash stream generated hash cores run.</summary>
-public enum DeepEqualsHashing
-{
-    /// <summary>xxHash32 over 32-bit words, the stream <c>System.HashCode</c> uses. For 32-bit processes. The default.</summary>
-    XxHash32 = 0,
-
-    /// <summary>
-    /// xxHash64 over 64-bit words: a 64-bit leaf is one word, a 128-bit leaf two, and two 32-bit leaves pack into one, so
-    /// a value takes about half the rounds. Nested hashes carry 64 bits; only the public result folds to 32. Its rounds
-    /// are single instructions on 64-bit processors and in WebAssembly.
-    /// </summary>
-    XxHash64 = 1,
 }
 
 /// <summary>Treats the type, and every type assignable to it, as a leaf compared with <c>EqualityComparer&lt;T&gt;.Default</c> for the static type in use.</summary>

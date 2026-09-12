@@ -27,7 +27,6 @@ internal static class OptionsReader
         var cycleHandling = CycleHandling.Graph;
         var maxDepth = ContextOptions.DefaultMaxDepth;
         var matchingHashDepth = ContextOptions.DefaultMatchingHashDepth;
-        var hashing = Hashing.XxHash32;
         LocationInfo? maxDepthLocation = null;
         LocationInfo? matchingHashDepthLocation = null;
 
@@ -73,9 +72,6 @@ internal static class OptionsReader
                             matchingHashDepth = ReadInt(argument, 1, ContextOptions.MaximumMatchingHashDepth, ContextOptions.DefaultMatchingHashDepth, location, diagnostics);
                             matchingHashDepthLocation = location;
                             break;
-                        case "Hashing":
-                            hashing = (Hashing)ReadInt(argument, (int)Hashing.XxHash32, (int)Hashing.XxHash64, (int)Hashing.XxHash32, location, diagnostics);
-                            break;
                     }
                 }
             }
@@ -105,8 +101,7 @@ internal static class OptionsReader
             new EquatableArray<string>(prefixes),
             cycleHandling,
             maxDepth,
-            matchingHashDepth,
-            hashing);
+            matchingHashDepth);
     }
 
     /// <summary>An integer or enum argument; an enum constant arrives as its underlying value, so one reader serves both.</summary>

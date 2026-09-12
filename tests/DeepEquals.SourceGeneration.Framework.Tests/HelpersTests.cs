@@ -102,31 +102,15 @@ public sealed class HelpersTests
 #endif
 
     [Fact]
-    public void Decimal_and_guid_64_bit_words_match_the_32_bit_words()
+    public void Decimal_words_are_its_storage()
     {
         var values = new[] { 0m, 1m, -1m, 1.5m, 1.50m, decimal.MaxValue, decimal.MinValue, 0.0000000000000000000000000001m, decimal.Negate(0m) };
         foreach (var value in values)
         {
-            var lo = DeepEqualsHelpers.DecimalLo64(value);
-            var hi = DeepEqualsHelpers.DecimalHi64(value);
-            unchecked
-            {
-                ((int)lo).Should().Be(DeepEqualsHelpers.DecimalWord(value, 0));
-                ((int)(lo >> 32)).Should().Be(DeepEqualsHelpers.DecimalWord(value, 1));
-                ((int)hi).Should().Be(DeepEqualsHelpers.DecimalWord(value, 2));
-                ((int)(hi >> 32)).Should().Be(DeepEqualsHelpers.DecimalWord(value, 3));
-            }
-
             // Storage order is not GetBits order; the set of words is what GetBits returns.
-            var words = new[] { unchecked((int)lo), unchecked((int)(lo >> 32)), unchecked((int)hi), unchecked((int)(hi >> 32)) };
+            var words = Enumerable.Range(0, 4).Select(i => DeepEqualsHelpers.DecimalWord(value, i)).ToArray();
             words.Should().BeEquivalentTo(decimal.GetBits(value));
         }
-
-        var guid = new Guid("00112233-4455-6677-8899-aabbccddeeff");
-        var bytes = new byte[16];
-        Buffer.BlockCopy(BitConverter.GetBytes(DeepEqualsHelpers.GuidLo64(guid)), 0, bytes, 0, 8);
-        Buffer.BlockCopy(BitConverter.GetBytes(DeepEqualsHelpers.GuidHi64(guid)), 0, bytes, 8, 8);
-        bytes.Should().Equal(guid.ToByteArray());
     }
 
     [Fact]

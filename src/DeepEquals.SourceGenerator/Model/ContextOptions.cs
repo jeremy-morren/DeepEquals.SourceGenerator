@@ -12,13 +12,6 @@ internal enum CycleHandling
     Tree = 2,
 }
 
-/// <summary>The width of the hash stream; mirrors the framework enum of the same name.</summary>
-internal enum Hashing
-{
-    XxHash32 = 0,
-    XxHash64 = 1,
-}
-
 /// <summary>The per-context knobs after merging the context chain and applying defaults. Defaults duplicate the framework attribute's.</summary>
 internal sealed record ContextOptions(
     int MaxSwitchCases,
@@ -29,8 +22,7 @@ internal sealed record ContextOptions(
     EquatableArray<string> ExcludeInterfacesByPrefix,
     CycleHandling CycleHandling,
     int MaxDepth,
-    int MatchingHashDepth,
-    Hashing Hashing)
+    int MatchingHashDepth)
 {
     public const int DefaultMaxSwitchCases = 12;
     public const int DefaultMaxUnorderedCollisionRun = 64;
@@ -53,12 +45,9 @@ internal sealed record ContextOptions(
         EquatableArray<string>.Empty,
         CycleHandling.Graph,
         DefaultMaxDepth,
-        DefaultMatchingHashDepth,
-        Hashing.XxHash32);
+        DefaultMatchingHashDepth);
 
     public bool IsTree => CycleHandling == CycleHandling.Tree;
 
     public bool IsPath => CycleHandling == CycleHandling.Path;
-
-    public bool Is64 => Hashing == Hashing.XxHash64;
 }

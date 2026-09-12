@@ -10,12 +10,6 @@ public interface IDeepEqualsHashOps<in T>
     int GetHashCode(T x);
 }
 
-/// <summary>Hash-only callback into a generated 64-bit core.</summary>
-public interface IDeepEqualsHashOps64<in T>
-{
-    ulong GetHashCode64(T x);
-}
-
 /// <summary>Equality and hash callbacks into generated cores whose element closure needs comparison state.</summary>
 public interface IDeepEqualsElementOps<in T> : IDeepEqualsHashOps<T>
 {
@@ -35,12 +29,6 @@ public interface IDeepEqualsStatelessElementOps<in T> : IDeepEqualsHashOps<T>
 public interface IDeepEqualsDepthHashOps<in T>
 {
     int GetHashCode(T x, int depth);
-}
-
-/// <summary>The 64-bit counterpart of <see cref="IDeepEqualsDepthHashOps{T}"/>.</summary>
-public interface IDeepEqualsDepthHashOps64<in T>
-{
-    ulong GetHashCode64(T x, int depth);
 }
 
 /// <summary>Equality and fingerprint callbacks into generated cores under <c>CycleHandling.Tree</c>, carrying the caller's depth.</summary>

@@ -154,10 +154,8 @@ public sealed class BitBlockTests
         run.GeneratedSource.Should().Contain("HasSize<global::Tests.S>(16) && global::DeepEquals.SourceGeneration.Framework.DeepEqualsBlocks.HasSize<global::Tests.Inner>(8)");
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData(Hashing64Tests.Options64)]
-    public void Bit_block_spans_compare_as_bytes_and_hash_through_XxHash3(string options)
+    [Fact]
+    public void Bit_block_spans_compare_as_bytes_and_hash_through_XxHash3()
     {
         var run = Clean($$"""
                                          public readonly record struct Point3(double X, double Y, double Z);
@@ -167,20 +165,18 @@ public sealed class BitBlockTests
                                              public IReadOnlyList<float>? Floats; public IEnumerable<Point3>? Points; public IList<long>? Longs;
                                              public string[]? Strings; public bool[]? Flags; public List<int?>? Maybe; public Memory<int> Memory;
                                          }
-                                         {{options}}
                                          [GenerateDeepEquals(typeof(Holder))]
                                          public partial class Ctx : DeepEqualsContextBase { }
                                          """);
 
-        var width = options.Length == 0 ? "32" : "64";
         var source = run.GeneratedSource;
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock{width}<double>(o)", "an array hashes its own span");
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock{width}<global::System.Guid>(global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(o))");
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock{width}<decimal>(o.AsSpan())");
-        source.Should().Contain($"DeepEqualsBlocks.HashReadOnlyList{width}<float>(");
-        source.Should().Contain($"DeepEqualsBlocks.HashList{width}<long>(");
-        source.Should().Contain($"DeepEqualsBlocks.HashEnumerable{width}<global::Tests.Point3>(");
-        source.Should().Contain($"DeepEqualsBlocks.HashBlock{width}<int>(o.Span)");
+        source.Should().Contain($"DeepEqualsBlocks.HashBlock<double>(o)", "an array hashes its own span");
+        source.Should().Contain($"DeepEqualsBlocks.HashBlock<global::System.Guid>(global::System.Runtime.InteropServices.CollectionsMarshal.AsSpan(o))");
+        source.Should().Contain($"DeepEqualsBlocks.HashBlock<decimal>(o.AsSpan())");
+        source.Should().Contain($"DeepEqualsBlocks.HashReadOnlyList<float>(");
+        source.Should().Contain($"DeepEqualsBlocks.HashList<long>(");
+        source.Should().Contain($"DeepEqualsBlocks.HashEnumerable<global::Tests.Point3>(");
+        source.Should().Contain($"DeepEqualsBlocks.HashBlock<int>(o.Span)");
         Regex.IsMatch(source, @"DeepEqualsBlocks\.\w+<(string|bool|int\?)>").Should().BeFalse("strings, bools and nullables are not bit blocks");
     }
 
@@ -193,10 +189,8 @@ public sealed class BitBlockTests
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData(Hashing64Tests.Options64)]
-    public void Every_container_shape_of_a_bit_block_sequence_hashes_equal(string options)
+    [Fact]
+    public void Every_container_shape_of_a_bit_block_sequence_hashes_equal()
     {
         var run = Clean($$"""
                                          public readonly record struct Point3(double X, double Y, double Z);
@@ -205,7 +199,6 @@ public sealed class BitBlockTests
                                              public IReadOnlyList<double>? List; public IEnumerable<double>? Sequence;
                                              public IReadOnlyList<Point3>? Points; public IEnumerable<Point3>? PointSequence;
                                          }
-                                         {{options}}
                                          [GenerateDeepEquals(typeof(Holder))]
                                          public partial class Ctx : DeepEqualsContextBase { }
                                          """);
@@ -245,14 +238,11 @@ public sealed class BitBlockTests
         Check("IEnumerableOfPoint3", points, enumerableToo: true);
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData(Hashing64Tests.Options64)]
-    public void Bit_block_sequence_equality_is_bitwise(string options)
+    [Fact]
+    public void Bit_block_sequence_equality_is_bitwise()
     {
         var run = Clean($$"""
                                          public sealed class Holder { public double[]? Doubles; public decimal[]? Decimals; }
-                                         {{options}}
                                          [GenerateDeepEquals(typeof(Holder))]
                                          public partial class Ctx : DeepEqualsContextBase { }
                                          """);

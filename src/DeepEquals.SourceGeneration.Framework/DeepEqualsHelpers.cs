@@ -75,22 +75,6 @@ public static class DeepEqualsHelpers
     public static ushort HalfBits(Half value) => BitConverter.HalfToUInt16Bits(value);
 #endif
 
-    /// <summary>The first eight bytes of a decimal's storage: words 0 and 1 in storage order, which is not the <c>GetBits</c> order.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong DecimalLo64(in decimal value) => Unsafe.As<decimal, ulong>(ref Unsafe.AsRef(in value));
-
-    /// <summary>The last eight bytes of a decimal's storage: words 2 and 3.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong DecimalHi64(in decimal value) => Unsafe.Add(ref Unsafe.As<decimal, ulong>(ref Unsafe.AsRef(in value)), 1);
-
-    /// <summary>The first eight bytes of a <see cref="Guid"/>.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong GuidLo64(in Guid value) => Unsafe.As<Guid, ulong>(ref Unsafe.AsRef(in value));
-
-    /// <summary>The last eight bytes of a <see cref="Guid"/>.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static ulong GuidHi64(in Guid value) => Unsafe.Add(ref Unsafe.As<Guid, ulong>(ref Unsafe.AsRef(in value)), 1);
-
     /// <summary>
     /// The complete 64-bit storage of a <see cref="DateTime"/>: ticks, kind and the hidden ambiguous-daylight-saving state.
     /// </summary>

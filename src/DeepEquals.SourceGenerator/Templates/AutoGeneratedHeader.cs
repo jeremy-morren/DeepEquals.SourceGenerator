@@ -45,7 +45,6 @@ Options in effect
     CycleHandling                = {{CycleHandling}}
     MaxDepth                     = {{MaxDepth}}
     MatchingHashDepth            = {{MatchingHashDepth}}
-    Hashing                      = {{Hashing}}
 
 Target
     Language version:    C# {{LanguageVersion}}

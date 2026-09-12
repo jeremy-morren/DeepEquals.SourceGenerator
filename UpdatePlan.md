@@ -20,6 +20,7 @@ in where they apply and listed in §7.
 | 10 docs | Done | README: tier table with the hashing packages, the version policy, netstandard2.0 spans, sealing, the four options, "Choosing a cycle mode", bit blocks, the exception rows and the corrected limits. Implementation.md: the three modes, 64-bit stream and packing, fingerprint levels, guards per mode, Brent tail loop, raw-bit leaves, bit blocks, depth overloads, `DeepEqualsHashCode64` and `DeepEqualsBlocks`, the version policy and capabilities, the cross-context collision step, allocation rows; stale entries removed (dictionary fast path, `SingleToInt32Bits`, decimal allocation, partitioned output). Diagnostics.md was updated with steps 7 and 9. |
 | 11 repack and run | Done | Run on 2026-09-12 after the go-ahead. Every suite green in Release; smoke green including Mono and the browser; benchmarks on net10.0, net8.0 and net472, the browser table and the generator scale. Results and findings in §8. The generator-scale sizes were cut from 4,000 to 2,000 classes, since 4,000 exceeds the 4,096-type closure cap and timed a `DEQ018` refusal; setup now throws on any generator error. |
 | 12 `MaxDepth` without `Tree` | Done | Added by request: `DEQ037` when `MaxDepth` is set explicitly and `CycleHandling` is not `Tree`, the mirror of the `MatchingHashDepth` rule. `OptionsReader` tracks where `MaxDepth` was written, including on a base context, and the message names the mode. Tests: two `Diagnostics_are_reported` rows (Graph, Path), `An_option_that_applies_to_the_mode_does_not_warn`, and `MaxDepth_outside_Tree_is_ignored_and_the_warning_names_the_mode`. Diagnostics.md's `DEQ037` row covers both cases; the README already did. |
+| 13 drop `XxHash64` | Done | By request after §8: the 64-bit stream was nowhere faster on x64 and only tied in the browser. Removed the `Hashing` option and `DeepEqualsHashing`, `DeepEqualsHashCode64`, the 64-bit ops interfaces, the 64-bit decimal and Guid readers, the emitter's word-width machinery, the 64-bit contexts, scenarios, benchmark columns and tests. `DeepEqualsBlocks` keeps XxHash3 with its own per-process seed and returns the 32-bit fold (`HashBytes`, `HashBlock`, `HashReadOnlyList`, `HashList`, `HashEnumerable`). The storage-bits scan moved to `RawBitsTests`. |
 
 Steps 0 to 4 went into one commit, because they were finished before per-step commits were asked for and share files; every step from 5 on is its own commit.
 
@@ -916,7 +917,7 @@ cancellation 20 ms in returns after about 51 ms.
 
 **Open findings**, none applied:
 
-1. The decimal store-forwarding stall under `XxHash64` above.
+1. The decimal store-forwarding stall under `XxHash64` above. Moot: `XxHash64` is removed (step 13).
 2. Type-file headers list every registered root; pointing to the context file, as they already do for the closure,
    makes the header size constant.
 3. Generation time grows faster than linearly with closure size; the O2 worklist rework remains the lead.

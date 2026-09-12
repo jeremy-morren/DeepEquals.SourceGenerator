@@ -233,46 +233,6 @@ namespace DeepEquals.Fixtures
         }
 
         [Fact]
-        public void Hash64_context_hashes_equal_values_equal_on_every_fixture()
-        {
-            var a = MakePerson("s");
-            var b = MakePerson("s");
-            Hash64FixtureContext.Person.Equals(a, b).Should().BeTrue();
-            Hash64FixtureContext.Person.GetHashCode(a).Should().Be(Hash64FixtureContext.Person.GetHashCode(b));
-            Hash64FixtureContext.Person.GetHashCode(null).Should().Be(0);
-
-            var c = MakePerson("s");
-            c.Balance = 1.1m;
-            Hash64FixtureContext.Person.Equals(a, c).Should().BeFalse("decimal scale participates");
-
-            var h1 = MakeHolder();
-            var h2 = MakeHolder();
-            Hash64FixtureContext.Holder.Equals(h1, h2).Should().BeTrue();
-            Hash64FixtureContext.Holder.GetHashCode(h1).Should().Be(Hash64FixtureContext.Holder.GetHashCode(h2));
-            h2.Wide = (Wide)(1L << 40 | 1L);
-            Hash64FixtureContext.Holder.Equals(h1, h2).Should().BeFalse("64-bit enums see every bit");
-
-            var n = new Node { Value = 1 };
-            n.Next = n;
-            var m1 = new Node { Value = 1 };
-            var m2 = new Node { Value = 1 };
-            m1.Next = m2;
-            m2.Next = m1;
-            Hash64FixtureContext.Node.Equals(n, m1).Should().BeTrue();
-            Hash64FixtureContext.Node.GetHashCode(n).Should().Be(Hash64FixtureContext.Node.GetHashCode(m1));
-
-            var k1 = new Cube { Side = 2, Depth = 3, Name = "c" };
-            var k2 = new Cube { Side = 2, Depth = 3, Name = "c" };
-            Hash64FixtureContext.Shape.GetHashCode(k1).Should().Be(Hash64FixtureContext.Square.GetHashCode(k2));
-
-            Hash64FixtureContext.Empty.GetHashCode(new Empty()).Should().Be(1);
-            Hash64FixtureContext.ArrayOfInt32.GetHashCode(new int[0]).Should().NotBe(0, "an empty array never hashes like null");
-            var boxes1 = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };
-            var boxes2 = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };
-            Hash64FixtureContext.Boxes.GetHashCode(boxes1).Should().Be(Hash64FixtureContext.Boxes.GetHashCode(boxes2));
-        }
-
-        [Fact]
         public void Generic_declaring_types_read_private_fields()
         {
             var a = new Boxes { Int = new Box<int>(1), Text = new Box<string>("t") };

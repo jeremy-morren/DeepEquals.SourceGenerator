@@ -33,9 +33,8 @@ public sealed class HashLevelTests
 
     [Theory]
     [InlineData("")]
-    [InlineData(Hashing64Tests.Options64)]
     [InlineData("[DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path)]")]
-    [InlineData("[DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path, Hashing = DeepEqualsHashing.XxHash64, MatchingHashDepth = 1)]")]
+    [InlineData("[DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path, MatchingHashDepth = 1)]")]
     public void Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently(string options)
     {
         var run = Clean($$"""

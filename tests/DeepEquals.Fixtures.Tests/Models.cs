@@ -174,19 +174,6 @@ namespace DeepEquals.Fixtures
     {
     }
 
-    /// <summary>The same closure under the 64-bit hash stream.</summary>
-    [GenerateDeepEquals(typeof(Person))]
-    [GenerateDeepEquals(typeof(Node))]
-    [GenerateDeepEquals(typeof(Circle))]
-    [GenerateDeepEquals(typeof(Cube))]
-    [GenerateDeepEquals(typeof(Holder))]
-    [GenerateDeepEquals(typeof(Empty))]
-    [GenerateDeepEquals(typeof(Boxes))]
-    [DeepEqualsSourceGenerationOptions(Hashing = DeepEqualsHashing.XxHash64)]
-    public partial class Hash64FixtureContext : DeepEqualsContextBase
-    {
-    }
-
     /// <summary>The same closure retaining only the ancestors of the pair being compared.</summary>
     [GenerateDeepEquals(typeof(Person))]
     [GenerateDeepEquals(typeof(Node))]
@@ -204,7 +191,7 @@ namespace DeepEquals.Fixtures
     [GenerateDeepEquals(typeof(Circle))]
     [GenerateDeepEquals(typeof(Cube))]
     [GenerateDeepEquals(typeof(Holder))]
-    [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Tree, MaxDepth = 64, Hashing = DeepEqualsHashing.XxHash64)]
+    [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Tree, MaxDepth = 64)]
     public partial class TreeFixtureContext : DeepEqualsContextBase
     {
     }

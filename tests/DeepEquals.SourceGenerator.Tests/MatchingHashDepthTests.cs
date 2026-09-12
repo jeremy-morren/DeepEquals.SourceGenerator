@@ -168,10 +168,8 @@ public sealed class MatchingHashDepthTests
         shallow.GeneratedSource.Should().NotContain("MatchHashCode_", "depth 1 is the public hash");
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData(Hashing64Tests.Options64)]
-    public void Deeper_levels_run_through_lists_dictionaries_tuples_and_dispatch(string options)
+    [Fact]
+    public void Deeper_levels_run_through_lists_dictionaries_tuples_and_dispatch()
     {
         var run = Clean($$"""
                           public abstract class Shape { public int Id; }
@@ -180,7 +178,6 @@ public sealed class MatchingHashDepthTests
                           [GenerateDeepEquals(typeof(HashSet<Shape>))]
                           [GenerateDeepEquals(typeof(Group))]
                           [GenerateDeepEquals(typeof(Leaf))]
-                          {{options}}
                           public partial class Ctx : DeepEqualsContextBase { }
                           """);
 

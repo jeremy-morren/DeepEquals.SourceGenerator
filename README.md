@@ -165,7 +165,6 @@ Set on `[DeepEqualsSourceGenerationOptions]`. Invalid values warn ([`DEQ013`](ht
 | `CycleHandling`                | `Graph`   | `Graph`, `Path`, `Tree` | How a comparison remembers where it has been, and so what a recursive type costs. See [Choosing a cycle mode](#choosing-a-cycle-mode).                                                          |
 | `MaxDepth`                     | 512       | 1..1,000,000       | Under `Tree` only: the guarded nesting depth past which a comparison or hash throws. Linked lists are walked in a loop and do not count against it. Setting it under another mode warns ([`DEQ037`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#options-and-bounds)). |
 | `MatchingHashDepth`            | 4         | 1..16              | Under `Graph` and `Path`: how many payload edges into a recursive type the fingerprint that buckets set and dictionary entries follows, where the public hash follows one. Setting it under `Tree` warns ([`DEQ037`](https://github.com/jeremy-morren/DeepEquals.SourceGenerator/blob/main/docs/Diagnostics.md#options-and-bounds)). |
-| `Hashing`                      | `XxHash32` | `XxHash32`, `XxHash64` | The width of the hash stream. `XxHash64` hashes a 64-bit value as one word and two 32-bit values packed into one, so a value takes about half the rounds; only the public result folds to 32 bits. Prefer it on 64-bit processes and in the browser. |
 
 ### Choosing a cycle mode
 
@@ -173,7 +172,7 @@ Set on `[DeepEqualsSourceGenerationOptions]`. Invalid values warn ([`DEQ013`](ht
 - **`Path`** retains only the ancestors of the pair being compared: each pair leaves the table when its comparison returns. Real cycles still terminate and answers are identical to `Graph`, and the table stays as small as the nesting is deep. A shared subgraph is compared once per path that reaches it, which can be exponential on heavily shared graphs.
 - **`Tree`** retains nothing. One depth counter bounds the traversal, there is no pair table, no pool rental and no pair budget, and the hash walks the whole value instead of one level into a recursive type. It is the mode for deserialized data, which cannot hold cycles. The traversal is bounded, not the input validated. The same reference is equal before any traversal, a cyclic child shared by both sides is met as one reference, and a member that differs before a cycle decides first. A cycle the traversal does enter throws `DeepEqualsComplexityException` once the depth passes `MaxDepth`, or at once from a linked-list loop. The exception names the type whose guard ran out of depth, which is not necessarily the type that closes the cycle.
 
-Hash values differ between modes and widths, as they already differ between processes; persist none of them.
+Hash values differ between modes, as they already differ between processes; persist none of them.
 
 ## What is compared
 

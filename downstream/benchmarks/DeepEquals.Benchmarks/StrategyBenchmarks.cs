@@ -265,7 +265,7 @@ namespace DeepEquals.Benchmarks
         private IEqualityComparer<Customer> _customerComparer;
         private IEqualityComparer<Order> _orderComparer;
 
-        [Params("built-in", "XxHash32", "XxHash64")]
+        [Params("built-in", "generated")]
         public string Comparer { get; set; }
 
         [GlobalSetup]
@@ -275,12 +275,10 @@ namespace DeepEquals.Benchmarks
             _probes = Enumerable.Range(0, 1000).Select(Data.Customer).ToArray();
             _orders = Enumerable.Range(0, 200).Select(Data.Order).ToArray();
             _orderProbes = Enumerable.Range(0, 200).Select(Data.Order).ToArray();
-            _customerComparer = Comparer == "XxHash32" ? DownstreamContext.Customer
-                : Comparer == "XxHash64" ? (IEqualityComparer<Customer>)DownstreamHash64Context.Customer
-                : new BuiltIn.Comparer<Customer>(BuiltIn.CustomerEquals, BuiltIn.CustomerHash);
-            _orderComparer = Comparer == "XxHash32" ? DownstreamContext.Order
-                : Comparer == "XxHash64" ? (IEqualityComparer<Order>)DownstreamHash64Context.Order
-                : new BuiltIn.Comparer<Order>(BuiltIn.OrderEquals, BuiltIn.OrderHash);
+            _customerComparer = Comparer == "generated" ? DownstreamContext.Customer
+                : (IEqualityComparer<Customer>)new BuiltIn.Comparer<Customer>(BuiltIn.CustomerEquals, BuiltIn.CustomerHash);
+            _orderComparer = Comparer == "generated" ? DownstreamContext.Order
+                : (IEqualityComparer<Order>)new BuiltIn.Comparer<Order>(BuiltIn.OrderEquals, BuiltIn.OrderHash);
         }
 
         [Benchmark]
@@ -334,11 +332,9 @@ namespace DeepEquals.Benchmarks
         [Benchmark]
         public int Generated_GetHashCode() => DownstreamContext.Texts.GetHashCode(_a);
 
-        [Benchmark]
-        public int Generated64_GetHashCode() => DownstreamHash64Context.Texts.GetHashCode(_a);
     }
 
-    /// <summary>The two-word leaves on both widths and the bit-block paths: a thousand Guids and a thousand decimals.</summary>
+    /// <summary>The 128-bit leaves and the bit-block paths: a thousand Guids and a thousand decimals.</summary>
     [Config(typeof(InProcessConfig))]
     [MemoryDiagnoser]
     public class WideArrayBenchmarks
@@ -370,9 +366,6 @@ namespace DeepEquals.Benchmarks
         public int Generated_Guids_GetHashCode() => DownstreamContext.ArrayOfGuid.GetHashCode(_guidsA);
 
         [Benchmark]
-        public int Generated64_Guids_GetHashCode() => DownstreamHash64Context.ArrayOfGuid.GetHashCode(_guidsA);
-
-        [Benchmark]
         public bool BuiltIn_Decimals_Equals() => BuiltIn.SequenceEquals(_decimalsA, _decimalsB);
 
         [Benchmark]
@@ -384,8 +377,6 @@ namespace DeepEquals.Benchmarks
         [Benchmark]
         public int Generated_Decimals_GetHashCode() => DownstreamContext.ArrayOfDecimal.GetHashCode(_decimalsA);
 
-        [Benchmark]
-        public int Generated64_Decimals_GetHashCode() => DownstreamHash64Context.ArrayOfDecimal.GetHashCode(_decimalsA);
     }
 
     /// <summary>
@@ -437,9 +428,6 @@ namespace DeepEquals.Benchmarks
 
         [Benchmark]
         public int Generated_Doubles_GetHashCode() => DownstreamContext.ArrayOfDouble.GetHashCode(_a);
-
-        [Benchmark]
-        public int Generated64_Doubles_GetHashCode() => DownstreamHash64Context.ArrayOfDouble.GetHashCode(_a);
 
         /// <summary>A list that is not an array: the elements are copied into a pooled buffer and hashed as bytes.</summary>
         [Benchmark]

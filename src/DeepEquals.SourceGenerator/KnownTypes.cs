@@ -31,8 +31,6 @@ internal static class KnownTypes
     public const string GlobalFramework = $"global::{FrameworkNamespace}";
     public const string GlobalState = $"{GlobalFramework}.DeepEqualsState";
     public const string GlobalHashCode = $"{GlobalFramework}.DeepEqualsHashCode";
-    public const string GlobalHashCode64 = $"{GlobalFramework}.DeepEqualsHashCode64";
-    public const string GlobalHashOps64 = $"{GlobalFramework}.IDeepEqualsHashOps64";
     public const string GlobalHelpers = $"{GlobalFramework}.DeepEqualsHelpers";
     public const string GlobalCollections = $"{GlobalFramework}.DeepEqualsCollections";
     public const string GlobalUnordered = $"{GlobalFramework}.DeepEqualsUnordered";
@@ -43,7 +41,6 @@ internal static class KnownTypes
     public const string GlobalStatelessElementOps = $"{GlobalFramework}.IDeepEqualsStatelessElementOps";
     public const string GlobalDepthElementOps = $"{GlobalFramework}.IDeepEqualsDepthElementOps";
     public const string GlobalDepthHashOps = $"{GlobalFramework}.IDeepEqualsDepthHashOps";
-    public const string GlobalDepthHashOps64 = $"{GlobalFramework}.IDeepEqualsDepthHashOps64";
     public const string GlobalUnknownTypeException = $"{GlobalFramework}.DeepEqualsUnknownTypeException";
     public const string GlobalRuntimeHelpers = "global::System.Runtime.CompilerServices.RuntimeHelpers";
     public const string GlobalUnsafe = "global::System.Runtime.CompilerServices.Unsafe";

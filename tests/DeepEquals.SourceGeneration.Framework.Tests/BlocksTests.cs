@@ -17,34 +17,34 @@ namespace DeepEquals.SourceGeneration.Framework.Tests;
 
 public sealed class BlocksTests : IDisposable
 {
-    private readonly ulong _savedSeed = DeepEqualsHashCode64.Seed;
+    private readonly long _savedSeed = DeepEqualsBlocks.Seed;
 
-    public void Dispose() => DeepEqualsHashCode64.Seed = _savedSeed;
+    public void Dispose() => DeepEqualsBlocks.Seed = _savedSeed;
 
     public static readonly int[] Lengths = [0, 1, 3, 16, 17, 128, 129, 240, 241, 4096];
 
     [Fact]
-    public void HashBytes_is_seeded_XxHash3()
+    public void HashBytes_is_seeded_XxHash3_folded_to_32_bits()
     {
         var random = new Random(99);
-        foreach (var seed in new[] { 0UL, 7UL, 0x9E3779B97F4A7C15UL })
+        foreach (var seed in new[] { 0L, 7L, unchecked((long)0x9E3779B97F4A7C15UL) })
         {
-            DeepEqualsHashCode64.Seed = seed;
+            DeepEqualsBlocks.Seed = seed;
             foreach (var length in Lengths)
             {
                 var bytes = new byte[length];
                 random.NextBytes(bytes);
-                var expected = XxHash3.HashToUInt64(bytes, unchecked((long)seed));
-                DeepEqualsBlocks.HashBytes64(bytes).Should().Be(expected == 0 ? 1 : expected, $"length {length}");
-                DeepEqualsBlocks.HashBytes32(bytes).Should().Be(DeepEqualsHashCode64.FoldNonZero(expected));
+                var full = XxHash3.HashToUInt64(bytes, seed);
+                var folded = unchecked((int)(full ^ (full >> 32)));
+                DeepEqualsBlocks.HashBytes(bytes).Should().Be(folded == 0 ? 1 : folded, $"length {length}");
             }
         }
 
         var sample = Enumerable.Range(0, 100).Select(i => (byte)i).ToArray();
-        DeepEqualsHashCode64.Seed = 1;
-        var one = DeepEqualsBlocks.HashBytes64(sample);
-        DeepEqualsHashCode64.Seed = 2;
-        DeepEqualsBlocks.HashBytes64(sample).Should().NotBe(one, "the seed takes part");
+        DeepEqualsBlocks.Seed = 1;
+        var one = DeepEqualsBlocks.HashBytes(sample);
+        DeepEqualsBlocks.Seed = 2;
+        DeepEqualsBlocks.HashBytes(sample).Should().NotBe(one, "the seed takes part");
     }
 
     /// <summary>An IReadOnlyList that is neither an array nor a List, so every copy path is taken.</summary>
@@ -67,34 +67,30 @@ public sealed class BlocksTests : IDisposable
 
     private static void AssertAllShapesAgree<T>(T[] items) where T : unmanaged
     {
-        var expected64 = DeepEqualsBlocks.HashBlock64<T>(items);
-        var expected32 = DeepEqualsBlocks.HashBlock32<T>(items);
-        DeepEqualsBlocks.HashBytes64(MemoryMarshal.AsBytes(new ReadOnlySpan<T>(items))).Should().Be(expected64);
+        var expected = DeepEqualsBlocks.HashBlock<T>(items);
+        DeepEqualsBlocks.HashBytes(MemoryMarshal.AsBytes(new ReadOnlySpan<T>(items))).Should().Be(expected);
 
         var list = new List<T>(items);
         var wrapper = new Wrapper<T>(items);
         IEnumerable<T> lazy = items.Select(x => x);
-        foreach (var (name, h64, h32) in new (string, ulong, int)[]
+        foreach (var (name, hash) in new (string, int)[]
                  {
-                     ("array as read-only list", DeepEqualsBlocks.HashReadOnlyList64<T>(items), DeepEqualsBlocks.HashReadOnlyList32<T>(items)),
-                     ("List as read-only list", DeepEqualsBlocks.HashReadOnlyList64<T>(list), DeepEqualsBlocks.HashReadOnlyList32<T>(list)),
-                     ("wrapper as read-only list", DeepEqualsBlocks.HashReadOnlyList64<T>(wrapper), DeepEqualsBlocks.HashReadOnlyList32<T>(wrapper)),
-                     ("List as list", DeepEqualsBlocks.HashList64<T>(list), DeepEqualsBlocks.HashList32<T>(list)),
-                     ("wrapper as list", DeepEqualsBlocks.HashList64<T>(wrapper), DeepEqualsBlocks.HashList32<T>(wrapper)),
-                     ("array as enumerable", DeepEqualsBlocks.HashEnumerable64<T>(items), DeepEqualsBlocks.HashEnumerable32<T>(items)),
-                     ("wrapper as enumerable", DeepEqualsBlocks.HashEnumerable64<T>(wrapper), DeepEqualsBlocks.HashEnumerable32<T>(wrapper)),
-                     ("lazy enumerable", DeepEqualsBlocks.HashEnumerable64(lazy), DeepEqualsBlocks.HashEnumerable32(lazy)),
+                     ("array as read-only list", DeepEqualsBlocks.HashReadOnlyList<T>(items)),
+                     ("List as read-only list", DeepEqualsBlocks.HashReadOnlyList<T>(list)),
+                     ("wrapper as read-only list", DeepEqualsBlocks.HashReadOnlyList<T>(wrapper)),
+                     ("List as list", DeepEqualsBlocks.HashList<T>(list)),
+                     ("wrapper as list", DeepEqualsBlocks.HashList<T>(wrapper)),
+                     ("array as enumerable", DeepEqualsBlocks.HashEnumerable<T>(items)),
+                     ("wrapper as enumerable", DeepEqualsBlocks.HashEnumerable<T>(wrapper)),
+                     ("lazy enumerable", DeepEqualsBlocks.HashEnumerable(lazy)),
                  })
-        {
-            h64.Should().Be(expected64, $"{name} of {items.Length} {typeof(T).Name}");
-            h32.Should().Be(expected32, $"{name} of {items.Length} {typeof(T).Name}");
-        }
+            hash.Should().Be(expected, $"{name} of {items.Length} {typeof(T).Name}");
     }
 
     [Fact]
     public void HashBlock_HashList_and_HashEnumerable_agree()
     {
-        DeepEqualsHashCode64.Seed = 42;
+        DeepEqualsBlocks.Seed = 42;
         var random = new Random(3);
         foreach (var length in Lengths)
         {
@@ -117,9 +113,9 @@ public sealed class BlocksTests : IDisposable
     public void HashEnumerable_hashes_what_it_enumerates_whatever_the_count_says()
     {
         var actual = Enumerable.Range(0, 100).ToArray();
-        var expected = DeepEqualsBlocks.HashBlock64<int>(actual);
-        DeepEqualsBlocks.HashEnumerable64(new Liar(3, actual)).Should().Be(expected, "the count only sizes the first buffer, which grows");
-        DeepEqualsBlocks.HashEnumerable64(new Liar(1000, actual)).Should().Be(expected, "extra capacity is not hashed");
+        var expected = DeepEqualsBlocks.HashBlock<int>(actual);
+        DeepEqualsBlocks.HashEnumerable(new Liar(3, actual)).Should().Be(expected, "the count only sizes the first buffer, which grows");
+        DeepEqualsBlocks.HashEnumerable(new Liar(1000, actual)).Should().Be(expected, "extra capacity is not hashed");
     }
 
     [Fact]
@@ -127,7 +123,7 @@ public sealed class BlocksTests : IDisposable
     {
         using var pools = new PoolScope();
         var growing = Enumerable.Range(0, 100).Select(i => i);   // no count, so the 16-slot buffer grows
-        DeepEqualsBlocks.HashEnumerable64(growing);
+        DeepEqualsBlocks.HashEnumerable(growing);
         pools.Ints.Outstanding.Should().Be(0);
         pools.Ints.Rents.Should().BeGreaterThan(1, "the buffer grew");
 
@@ -137,12 +133,12 @@ public sealed class BlocksTests : IDisposable
             throw new InvalidOperationException("boom");
         }
 
-        var act = () => DeepEqualsBlocks.HashEnumerable64(Throwing());
+        var act = () => DeepEqualsBlocks.HashEnumerable(Throwing());
         act.Should().Throw<InvalidOperationException>();
         pools.Ints.Outstanding.Should().Be(0, "a throwing enumerator still returns the buffer");
 
-        DeepEqualsBlocks.HashList64(new Wrapper<int>(Enumerable.Range(0, 50).ToArray()));
-        DeepEqualsBlocks.HashReadOnlyList64(new Wrapper<int>(Enumerable.Range(0, 500).ToArray()));
+        DeepEqualsBlocks.HashList(new Wrapper<int>(Enumerable.Range(0, 50).ToArray()));
+        DeepEqualsBlocks.HashReadOnlyList(new Wrapper<int>(Enumerable.Range(0, 500).ToArray()));
         pools.Ints.Outstanding.Should().Be(0);
     }
 
@@ -167,12 +163,11 @@ public sealed class BlocksTests : IDisposable
     [Fact]
     public void Empty_block_hashes_nonzero()
     {
-        foreach (var seed in new[] { 0UL, 1UL, ulong.MaxValue })
+        foreach (var seed in new[] { 0L, 1L, -1L, long.MaxValue })
         {
-            DeepEqualsHashCode64.Seed = seed;
-            DeepEqualsBlocks.HashBlock64<int>(Array.Empty<int>()).Should().NotBe(0UL);
-            DeepEqualsBlocks.HashBlock32<int>(Array.Empty<int>()).Should().NotBe(0);
-            DeepEqualsBlocks.HashEnumerable32(Enumerable.Empty<int>()).Should().NotBe(0);
+            DeepEqualsBlocks.Seed = seed;
+            DeepEqualsBlocks.HashBlock<int>(Array.Empty<int>()).Should().NotBe(0);
+            DeepEqualsBlocks.HashEnumerable(Enumerable.Empty<int>()).Should().NotBe(0);
         }
     }
 

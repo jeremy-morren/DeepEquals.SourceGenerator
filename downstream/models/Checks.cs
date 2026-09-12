@@ -109,7 +109,6 @@ namespace DeepEquals.Downstream
                 if (!scenario.BuiltInEquals()) failures.Add(scenario.Name + ": built-in equals");
                 if (scenario.GeneratedHash() != scenario.GeneratedHashOfOther()) failures.Add(scenario.Name + ": hash");
                 if (scenario.GeneratedHash() != scenario.GeneratedHash()) failures.Add(scenario.Name + ": hash unstable");
-                if (scenario.Generated64Hash != null && scenario.Generated64Hash() != scenario.Generated64HashOfOther()) failures.Add(scenario.Name + ": 64-bit hash");
             }
         }
 
@@ -157,7 +156,6 @@ namespace DeepEquals.Downstream
             var decimalsB = Data.Arrays(15, 4);
             if (!DownstreamContext.Arrays.Equals(decimalsA, decimalsB)) failures.Add("arrays equal");
             if (DownstreamContext.Arrays.GetHashCode(decimalsA) != DownstreamContext.Arrays.GetHashCode(decimalsB)) failures.Add("arrays hash");
-            if (DownstreamHash64Context.Arrays.GetHashCode(decimalsA) != DownstreamHash64Context.Arrays.GetHashCode(decimalsB)) failures.Add("arrays 64-bit hash");
             decimalsB.Decimals[0] = scale1;
             decimalsA.Decimals[0] = scale2;
             if (DownstreamContext.Arrays.Equals(decimalsA, decimalsB)) failures.Add("bit block decimal scale");

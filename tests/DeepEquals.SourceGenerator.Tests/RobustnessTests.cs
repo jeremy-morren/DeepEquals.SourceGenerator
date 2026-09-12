@@ -27,17 +27,13 @@ public sealed class RobustnessTests
 
     /// <summary>
     /// A consumer that compiles with CheckForOverflowUnderflow must get the same answers: every hash word, fold and sum
-    /// the emitter writes has to be unchecked on purpose. Collections, dispatch, aliasing and a boxed cycle, in every mode
-    /// and at both widths.
+    /// the emitter writes has to be unchecked on purpose. Collections, dispatch, aliasing and a boxed cycle, in every mode.
     /// </summary>
     [Theory]
-    [InlineData("Graph", "XxHash32")]
-    [InlineData("Graph", "XxHash64")]
-    [InlineData("Path", "XxHash32")]
-    [InlineData("Path", "XxHash64")]
-    [InlineData("Tree", "XxHash32")]
-    [InlineData("Tree", "XxHash64")]
-    public void Generated_code_compiles_and_runs_under_CheckForOverflowUnderflow(string mode, string width)
+    [InlineData("Graph")]
+    [InlineData("Path")]
+    [InlineData("Tree")]
+    public void Generated_code_compiles_and_runs_under_CheckForOverflowUnderflow(string mode)
     {
         var run = GeneratorHost.Run(Prelude + $$"""
             public enum Big : ulong { Max = ulong.MaxValue }
@@ -55,7 +51,7 @@ public sealed class RobustnessTests
             [GenerateDeepEquals(typeof(Holder))]
             [GenerateDeepEquals(typeof(Circle))]
             [GenerateDeepEquals(typeof(Square))]
-            [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.{{mode}}, Hashing = DeepEqualsHashing.{{width}})]
+            [DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.{{mode}})]
             public partial class Ctx : DeepEqualsContextBase { }
             """, checkedArithmetic: true);
 

@@ -24,7 +24,7 @@ namespace DeepEquals.Benchmarks
     /// <summary>
     /// The generated comparer against the built-in or hand-written equality, for every shared scenario. Both sides go
     /// through the same delegate, so the small call overhead cancels in the ratio. The ratio column reads generated
-    /// over built-in: below 1 the generated comparer is faster. The hash category times both hash widths.
+    /// over built-in: below 1 the generated comparer is faster.
     /// </summary>
     [Config(typeof(InProcessConfig))]
     [MemoryDiagnoser]
@@ -45,9 +45,5 @@ namespace DeepEquals.Benchmarks
 
         [Benchmark, BenchmarkCategory("GetHashCode"), ArgumentsSource(nameof(Cases))]
         public int Generated_GetHashCode(Scenario scenario) => scenario.GeneratedHash();
-
-        /// <summary>The 64-bit stream over the same value; the Path and Tree scenarios have none and report the 32-bit one.</summary>
-        [Benchmark, BenchmarkCategory("GetHashCode"), ArgumentsSource(nameof(Cases))]
-        public int Generated64_GetHashCode(Scenario scenario) => scenario.Generated64Hash != null ? scenario.Generated64Hash() : scenario.GeneratedHash();
     }
 }

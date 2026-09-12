@@ -172,10 +172,8 @@ public sealed class FastPathTests
         run.Equals(objects, new System.Text.StringBuilder("a"), "text").Should().BeFalse("different unknown and known runtime types are simply unequal");
     }
 
-    [Theory]
-    [InlineData("")]
-    [InlineData(Hashing64Tests.Options64)]
-    public void Wide_leaves_hash_by_word_and_agree_with_equality(string options)
+    [Fact]
+    public void Wide_leaves_hash_by_word_and_agree_with_equality()
     {
         var run = Clean($$"""
                         public struct Pair { public long A; public double B; }
@@ -185,7 +183,6 @@ public sealed class FastPathTests
                             public DateTime T; public DateTimeOffset O; public Pair P; public decimal? MaybeM; public float F;
                         }
 
-                        {{options}}
                         [GenerateDeepEquals(typeof(Wide))]
                         public partial class Ctx : DeepEqualsContextBase { }
                         """);
