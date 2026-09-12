@@ -18,7 +18,7 @@ in where they apply and listed in §7.
 | 8 `Tree` | Done | Under Tree the state parameter becomes `int depth` everywhere the model says `NeedsState`, through one `StateParam`/`StateArg` pair that also replaced every hard-coded `ref state`. Guards become `if (++depth > MaxDepth) ThrowDepthExceeded(typeof(T), MaxDepth)` plus a stack check, at the same guarded cores for equality and hashing. Hash cores take the depth and walk everything: no shallow or fingerprint levels, since `HasShallowHash` is false under Tree. Ops structs implement the depth interfaces, and `HashSpan` and the unordered calls pass the depth. A boxed struct cycle, whose guard sits on an adapter hashing never passes through, is guarded in its argument by `DeepEqualsHelpers.Descend`. Chain types loop in both equality and hashing with one guard and Brent's detector. **The detector runs after each node is compared**, so a finite chain that differs first returns false instead of throwing; the plan's §1.2 sketch checked before comparing. Tests: `CycleHandlingTests` (emission, the §1.1 contract including mutual recursion and both operand orders, `MaxDepth` bounds, 200,000-node chains under `MaxDepth = 8`, depth across nested sets and a node inside its own set, the whole-tree hash against Graph's one-level hash, the boxed cycle, sets and dictionaries at both widths, all three modes on acyclic data, and the sequence-guard regression under Tree); `TreeFixtureContext` at `MaxDepth = 64` and XxHash64 on all five tiers. Also added here from §3.2 and §3.3: `RobustnessTests` for checked arithmetic across all six mode and width combinations, and a 300-type acyclic chain on a 256 KB thread in every mode, generated rather than written as fixture models. Generator tests 204 on net8.0/net10.0; fixtures 9 on all tiers. |
 | 9 downstream | Done | New contexts: `DownstreamHash64Context` over every root, `DownstreamPathContext`, `DownstreamTreeContext`, and three matching contexts (depth 1 at the default cap, depth 1 at cap 512, depth 2). New models: `ListNode`, `Texts`, `CollidingId` (a simple type hashing to its group), `ReadOnlyListView<T>`, `Arrays`, and `PointArrays` in the record models, because array roots are not supported and `Point3[]` is reached through it. Every scenario carries its 64-bit hash, and there are four new ones: TreeNode under Path and under Tree, `double[]` x1000, and `Point3[]` x1000. `Checks` adds the mode, fingerprint, collision-run and bit-block assertions. `MicroBench` gains a hash64 column and `ColdStart()`, run by the Consumer's `--cold` and by the Blazor page before its checks. The smoke tests log both. `EqualityBenchmarks` gains `Generated64_GetHashCode`, and `StrategyBenchmarks.cs` holds every §6 class. The new `DeepEquals.Generator.Benchmarks` project times generator scale and cancellation latency against the generator source; it is in the solution and in CI's build steps. Package versions bumped to the newest that builds without a warning: WebAssembly 10.0.12, Playwright 1.62.0, Test SDK 18.10.0. FluentAssertions 8 was left alone because of its licence change, and xunit.runner.visualstudio 4 because it targets xunit v3. Verified: the whole downstream builds against freshly packed packages, and the Consumer's checks report OK on net472, net6.0, net7.0, net8.0 and net10.0. The smoke suite, the browser run and the benchmarks are step 11. |
 | 10 docs | Done | README: tier table with the hashing packages, the version policy, netstandard2.0 spans, sealing, the four options, "Choosing a cycle mode", bit blocks, the exception rows and the corrected limits. Implementation.md: the three modes, 64-bit stream and packing, fingerprint levels, guards per mode, Brent tail loop, raw-bit leaves, bit blocks, depth overloads, `DeepEqualsHashCode64` and `DeepEqualsBlocks`, the version policy and capabilities, the cross-context collision step, allocation rows; stale entries removed (dictionary fast path, `SingleToInt32Bits`, decimal allocation, partitioned output). Diagnostics.md was updated with steps 7 and 9. |
-| 11 repack and run | Pending | Not before you say so. |
+| 11 repack and run | Done | Run on 2026-09-12 after the go-ahead. Every suite green in Release; smoke green including Mono and the browser; benchmarks on net10.0, net8.0 and net472, the browser table and the generator scale. Results and findings in §8. The generator-scale sizes were cut from 4,000 to 2,000 classes, since 4,000 exceeds the 4,096-type closure cap and timed a `DEQ018` refusal; setup now throws on any generator error. |
 | 12 `MaxDepth` without `Tree` | Done | Added by request: `DEQ037` when `MaxDepth` is set explicitly and `CycleHandling` is not `Tree`, the mirror of the `MatchingHashDepth` rule. `OptionsReader` tracks where `MaxDepth` was written, including on a base context, and the message names the mode. Tests: two `Diagnostics_are_reported` rows (Graph, Path), `An_option_that_applies_to_the_mode_does_not_warn`, and `MaxDepth_outside_Tree_is_ignored_and_the_warning_names_the_mode`. Diagnostics.md's `DEQ037` row covers both cases; the README already did. |
 
 Steps 0 to 4 went into one commit, because they were finished before per-step commits were asked for and share files; every step from 5 on is its own commit.
@@ -820,10 +820,11 @@ browser table run them too, unless noted. Each names what it is meant to expose.
 **Generator scale**, a new project `downstream/benchmarks/DeepEquals.Generator.Benchmarks` with a project reference
 to the generator
 
-- Run the generator over synthetic closures of 100, 1,000 and 4,000 types, with one root and with every type a
-  root; report elapsed time, allocated bytes and generated bytes. Exposes O1 and O2, and gives the baseline for the
+- Run the generator over synthetic closures of 100, 1,000 and 2,000 declared types, with one root and with every
+  type a root; report elapsed time, allocated bytes and generated bytes. 2,000 classes make about 3,700 closure
+  types; 4,000 would pass the 4,096-type cap. Exposes O1 and O2, and gives the baseline for the
   header and guard-selection rework.
-- Cancellation latency: cancel during model construction of the 4,000-type closure and measure the time to
+- Cancellation latency: cancel during model construction of the 2,000-type closure and measure the time to
   return. Exposes the missing cancellation checks inside `Propagate` and `SelectGuards`.
 
 ---
@@ -847,3 +848,76 @@ to the generator
 | Benchmark shapes | §6 |
 | Stale documentation | §3.5 |
 | Plan sequencing | §4 |
+
+---
+
+## 8. Step 11 results
+
+Run on one Windows x64 machine, BenchmarkDotNet `ShortRun` in process, so differences under about 10% are noise.
+Raw reports are under `D:\Temp\deepequals\step11`.
+
+**Suites.** Generator 211 on net8.0 and net10.0; framework 94, 92 on net472, 86 on netcoreapp3.1; fixtures 9 on all
+five tiers; smoke 20 of 20, with Mono passing once `C:\Program Files\Mono\bin` is on `PATH` (it skips otherwise).
+The browser test first failed because the local Chromium headless shell was a damaged download
+(`STATUS_INVALID_IMAGE_FORMAT`); `playwright.ps1 install --force chromium-headless-shell` fixed it.
+
+**Hash width.** XxHash64 is not faster on x64 CoreCLR, so the default stays `XxHash32`. Public `GetHashCode`, XxHash32
+against XxHash64:
+
+| Scenario | net10.0 | net8.0 | net472 | browser |
+|---|---|---|---|---|
+| Customer | 23.9 / 26.4 ns | 28.0 / 30.9 ns | 44.4 / 40.2 ns | 243 / 245 ns |
+| Order | 373 / 527 ns | 448 / 568 ns | 1,363 / 1,187 ns | 6,165 / 5,891 ns |
+| `IReadOnlyList<OrderLine>` x100 | 1,335 / 1,246 ns | 1,537 / 1,517 ns | 3,180 / 2,722 ns | 14,680 / 14,535 ns |
+| `Dictionary<string, decimal>` x100 | 733 / 1,716 ns | 837 / 1,948 ns | 3,117 / 3,067 ns | 16,509 / 12,721 ns |
+| `record struct Money` | 12.9 / 54.2 ns (noisy) | 5.8 / 19.0 ns | 19.3 / 27.8 ns | 142 / 122 ns |
+| `record struct Point3` | 3.2 / 6.9 ns | 4.8 / 7.1 ns | 5.7 / 7.4 ns | 94 / 109 ns |
+| `double[]` x1000 (bit block) | 174 / 162 ns | 298 / 292 ns | 1,148 / 1,125 ns | 2,747 / 2,753 ns |
+
+Why, from the code and a focused probe:
+
+- The premise was "half the words, half the rounds". An xxHash64 tail round costs three multiplies where xxHash32's
+  costs two, a 64-bit multiply is no cheaper on x64, and packing pushes most objects under four words, where both
+  hashes run serial tail rounds instead of the four parallel lanes. Point3 is six words and lanes under XxHash32, three
+  serial tail rounds under XxHash64.
+- Where xxHash64 does use lanes it merges them with four extra rounds xxHash32 does not have.
+- A wide leaf outside a member stream (a dictionary's decimal value, a small struct's public `GetHashCode`) is a nested
+  `DeepEqualsHashCode64.Hash`, so it pays a second finalization.
+- **A store-forwarding stall on decimals**, the largest single cost. The JIT keeps a copied decimal's fields in
+  registers, spills them as 32-bit stores and `DecimalLo64`/`DecimalHi64` reload them as one 64-bit load, which the
+  processor cannot forward. A probe on net8.0 (`D:\Temp\deepequals\hashprobe`) measured Money's public hash at
+  63 ns under XxHash64 against 26 ns under XxHash32; building each 64-bit word from two 32-bit reads with `Pack`
+  brought it to 29 ns, and the member-stream form to 24.7 ns against 24.3 ns. Not yet applied: a candidate fix for
+  `DecimalLo64`/`DecimalHi64` and `Hash(in decimal)`, and worth checking for `Guid`.
+
+**Cycle handling**, net10.0: TreeNode 585 nodes compares in 10.8 µs under `Graph`, 5.1 µs under `Path`, 2.2 µs under
+`Tree` (built-in 1.8 µs); `Tree`'s full hash costs 3.4 µs where the shallow hash costs 26 ns. A 100,000-node chain
+compares in 2.8 ms, 3.3 ms and 0.16 ms. The diamond with eight shared levels costs 0.42 µs under `Graph`, 58 µs under
+`Path` and 15 µs under `Tree`: the exponential case in §5, measured. The ninth retained pair spills `Graph`'s table and
+adds about 300 ns; `Path` stays inline.
+
+**Fingerprints and matching**, net10.0: the S1 sets compare in 86 µs at `MatchingHashDepth = 1` with a wide cap, 5.3 µs
+at 2 and 16 µs at 4 (noisy). A set of 100 keys with 100 colliding compares in 10.8 µs against 0.21 µs with none.
+
+**Bit blocks** hold on every runtime, the browser interpreter included: `double[]` and `Point3[]` of 1,000 compare in
+1–2% of the built-in time in the browser and hash in 4–8%, so the byte path stays on for WebAssembly (§5).
+
+**Generator scale**, net10.0:
+
+| Declared types | Files | One root | Every type a root |
+|---|---|---|---|
+| 100 | 190 | 114 ms, 50 MB | 115 ms, 54 MB |
+| 1,000 | 1,834 | 1.65 s, 499 MB | 1.76 s, 769 MB |
+| 2,000 | 3,663 | 5.3 s, 1.1 GB | 6.1 s, 2.2 GB |
+
+Time grows faster than linearly. Generated text is 33 MB with one root and 146 MB with every type a root, because every
+type file's header repeats the full list of registered roots: output is proportional to files times roots. A
+cancellation 20 ms in returns after about 51 ms.
+
+**Open findings**, none applied:
+
+1. The decimal store-forwarding stall under `XxHash64` above.
+2. Type-file headers list every registered root; pointing to the context file, as they already do for the closure,
+   makes the header size constant.
+3. Generation time grows faster than linearly with closure size; the O2 worklist rework remains the lead.
+

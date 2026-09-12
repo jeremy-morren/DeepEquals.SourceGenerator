@@ -47,7 +47,8 @@ internal static class Closures
     /// <summary>
     /// <paramref name="types"/> sealed classes in one ring, each holding the next, a list of an earlier one and a
     /// dictionary of another: one large strongly connected component through classes and containers, the case guard
-    /// selection and flag propagation work hardest on.
+    /// selection and flag propagation work hardest on. The lists, dictionaries, their interface views and entries add about
+    /// 0.8 closure types per class, so 2,000 classes make about 3,700, close to the generator's cap of 4,096.
     /// </summary>
     public static CSharpCompilation Build(int types, bool everyTypeARoot)
     {
@@ -73,6 +74,17 @@ internal static class Closures
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
     }
 
+    /// <summary>Runs the generator once and throws on any error diagnostic, so a size past the closure cap is never timed as a result.</summary>
+    public static GeneratorDriverRunResult RunChecked(CSharpCompilation compilation)
+    {
+        var result = Driver().RunGenerators(compilation).GetRunResult();
+        var errors = result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
+        if (errors.Count > 0)
+            throw new InvalidOperationException($"{compilation.AssemblyName}: the generator reported {errors.Count} errors, the first: {errors[0]}");
+
+        return result;
+    }
+
     public static GeneratorDriver Driver() =>
         CSharpGeneratorDriver.Create([new DeepEqualsGenerator().AsSourceGenerator()], parseOptions: new CSharpParseOptions(LanguageVersion.Latest));
 }
@@ -84,7 +96,7 @@ public class GeneratorScaleBenchmarks
 {
     private CSharpCompilation _compilation = null!;
 
-    [Params(100, 1000, 4000)]
+    [Params(100, 1000, 2000)]
     public int Types { get; set; }
 
     [Params(false, true)]
@@ -94,11 +106,9 @@ public class GeneratorScaleBenchmarks
     public void Setup()
     {
         _compilation = Closures.Build(Types, EveryTypeARoot);
-        var result = Closures.Driver().RunGenerators(_compilation).GetRunResult();
+        var result = Closures.RunChecked(_compilation);
         var sources = result.Results.SelectMany(r => r.GeneratedSources).ToList();
-        var errors = result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).ToList();
-        Console.WriteLine($"// {Types} types, every type a root: {EveryTypeARoot}: {sources.Count} files, {sources.Sum(s => s.SourceText.Length):N0} characters generated, {errors.Count} errors");
-        foreach (var error in errors.Take(3)) Console.WriteLine($"//   {error}");
+        Console.WriteLine($"// {Types} types, every type a root: {EveryTypeARoot}: {sources.Count} files, {sources.Sum(s => s.SourceText.Length):N0} characters generated");
     }
 
     [Benchmark]
@@ -115,7 +125,11 @@ public class CancellationBenchmarks
     private CSharpCompilation _compilation = null!;
 
     [GlobalSetup]
-    public void Setup() => _compilation = Closures.Build(4000, everyTypeARoot: true);
+    public void Setup()
+    {
+        _compilation = Closures.Build(2000, everyTypeARoot: true);
+        Closures.RunChecked(_compilation);   // a closure the generator refuses would measure the refusal, not cancellation
+    }
 
     [Benchmark]
     public bool CancelAfter20Milliseconds()

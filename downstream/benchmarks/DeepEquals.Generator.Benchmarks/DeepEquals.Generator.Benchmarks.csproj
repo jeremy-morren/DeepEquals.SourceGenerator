@@ -1,5 +1,5 @@
 <!--
-    Times the generator itself on synthetic closures: elapsed time and allocations for 100, 1,000 and 4,000 closure
+    Times the generator itself on synthetic closures: elapsed time and allocations for 100, 1,000 and 2,000 declared
     types, with one registered root and with every type a root, and how quickly a cancelled run returns. The baseline
     for the audit's O1 (header work per file) and O2 (graph passes and cancellation) findings.
 
