@@ -165,6 +165,10 @@ internal static class Diagnostics
         "DEQ037", "Generation option has no effect",
         "{0}");
 
+    public static readonly DiagnosticDescriptor ObsoleteErrorType = Error(
+        "DEQ038", "Type is obsolete as an error",
+        "'{0}', reached through {1}, is marked [Obsolete] as an error, which generated code can name only inside an obsolete context; mark the context class [Obsolete], or exclude the member that reaches it");
+
     public static readonly DiagnosticDescriptor GeneratorFailed = Error(
         "DEQ099", "The generator failed",
         "The deep-equality generator threw while {0} context '{1}': {2}: {3}");

@@ -26,7 +26,7 @@ internal sealed record ContextModel(
     EquatableArray<TypeModel> Types,
     EquatableArray<CustomComparerModel> CustomComparers,
     EquatableArray<AccessorHolderModel> AccessorHolders,
-    EquatableArray<string> SuppressedDiagnosticIds,
+    EquatableArray<SuppressedDiagnostic> SuppressedDiagnostics,
     bool HasUnsafeTypes,
     EquatableArray<DiagnosticInfo> Diagnostics)
 {
@@ -46,7 +46,7 @@ internal sealed record ContextModel(
             EquatableArray<TypeModel>.Empty,
             EquatableArray<CustomComparerModel>.Empty,
             EquatableArray<AccessorHolderModel>.Empty,
-            EquatableArray<string>.Empty,
+            EquatableArray<SuppressedDiagnostic>.Empty,
             false,
             diagnostics);
 }

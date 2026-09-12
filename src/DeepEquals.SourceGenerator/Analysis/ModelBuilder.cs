@@ -724,7 +724,8 @@ internal sealed class ModelBuilder
             HasShallowHash: cyclic && !_options.IsTree,
             MatchHashLevels: MatchHashLevels(cyclic, semantic, dispatch),
             BitBlockSize: BitBlock(type)?.Size ?? 0,
-            BitBlockChecks: EquatableArray.Create(BitBlockChecks(type)));
+            BitBlockChecks: EquatableArray.Create(BitBlockChecks(type)),
+            ObsoleteAttribute: ObsoleteInfo.Find(symbol) is { } obsolete ? ObsoleteInfo.Source(obsolete) : null);
     }
 
     // ----- matching fingerprint levels ------------------------------------------------------------------------------------
@@ -1112,9 +1113,26 @@ internal sealed class ModelBuilder
 
     // ----- suppressed diagnostics ---------------------------------------------------------------------------------------
 
-    private List<string> CollectSuppressedIds()
+    /// <summary>
+    /// The warnings the compared types' own APIs raise in generated code, which the consuming project already chose to
+    /// accept by using them: obsolete members, and the diagnostic ids of custom obsoletes, [Experimental] and preview
+    /// features, each with the symbol that brings it. CS0612 and CS0618 are always listed: a member read or a type
+    /// named in generated code may be obsolete without being one of the symbols visited here.
+    /// </summary>
+    private List<SuppressedDiagnostic> CollectSuppressedIds()
     {
-        var ids = new SortedSet<string>(StringComparer.Ordinal) { "CS0612", "CS0618", "CS8632" };
+        var ids = new Dictionary<string, SuppressedDiagnostic>(StringComparer.Ordinal)
+        {
+            ["CS0612"] = new("CS0612", "Suppress the warning for a compared type or member marked [Obsolete] without a message"),
+            ["CS0618"] = new("CS0618", "Suppress the warning for a compared type or member marked [Obsolete] with a message"),
+        };
+
+        void Add(string id, string reason)
+        {
+            if (!ids.ContainsKey(id))
+                ids[id] = new SuppressedDiagnostic(id, reason);
+        }
+
         void Visit(ISymbol? symbol)
         {
             if (symbol is null) return;
@@ -1122,22 +1140,23 @@ internal sealed class ModelBuilder
             foreach (var attribute in symbol.GetAttributes())
             {
                 var name = attribute.AttributeClass?.ToDisplayString();
+                var display = symbol.ToDisplayString();
                 switch (name)
                 {
                     case KnownTypes.ObsoleteAttribute:
                         foreach (var argument in attribute.NamedArguments)
-                            if (argument is { Key: "DiagnosticId", Value.Value: string { Length: > 0 } id }) 
-                                ids.Add(id);
+                            if (argument is { Key: "DiagnosticId", Value.Value: string { Length: > 0 } id })
+                                Add(id, $"Suppress the {id} warning for [Obsolete] on {display}");
 
                         break;
                     case KnownTypes.ExperimentalAttribute:
-                        if (attribute.ConstructorArguments.Length > 0 && 
+                        if (attribute.ConstructorArguments.Length > 0 &&
                             attribute.ConstructorArguments[0].Value is string { Length: > 0 } experimental)
-                            ids.Add(experimental);
+                            Add(experimental, $"Suppress the {experimental} warning for [Experimental] on {display}");
 
                         break;
                     case KnownTypes.RequiresPreviewFeaturesAttribute:
-                        ids.Add("CA2252");
+                        Add("CA2252", $"Suppress the CA2252 warning for [RequiresPreviewFeatures] on {display}");
                         break;
                 }
             }
@@ -1146,17 +1165,22 @@ internal sealed class ModelBuilder
         foreach (var type in _types)
         {
             Visit(type.Symbol);
-            if (type.Symbol is INamedTypeSymbol named) 
-                foreach (var argument in named.TypeArguments) 
+            if (type.Symbol is INamedTypeSymbol named)
+                foreach (var argument in named.TypeArguments)
                     Visit(argument);
 
             foreach (var member in type.Members)
             {
                 Visit(member.Field);
                 Visit(member.Field.AssociatedSymbol);
+                if (member.Field.AssociatedSymbol is IPropertySymbol { GetMethod: { } getter })
+                    Visit(getter);
             }
         }
 
-        return ids.ToList();
+        foreach (var custom in _closure.Registrations.Custom.Where(c => !c.Ignored))
+            Visit(custom.ComparerType);
+
+        return ids.Values.OrderBy(s => s.Id, StringComparer.Ordinal).ToList();
     }
 }

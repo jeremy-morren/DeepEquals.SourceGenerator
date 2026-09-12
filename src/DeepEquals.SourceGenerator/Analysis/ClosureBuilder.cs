@@ -172,6 +172,7 @@ internal sealed class ClosureBuilder
     // private readonly INamedTypeSymbol? _readOnlyMemory;
     // private readonly INamedTypeSymbol? _arraySegment;
     // private readonly INamedTypeSymbol? _tupleBase;
+    private readonly bool _contextObsolete;
     private bool _failed;
     private bool _regexWarned;
 
@@ -191,6 +192,8 @@ internal sealed class ClosureBuilder
         _registrations = registrations;
         _diagnostics = diagnostics;
         _cancellationToken = cancellationToken;
+        // Inside an obsolete context no use of an obsolete symbol is reported, error level included.
+        _contextObsolete = ObsoleteInfo.InObsoleteContext(context);
         _referenceAssemblyAttribute = CapabilityProbe.Find(compilation, KnownTypes.ReferenceAssemblyAttribute);
         _ignoreAttribute = CapabilityProbe.Find(compilation, KnownTypes.IgnoreAttribute);
         _inlineArrayAttribute = CapabilityProbe.Find(compilation, KnownTypes.InlineArrayAttribute);
@@ -323,6 +326,11 @@ internal sealed class ClosureBuilder
         _types.Add(symbol, created);
         _ordered.Add(created);
         _work.Enqueue((created, path));
+
+        // Generated code names every closure type; an error-level [Obsolete] there is CS0619, which no pragma suppresses.
+        if (!_contextObsolete && ObsoleteInfo.IsError(ObsoleteInfo.Find(symbol)))
+            Fail(Diagnostics.ObsoleteErrorType, null, symbol.ToDisplayString(), path);
+
         return created;
     }
 
@@ -946,10 +954,17 @@ internal sealed class ClosureBuilder
                 var accessorAvailable = _capabilities.HasUnsafeAccessor &&
                     (!genericDeclaring || (_capabilities.HasGenericUnsafeAccessor && ConstraintsNameable(declaring)));
 
+                // An [Obsolete] member at warning level is read as usual under the header's suppressions; one at error
+                // level cannot be named at all, so its storage is read through an accessor or delegate, never the member.
+                var obsoleteError = !_contextObsolete && (
+                    ObsoleteInfo.IsError(ObsoleteInfo.Of(field)) ||
+                    ObsoleteInfo.IsError(ObsoleteInfo.Of(field.AssociatedSymbol)) ||
+                    field.AssociatedSymbol is IPropertySymbol { GetMethod: { } getter } && ObsoleteInfo.IsError(ObsoleteInfo.Of(getter)));
+
                 MemberAccess access;
-                if (!compilerStorage && _compilation.IsSymbolAccessibleWithin(field, _context))
+                if (!compilerStorage && !obsoleteError && _compilation.IsSymbolAccessibleWithin(field, _context))
                     access = MemberAccess.Direct;
-                else if (compilerStorage && ReadableThroughGetter(field, type.Symbol) && !(accessorAvailable && ComparedInPlace(field.Type)))
+                else if (compilerStorage && !obsoleteError && ReadableThroughGetter(field, type.Symbol) && !(accessorAvailable && ComparedInPlace(field.Type)))
                     access = MemberAccess.Getter;
                 else if (accessorAvailable)
                     access = MemberAccess.UnsafeAccessor;

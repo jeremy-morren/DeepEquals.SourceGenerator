@@ -55,6 +55,6 @@ Diagnostics reported while generating this context
 */
 
 {{NullableDirective}}
-// Suppress obsolete, experimental and preview members the consuming project already chose to use,
-// and compiler hints that carry no meaning for emitted source.
-#pragma warning disable {{SuppressedDiagnostics}}
+{{GeneratorSuppressions}}
+
+{{UserSuppressions}}

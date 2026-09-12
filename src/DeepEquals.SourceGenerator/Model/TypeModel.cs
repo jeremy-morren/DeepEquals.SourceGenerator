@@ -256,7 +256,10 @@ internal sealed record TypeModel(
     // Bit blocks: a value whose equality is its storage bytes, with no references and no padding. BitBlockSize is its
     // size in bytes, or 0 when it is not one; a struct also carries the runtime size checks that must hold.
     int BitBlockSize,
-    EquatableArray<BitBlockCheck> BitBlockChecks)
+    EquatableArray<BitBlockCheck> BitBlockChecks,
+    // The [Obsolete] that naming this type uses, as source to repeat on its comparer and convenience property; null
+    // when nothing in the name is obsolete.
+    string? ObsoleteAttribute = null)
 {
     public bool IsBitBlock => BitBlockSize > 0;
 }

@@ -42,4 +42,5 @@ DEQ034 | DeepEquals | Warning | [DeepEqualsIgnore] on a member without storage
 DEQ035 | DeepEquals | Warning | Custom comparer for object
 DEQ036 | DeepEquals | Error | Framework package version does not match the generator
 DEQ037 | DeepEquals | Warning | Generation option has no effect
+DEQ038 | DeepEquals | Error | Type is obsolete as an error
 DEQ099 | DeepEquals | Error | The generator failed

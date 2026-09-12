@@ -135,16 +135,28 @@ internal sealed class Emitter
             ("[UnconditionalSuppressMessage]", c.HasUnconditionalSuppressMessage)
         ];
 
-        var suppressed = new HashSet<string>(_model.SuppressedDiagnosticIds, StringComparer.Ordinal) 
-            { "CS0162", "CS0168", "CS0219", "CS0108", "CS1591", "CS8019" };
+        // The warnings the generator's own code can raise, one pragma line each.
+        var generator = new List<SuppressedDiagnostic>
+        {
+            new("CS0108", "Suppress the warning for a comparer or property whose name hides an inherited member"),
+            new("CS0162", "Suppress the warning for code after a predicate that is constant for a type"),
+            new("CS0168", "Suppress the warning for a variable declared and never used"),
+            new("CS0219", "Suppress the warning for a variable assigned and never read"),
+            new("CS1591", "Suppress the warning for public generated members without XML documentation"),
+            new("CS8019", "Suppress the warning for an unnecessary using directive"),
+            new("CS8632", "Suppress the warning for nullable annotations outside a '#nullable' context"),
+        };
 
         // Nullable.GetValueRefOrDefaultRef takes `ref readonly` from .NET 8. Generated code passes it an accessor's
         // reference without `in` (CS9192) or a getter's value (CS9193); both bind as intended, so the warnings go.
         if (c.HasNullableGetValueRefOrDefaultRef)
         {
-            suppressed.Add("CS9192");
-            suppressed.Add("CS9193");
+            generator.Add(new("CS9192", "Suppress the warning for a reference passed to Nullable.GetValueRefOrDefaultRef without 'in'"));
+            generator.Add(new("CS9193", "Suppress the warning for a getter's value passed to Nullable.GetValueRefOrDefaultRef"));
         }
+
+        static string Pragmas(IEnumerable<SuppressedDiagnostic> diagnostics) =>
+            string.Join("\n", diagnostics.OrderBy(d => d.Id, StringComparer.Ordinal).Select(d => $"#pragma warning disable {d.Id} // {d.Reason}"));
 
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -174,7 +186,8 @@ internal sealed class Emitter
             ["CapabilitiesAbsent"] = string.Join(", ", capabilities.Where(x => !x.Present).Select(x => x.Name)).OrDefault("(none)"),
             ["Diagnostics"] = CommentList(_model.Diagnostics.Select(d => 
                 $"{d.Descriptor.Id}: {string.Format(System.Globalization.CultureInfo.InvariantCulture, d.Descriptor.MessageFormat.ToString(System.Globalization.CultureInfo.InvariantCulture), d.Arguments.Cast<object>().ToArray()).Replace("*/", "* /")}")),
-            ["SuppressedDiagnostics"] = string.Join(", ", suppressed.OrderBy(s => s, StringComparer.Ordinal)),
+            ["GeneratorSuppressions"] = Pragmas(generator),
+            ["UserSuppressions"] = Pragmas(_model.SuppressedDiagnostics),
             ["NullableDirective"] = Annotations
                 ? "// Annotations only: generated code declares nullability for its callers but opts out of flow analysis,\n// so the consuming project's warning policy cannot fail the build on emitted source.\n#nullable enable annotations\n"
                 : string.Empty,
@@ -403,6 +416,9 @@ internal sealed class Emitter
     {
         if (!type.EmitConvenienceProperty)
             return;
+
+        if (type.ObsoleteAttribute is { } obsolete)
+            _w.Line(obsolete);
 
         if (type.IsUnsafe)
         {
@@ -1232,6 +1248,12 @@ internal sealed class Emitter
     private void EmitWrapper(TypeModel type)
     {
         var name = $"{type.ShortName}EqualityComparer";
+
+        // The comparer of an obsolete type is as obsolete as the type: a caller sees the same warning or error, and the
+        // comparer's own members, an obsolete context, name the type without one.
+        if (type.ObsoleteAttribute is { } obsolete)
+            _w.Line(obsolete);
+
         _w.Line($"[global::System.CodeDom.Compiler.GeneratedCode(\"DeepEquals.SourceGenerator\", \"{GeneratorVersion}\")]");
         
         // A reference-type wrapper accepts null on both sides, so under nullable annotations it implements IEqualityComparer<T?>.
