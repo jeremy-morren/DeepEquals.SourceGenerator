@@ -6,6 +6,7 @@
 //     the code is regenerated. To change what is generated, edit the attributes
 //     on the context class instead.
 // </auto-generated>
+{{FileNotice}}
 
 /*
 Context
@@ -28,9 +29,6 @@ Registered roots
 
 Custom comparers
 {{CustomComparers}}
-
-Types compared through delegate field accessors (RequiresUnreferencedCode, RequiresDynamicCode)
-{{UnsafeTypes}}
 
 Options in effect
     MaxSwitchCases               = {{MaxSwitchCases}}

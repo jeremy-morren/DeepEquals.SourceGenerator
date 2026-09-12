@@ -77,6 +77,46 @@ public sealed class BasicGenerationTests
         files.Values.Should().OnlyContain(f => f.Contains("partial class Ctx"), "every file is a partial declaration of the context");
     }
 
+    /// <summary>
+    /// A private field of a generic type is read through a delegate where the runtime has no generic
+    /// <c>[UnsafeAccessor]</c>, as on .NET 8; newer runtimes take the accessor and need no notice at all.
+    /// </summary>
+    [Fact]
+    public void Trimming_notices_sit_in_the_files_of_the_types_they_affect()
+    {
+        var run = RunAndAssertClean(
+            """
+            public sealed class Box<T> { private T _value; public Box(T value) { _value = value; } }
+            public sealed class Holder { public Box<int>? B; public int N; }
+            public sealed class Plain { public int X; }
+
+            [GenerateDeepEquals(typeof(Holder))]
+            [GenerateDeepEquals(typeof(Plain))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        var files = run.Result.Results.Single().GeneratedSources.ToDictionary(s => s.HintName, s => s.SourceText.ToString());
+        files["Tests.Ctx.g.cs"].Should().NotContain("Trimming:").And.NotContain("delegate field accessors", "the context file carries no trimming list");
+        files["Tests.Ctx.Plain.g.cs"].Should().NotContain("Trimming:", "Plain reaches no delegate accessor");
+
+        // Only the delegate path marks comparers; an [UnsafeAccessor] holder needs no attribute and no notice.
+        if (!files.Values.Any(f => f.Contains("RequiresUnreferencedCode(")))
+        {
+            files.Values.Should().NotContain(f => f.Contains("Trimming:"), "no field is read through a delegate on this runtime");
+            return;
+        }
+
+        files["Tests.Ctx.BoxOfInt32.g.cs"].Should()
+            .Contain("// Trimming: Tests.Box<int> is compared through delegate field accessors:")
+            .And.Contain("// its private fields are read through reflection-built delegates, and trimming can remove those fields.")
+            .And.Contain("// Its public comparer is marked [RequiresUnreferencedCode] and [RequiresDynamicCode].");
+        files["Tests.Ctx.Holder.g.cs"].Should()
+            .Contain("// Trimming: Tests.Holder is compared through delegate field accessors:")
+            .And.Contain("// it reaches types whose private fields are read through reflection-built delegates");
+        files["Tests.Ctx.Holder.g.cs"].IndexOf("// Trimming:", StringComparison.Ordinal).Should()
+            .BeGreaterThan(files["Tests.Ctx.Holder.g.cs"].IndexOf("// </auto-generated>", StringComparison.Ordinal), "the notice follows the auto-generated block");
+    }
+
     [Fact]
     public void Sealed_class_with_leaf_members_compares_by_value()
     {

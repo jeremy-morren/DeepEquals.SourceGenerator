@@ -146,7 +146,7 @@ internal sealed class Emitter
             ["ContextAccessibility"] = _model.Accessibility,
             ["Roots"] = CommentList(_types.Where(t => t.IsRoot).Select(t => Display(t.GlobalName))),
             ["CustomComparers"] = CommentList(_model.CustomComparers.Select(cc => $"{Display(cc.TargetTypeGlobalName)}  by {Display(cc.ComparerTypeGlobalName)}{(cc.HandleNulls ? ", handles null itself" : string.Empty)}")),
-            ["UnsafeTypes"] = CommentList(_types.Where(t => t.IsUnsafe && t.EmitWrapper).Select(t => Display(t.GlobalName))),
+            ["FileNotice"] = string.Empty,
             ["MaxSwitchCases"] = o.MaxSwitchCases.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["MaxUnorderedCollisionRun"] = o.MaxUnorderedCollisionRun.ToString(System.Globalization.CultureInfo.InvariantCulture),
             ["MaxComparisonPairs"] = o.MaxComparisonPairs.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + (o.CycleHandling switch
@@ -171,6 +171,31 @@ internal sealed class Emitter
                 ? "// Annotations only: generated code declares nullability for its callers but opts out of flow analysis,\n// so the consuming project's warning policy cannot fail the build on emitted source.\n#nullable enable annotations\n"
                 : string.Empty,
         };
+    }
+
+    /// <summary>
+    /// The trimming notice of a type whose comparison reads private fields through reflection-built delegates, itself or
+    /// through a type it reaches: it goes in that type's own file, below the auto-generated notice, and names the
+    /// attributes its public comparer carries. Starts with a newline, so the header keeps a blank line before it.
+    /// </summary>
+    private string TrimmingNotice(TypeModel type)
+    {
+        var reason = type.Members.Any(m => m.Access == MemberAccess.Delegate)
+            ? "its private fields are read through reflection-built delegates"
+            : "it reaches types whose private fields are read through reflection-built delegates";
+
+        var attributes = new List<string>(2);
+        if (_model.Capabilities.HasRequiresUnreferencedCode)
+            attributes.Add("[RequiresUnreferencedCode]");
+
+        if (_model.Capabilities.HasRequiresDynamicCode)
+            attributes.Add("[RequiresDynamicCode]");
+
+        var notice = $"\n// Trimming: {Display(type.GlobalName)} is compared through delegate field accessors:\n// {reason}, and trimming can remove those fields.";
+        if (type.EmitWrapper && attributes.Count > 0)
+            notice += $"\n// Its public comparer is marked {string.Join(" and ", attributes)}.";
+
+        return notice;
     }
 
     /// <summary>
@@ -293,7 +318,11 @@ internal sealed class Emitter
 
         var body = file.Body.ToString();
         _w = new CodeWriter(body.Length + 4096);
-        EmitHeader(_headerValues ??= HeaderValues(), contextFile: file.Type is null);
+        var values = _headerValues ??= HeaderValues();
+        if (file.Type is { IsUnsafe: true } unsafeType)
+            values = new Dictionary<string, string>(values, StringComparer.Ordinal) { ["FileNotice"] = TrimmingNotice(unsafeType) };
+
+        EmitHeader(values, contextFile: file.Type is null);
         _w.Line();
 
         if (_model.Namespace.Length > 0)
