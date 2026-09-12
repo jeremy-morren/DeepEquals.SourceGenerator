@@ -90,6 +90,22 @@ public sealed class HelpersTests
         DeepEqualsHelpers.FloatBits(float.NaN).Should().Be(DeepEqualsHelpers.FloatBits(float.NaN), "the same payload is the same bits");
     }
 
+#if NET8_0_OR_GREATER
+    [Fact]
+    public void NullableValueRef_reaches_the_payload_in_place()
+    {
+        decimal? value = 1.50m;
+        ref readonly var payload = ref DeepEqualsHelpers.NullableValueRef(in value);
+        payload.Should().Be(1.50m);
+        value = 2m;
+        payload.Should().Be(2m, "the reference is into the nullable itself, not a copy");
+        decimal.GetBits(payload).Should().Equal(decimal.GetBits(2m));
+
+        decimal? none = null;
+        DeepEqualsHelpers.NullableValueRef(none).Should().Be(0m, "an empty nullable yields its default payload, as GetValueOrDefault() does");
+    }
+#endif
+
 #if NET6_0_OR_GREATER
     [Fact]
     public void HalfBits_returns_the_storage_bytes()

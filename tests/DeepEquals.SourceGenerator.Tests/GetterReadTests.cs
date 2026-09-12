@@ -34,7 +34,7 @@ public sealed class GetterReadTests
     }
 
     [Fact]
-    public void Plain_and_record_auto_properties_are_read_through_their_getters()
+    public void Auto_properties_are_read_through_their_getters_and_decimals_in_place()
     {
         var run = Clean("""
                         public sealed class Plain { public int Id { get; set; } public string? Name { get; init; } }
@@ -48,13 +48,60 @@ public sealed class GetterReadTests
                         """);
 
         run.GeneratedSource.Should().Contain("x.Id == y.Id").And.Contain("x.Name == y.Name");
-        run.GeneratedSource.Should().Contain("x.X == y.X");
-        run.GeneratedSource.Should().Contain("DecimalEquals(x.Amount, y.Amount)");
-        run.GeneratedSource.Should().NotContain("UnsafeAccessorKind.Field", "nothing here needs an accessor");
+        run.GeneratedSource.Should().Contain("x.X == y.X").And.Contain("x.Currency == y.Currency");
+
+        // A decimal is compared through its address, so it is read in place: a getter's copy stalls the 64-bit reads.
+        run.GeneratedSource.Should().NotContain("DecimalEquals(x.Amount, y.Amount)")
+            .And.Contain("Name = \"<Amount>k__BackingField\"")
+            .And.Contain("DecimalEquals(Val_Amount(ref ");
+        var val = run.Comparer("Ctx", "Val");
+        run.Equals(val, run.New("Val", 1.5m, "EUR"), run.New("Val", 1.5m, "EUR")).Should().BeTrue();
+        run.Equals(val, run.New("Val", 1.5m, "EUR"), run.New("Val", 1.50m, "EUR")).Should().BeFalse("the scale is part of the value");
+        run.Hash(val, run.New("Val", 1.5m, "EUR")).Should().Be(run.Hash(val, run.New("Val", 1.5m, "EUR")));
 
         var pos = run.Comparer("Ctx", "Pos");
         run.Equals(pos, run.New("Pos", 1, "a"), run.New("Pos", 1, "a")).Should().BeTrue();
         run.Equals(pos, run.New("Pos", 1, "a"), run.New("Pos", 1, "b")).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A struct-typed auto-property is read in place: through its getter every member access would copy the whole
+    /// struct, and a nullable's payload would be copied once more by GetValueOrDefault().
+    /// </summary>
+    [Fact]
+    public void Struct_auto_properties_and_nullable_payloads_are_read_in_place()
+    {
+        var run = Clean("""
+                        public readonly record struct Point3(double X, double Y, double Z);
+                        public readonly record struct Money(decimal Amount, string Currency);
+                        public sealed record Person(string Name, Point3 Position, Money? Balance, int Age);
+
+                        [GenerateDeepEquals(typeof(Person))]
+                        [GenerateDeepEquals(typeof(Point3))]
+                        public partial class Ctx : DeepEqualsContextBase { }
+                        """);
+
+        var source = run.GeneratedSource;
+        source.Should().Contain("Name = \"<Position>k__BackingField\"").And.Contain("Name = \"<Balance>k__BackingField\"")
+            .And.NotContain("x.Position.X", "each access through the getter copies the struct")
+            .And.NotContain("x.Balance.HasValue");
+        source.Should().Contain("DeepEqualsHelpers.NullableValueRef(Person_Balance(")
+            .And.NotContain("Balance.GetValueOrDefault()", "the payload is compared where it lives");
+        source.Should().Contain("x.Name == y.Name").And.Contain("x.Age == y.Age", "primitives and references keep their getters");
+
+        // A struct comparer inlines into a direct caller, where its operands would otherwise be copied; a class comparer need not.
+        System.Text.RegularExpressions.Regex.IsMatch(source, @"AggressiveInlining\)\]\s*public bool Equals\(global::Tests\.Point3 x").Should().BeTrue();
+        System.Text.RegularExpressions.Regex.IsMatch(source, @"AggressiveInlining\)\]\s*public bool Equals\(global::Tests\.Person\? x").Should().BeFalse();
+
+        var person = run.Comparer("Ctx", "Person");
+        object Make(double x, decimal? amount) => run.New("Person", "p", run.New("Point3", x, 2.0, 3.0),
+            amount is { } a ? run.New("Money", a, "EUR") : null, 40);
+        run.Equals(person, Make(1.0, 1.5m), Make(1.0, 1.5m)).Should().BeTrue();
+        run.Hash(person, Make(1.0, 1.5m)).Should().Be(run.Hash(person, Make(1.0, 1.5m)));
+        run.Equals(person, Make(1.0, 1.5m), Make(1.0, 1.50m)).Should().BeFalse("the scale of the payload is compared");
+        run.Equals(person, Make(1.0, 1.5m), Make(1.0, null)).Should().BeFalse();
+        run.Equals(person, Make(1.0, null), Make(1.0, null)).Should().BeTrue();
+        run.Equals(person, Make(0.0, null), Make(-0.0, null)).Should().BeFalse("the sign of zero is a bit");
     }
 
     [Fact]

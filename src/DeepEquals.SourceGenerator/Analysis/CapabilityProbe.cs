@@ -30,7 +30,6 @@ internal static class CapabilityProbe
         // so framework overloads are probed on the asset, never inferred from the BCL.
         var hasHash128 = hashCode is not null &&
                          hashCode.GetMembers("Hash").OfType<IMethodSymbol>().Any(m => m.Parameters is [{ Type.Name: "Int128" }]);
-        var nullable = Find(compilation, "System.Nullable");
         var @decimal = Find(compilation, "System.Decimal");
 
         return new TargetCapabilities(
@@ -47,7 +46,8 @@ internal static class CapabilityProbe
             HasGenericUnsafeAccessor: hasGenericUnsafeAccessor,
             HasFrameworkSpanHelpers: HasMethod(collections, "TryGetSpan"),
             HasFrameworkHash128: hasHash128,
-            HasNullableGetValueRefOrDefaultRef: HasMethod(nullable, "GetValueRefOrDefaultRef"),
+            // The framework's wrapper, on the assets whose runtime has Nullable.GetValueRefOrDefaultRef (net8.0 and net10.0).
+            HasFrameworkNullableValueRef: HasMethod(Find(compilation, KnownTypes.Helpers), "NullableValueRef"),
             HasDecimalGetBitsSpan: @decimal is not null && @decimal.GetMembers("GetBits").OfType<IMethodSymbol>().Any(m => m.Parameters.Length == 2),
             HasRequiresUnreferencedCode: Find(compilation, KnownTypes.RequiresUnreferencedCode) is not null,
             HasRequiresDynamicCode: Find(compilation, KnownTypes.RequiresDynamicCode) is not null,

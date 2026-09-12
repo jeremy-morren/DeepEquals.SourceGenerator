@@ -942,21 +942,20 @@ internal sealed class ClosureBuilder
                 // Compiler storage can never be read directly: C# cannot name <Name>k__BackingField even where the symbol is accessible.
                 var compilerStorage = field.IsImplicitlyDeclared || field.Name.StartsWith("<", StringComparison.Ordinal);
                 var genericDeclaring = IsGenericContext(declaring);
-                                MemberAccess access;
+                // .NET 9 matches a generic accessor by position and constraints; a constraint the context cannot name falls back.
+                var accessorAvailable = _capabilities.HasUnsafeAccessor &&
+                    (!genericDeclaring || (_capabilities.HasGenericUnsafeAccessor && ConstraintsNameable(declaring)));
+
+                MemberAccess access;
                 if (!compilerStorage && _compilation.IsSymbolAccessibleWithin(field, _context))
                     access = MemberAccess.Direct;
-                else if (compilerStorage && ReadableThroughGetter(field, type.Symbol))
+                else if (compilerStorage && ReadableThroughGetter(field, type.Symbol) && !(accessorAvailable && ComparedInPlace(field.Type)))
                     access = MemberAccess.Getter;
-                else if (!_capabilities.HasUnsafeAccessor)
-                    access = MemberAccess.Delegate;
-                else if (!genericDeclaring) 
+                else if (accessorAvailable)
                     access = MemberAccess.UnsafeAccessor;
                 else
-                    // .NET 9 matches a generic accessor by position and constraints; a constraint the context cannot name falls back.
-                    access = _capabilities.HasGenericUnsafeAccessor && ConstraintsNameable(declaring) 
-                        ? MemberAccess.UnsafeAccessor 
-                        : MemberAccess.Delegate;
-                    
+                    access = MemberAccess.Delegate;
+
 
                 type.Members.Add(new ClosureMember(field, name, memberType, access, CostOf(memberType), order++));
             }
@@ -975,6 +974,21 @@ internal sealed class ClosureBuilder
     /// field: the getter is the compiler's own, the context can call it, a call on a receiver of the declaring type cannot
     /// dispatch to an override, and the name resolves to this property from the owning type.
     /// </summary>
+    /// <summary>
+    /// A member of a value type wider than a register, read in place through <c>[UnsafeAccessor]</c> rather than through
+    /// its getter. A getter returns a copy: once per access for a struct whose members are compared one by one, and
+    /// for a decimal a copy the JIT spills field by field or with one wide store, on which the 64-bit reads of
+    /// <c>DeepEqualsHelpers.DecimalEquals</c> stall. Measured against a record's own <c>Equals</c>, which reads its
+    /// backing fields directly: 1.8 times its time through getters, less in place. Primitives keep their getters: a
+    /// double read in place compiles to the same load, and would cost a small struct its inlining at the use site.
+    /// </summary>
+    private static bool ComparedInPlace(ITypeSymbol type) =>
+        type.IsValueType && type.TypeKind != Microsoft.CodeAnalysis.TypeKind.Enum && type.SpecialType is not
+            (SpecialType.System_Boolean or SpecialType.System_Char or SpecialType.System_SByte or SpecialType.System_Byte or
+             SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or
+             SpecialType.System_Int64 or SpecialType.System_UInt64 or SpecialType.System_Single or SpecialType.System_Double or
+             SpecialType.System_IntPtr or SpecialType.System_UIntPtr);
+
     private bool ReadableThroughGetter(IFieldSymbol field, ITypeSymbol owner)
     {
         if (field.AssociatedSymbol is not IPropertySymbol { GetMethod: { } getter } property ||

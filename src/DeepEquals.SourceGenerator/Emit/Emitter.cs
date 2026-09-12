@@ -127,7 +127,7 @@ internal sealed class Emitter
             ("[UnsafeAccessor] on generic types", c.HasGenericUnsafeAccessor),
             ("framework TryGetSpan/HashSpan", c.HasFrameworkSpanHelpers),
             ("framework Hash(Int128)", c.HasFrameworkHash128),
-            ("Nullable.GetValueRefOrDefaultRef", c.HasNullableGetValueRefOrDefaultRef),
+            ("framework NullableValueRef", c.HasFrameworkNullableValueRef),
             ("decimal.GetBits(Span<int>)", c.HasDecimalGetBitsSpan),
             ("framework bit blocks", c.BitBlocks),
             ("[RequiresUnreferencedCode]", c.HasRequiresUnreferencedCode),
@@ -685,6 +685,17 @@ internal sealed class Emitter
         }
     }
 
+    /// <summary>
+    /// The payload of a nullable whose <c>HasValue</c> has already been checked. A struct or decimal payload is reached by
+    /// reference through the framework's <c>NullableValueRef</c> where the asset has it, so a nullable read in place is
+    /// also compared in place; everything else is the copy <c>GetValueOrDefault()</c> returns. The helper's parameter is
+    /// <c>in</c>, so the call needs no keyword and a getter's value binds through a temporary.
+    /// </summary>
+    private string NullablePayload(TypeModel payload, string nullable) =>
+        _model.Capabilities.HasFrameworkNullableValueRef && (payload.Kind == TypeKind.Struct || payload.LeafRule == LeafRule.Decimal)
+            ? $"{KnownTypes.GlobalHelpers}.NullableValueRef({nullable})"
+            : $"{nullable}.GetValueOrDefault()";
+
     private static string WritableReceiver(string receiver, bool inReceiver) =>
         inReceiver ? $"{KnownTypes.GlobalHelpers}.AsWritableRef(in {receiver})" : receiver;
 
@@ -700,7 +711,7 @@ internal sealed class Emitter
             
             case TypeKind.Nullable:
                 var payload = Type(type.PayloadTypeId);
-                return $"({x}.HasValue == {y}.HasValue && (!{x}.HasValue || {Eq(payload, $"{x}.GetValueOrDefault()", $"{y}.GetValueOrDefault()")}))";
+                return $"({x}.HasValue == {y}.HasValue && (!{x}.HasValue || {Eq(payload, NullablePayload(payload, x), NullablePayload(payload, y))}))";
             
             case TypeKind.Struct:
                 if (type.InlineAsSmallStruct)
@@ -917,7 +928,7 @@ internal sealed class Emitter
                 return LeafHash(type, value);
 
             case TypeKind.Nullable:
-                var payload = HashOrOmit(Type(type.PayloadTypeId), $"{value}.GetValueOrDefault()", level, sameScc);
+                var payload = HashOrOmit(Type(type.PayloadTypeId), NullablePayload(Type(type.PayloadTypeId), value), level, sameScc);
                 return payload is { } p ? $"({value}.HasValue ? {p} : 0)" : null;
 
             case TypeKind.Struct:
@@ -1206,6 +1217,9 @@ internal sealed class Emitter
 
     // ----- wrappers -----------------------------------------------------------------------------------------------------
 
+    private const string AggressiveInlining =
+        "[global::System.Runtime.CompilerServices.MethodImpl(global::System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]";
+
     private void EmitWrapper(TypeModel type)
     {
         var name = $"{type.ShortName}EqualityComparer";
@@ -1218,8 +1232,16 @@ internal sealed class Emitter
             _w.Line($"private {name}() {{ }}");
             _w.Line();
             
+            // A struct is passed by value: unless the call inlines, the caller copies both operands to the stack and the
+            // body reads them back, where a record's own Equals inlines and reads the fields in place. A stateful body
+            // holds a try/finally the JIT does not inline, so only a stateless one asks.
+            var inline = type.IsValueType && !type.NeedsState;
+
             // The comparer for object declares an instance Equals(object, object),
             // which hides the static one every class inherits from object; `new` states that this is meant.
+            if (inline)
+                _w.Line(AggressiveInlining);
+
             using (Method(type, $"public {(type.IsObject ? "new " : string.Empty)}bool Equals({Param(type)} x, {Param(type)} y)"))
                         {
                 // Only a closure with a cycle can recurse without bound, and only its Equals: the hash stops one payload
@@ -1248,6 +1270,9 @@ internal sealed class Emitter
             }
             
             _w.Line();
+            if (inline)
+                _w.Line(AggressiveInlining);
+
             using (Method(type, $"public int GetHashCode({Param(type)} o)"))
             {
                 // Under Tree a hash walks the whole value, bounded by the same depth as equality.

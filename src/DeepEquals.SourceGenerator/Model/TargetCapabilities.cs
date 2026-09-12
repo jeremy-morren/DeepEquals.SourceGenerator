@@ -18,7 +18,7 @@ internal sealed record TargetCapabilities(
     bool HasGenericUnsafeAccessor,
     bool HasFrameworkSpanHelpers,
     bool HasFrameworkHash128,
-    bool HasNullableGetValueRefOrDefaultRef,
+    bool HasFrameworkNullableValueRef,
     bool HasDecimalGetBitsSpan,
     bool HasRequiresUnreferencedCode,
     bool HasRequiresDynamicCode,
