@@ -179,13 +179,6 @@ public sealed class StrategyAndDiagnosticTests
                         public partial class Ctx : DeepEqualsContextBase { }
                         """);
 
-        var source = run.GeneratedSource;
-        source.Should().Contain("uint  (leaf, built-in)");
-        source.Should().Contain("string  (leaf, built-in)");
-        source.Should().Contain("decimal?  (nullable wrapper)");
-        source.Should().Contain("Tests.JsonLike  (leaf, custom comparer)");
-        source.Should().NotContain("decimal?  (leaf, custom comparer)");
-
         var comparer = run.Comparer("Ctx", "Holder");
         var a = run.New("Holder"); var b = run.New("Holder");
         Set(a, "Position", 1u); Set(b, "Position", 1u);
@@ -229,12 +222,6 @@ public sealed class StrategyAndDiagnosticTests
 
         run.GeneratorDiagnosticIds.Should().NotContain("DEQ030", "int and long are unrelated types, not an overlap");
         run.GeneratorDiagnosticIds.Should().NotContain("DEQ031");
-        var source = run.GeneratedSource;
-        source.Should().Contain("short  (leaf, built-in)");
-        source.Should().Contain("double  (leaf, built-in)");
-        source.Should().Contain("long  (leaf, custom comparer)");
-        source.Should().Contain("int  (leaf, custom comparer)");
-
         var comparer = run.Comparer("Ctx", "Holder");
         var a = run.New("Holder"); var b = run.New("Holder");
         Set(a, "L", 21L); Set(b, "L", 29L);
@@ -268,8 +255,8 @@ public sealed class StrategyAndDiagnosticTests
                         """);
 
         var source = run.GeneratedSource;
-        source.Should().Contain("Tests.Money  (struct, compared by members)");
-        source.Should().Contain("Tests.Wrapper  (leaf, [SimpleType])");
+        source.Should().Contain("private static bool Equals_Money(", "Money is a struct compared by members");
+        source.Should().NotContain("Equals_Wrapper(", "Wrapper is a [SimpleType] leaf with no core of its own");
 
         var comparer = run.Comparer("Ctx", "Holder");
         var a = run.New("Holder"); var b = run.New("Holder");

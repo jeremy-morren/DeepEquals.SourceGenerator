@@ -13,7 +13,7 @@ Context
 
     Deep, by-value IEqualityComparer<T> implementations for the registered
     roots below and every type they reach. Comparison walks instance storage
-        (fields and property backing fields), never a getter you wrote; strings
+    (fields and property backing fields), never a getter you wrote; strings
     compare ordinally, floating point bitwise, sets and dictionaries as
     unordered multisets under this context's own equality; reference cycles
     terminate and equal graphs always hash alike.
@@ -25,9 +25,6 @@ Context
 
 Registered roots
 {{Roots}}
-
-{{ClosureHeading}}
-{{Closure}}
 
 Custom comparers
 {{CustomComparers}}
