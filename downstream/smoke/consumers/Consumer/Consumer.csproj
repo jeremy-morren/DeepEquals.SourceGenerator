@@ -11,9 +11,13 @@
         <RootNamespace>DeepEquals.Smoke</RootNamespace>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-        <!-- The emitted code must be clean at the language version each tier can actually compile. -->
+        <!--
+            The emitted code must be clean at the oldest language version a tier can be compiled with: netstandard2.0
+            stays at C# 7.3 and netstandard2.1 at C# 8. The runnable tiers, .NET Framework included, take the latest
+            language, so the record models are exercised on every runtime.
+        -->
         <LangVersion>latest</LangVersion>
-        <LangVersion Condition="'$(TargetFramework)' == 'net472' or '$(TargetFramework)' == 'netstandard2.0'">7.3</LangVersion>
+        <LangVersion Condition="'$(TargetFramework)' == 'netstandard2.0'">7.3</LangVersion>
         <LangVersion Condition="'$(TargetFramework)' == 'netstandard2.1'">8</LangVersion>
     </PropertyGroup>
 
@@ -27,8 +31,6 @@
         <PackageReference Include="System.Memory" Version="4.6.3" />
     </ItemGroup>
 
-    <ItemGroup>
-        <Compile Include="../Shared/Checks.cs" Link="Checks.cs" />
-    </ItemGroup>
+    <Import Project="../../../models/Models.props" />
 
 </Project>

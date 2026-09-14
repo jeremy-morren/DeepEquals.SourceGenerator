@@ -1,0 +1,23 @@
+<!--
+    The shared models, linked into every project that exercises the generator against the packed package:
+    the smoke consumers and the benchmarks. Records are compiled only where the language version allows them;
+    the tiers pinned to C# 7.3 and 8 exercise everything else.
+-->
+<Project>
+
+    <PropertyGroup Condition="'$(LangVersion)' != '7.3' and '$(LangVersion)' != '8'">
+        <DefineConstants>$(DefineConstants);RECORDS</DefineConstants>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <Compile Include="$(MSBuildThisFileDirectory)Models.cs" Link="Models/Models.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)Records.cs" Link="Models/Records.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)Contexts.cs" Link="Models/Contexts.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)Data.cs" Link="Models/Data.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)BuiltIn.cs" Link="Models/BuiltIn.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)Scenarios.cs" Link="Models/Scenarios.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)Checks.cs" Link="Models/Checks.cs" />
+        <Compile Include="$(MSBuildThisFileDirectory)MicroBench.cs" Link="Models/MicroBench.cs" />
+    </ItemGroup>
+
+</Project>

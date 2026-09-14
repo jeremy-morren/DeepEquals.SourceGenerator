@@ -19,8 +19,7 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <Compile Include="../Shared/TrimmingModels.cs" 
-                 Link="TrimmingModels.cs" />
+        <Compile Include="../../../models/TrimmingModels.cs" Link="TrimmingModels.cs" />
     </ItemGroup>
 
 </Project>

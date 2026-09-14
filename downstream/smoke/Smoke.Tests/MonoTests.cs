@@ -80,7 +80,8 @@ public sealed class MonoTests
     private static string? FindMono()
     {
         var path = Environment.GetEnvironmentVariable("PATH");
-        if (path is null) return null;
+        if (path is null)
+            return null;
 
         foreach (var directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
         {
