@@ -18,6 +18,7 @@ namespace DeepEquals.Smoke.Tests;
 /// runs on Mono here, where struct layout, string hashing and <c>Unsafe</c> are a separate implementation from CoreCLR's.
 /// </summary>
 [Trait("Category", "Mono")]
+[Collection(ConsumerProject.Collection)]
 public sealed class MonoTests
 {
     private readonly ITestOutputHelper _output;

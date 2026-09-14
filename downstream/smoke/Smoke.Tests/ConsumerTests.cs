@@ -17,6 +17,7 @@ namespace DeepEquals.Smoke.Tests;
 /// the repository's own build exercises: it references the projects, not the package.
 /// </summary>
 [Trait("Category", "Consumer")]
+[Collection(ConsumerProject.Collection)]
 public sealed class ConsumerTests
 {
     private readonly ITestOutputHelper _output;
@@ -120,9 +121,18 @@ public sealed class ConsumerTests
     }
 }
 
+/// <summary>
+/// Every test class that builds the consumer joins this collection, so none of them run in parallel. A build of any one
+/// target restores them all and rewrites obj/project.assets.json, which a concurrent build can then find missing.
+/// </summary>
+[CollectionDefinition(ConsumerProject.Collection)]
+public sealed class ConsumerProjectCollection;
+
 /// <summary>Building and locating the one consumer project that covers every claimed target.</summary>
 internal static class ConsumerProject
 {
+    public const string Collection = "Consumer project";
+
     public static string Directory => SmokePaths.Consumer("Consumer");
 
     public static CommandResult Build(ITestOutputHelper output, string framework) =>
