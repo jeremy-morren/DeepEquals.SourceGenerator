@@ -3,12 +3,19 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Text;
 using DeepEquals.SourceGenerator.Model;
 using Microsoft.CodeAnalysis;
 
+// ReSharper disable MemberHidesStaticFromOuterClass
+
 namespace DeepEquals.SourceGenerator.Analysis;
 
-/// <summary>The fixed built-in leaf list. Nothing else is promoted; anything not here, not an enum and not [SimpleType] is walked.</summary>
+/// <summary>
+/// The fixed built-in leaf list.
+/// Nothing else is promoted; anything not here, not an enum and not [SimpleType] is walked.
+/// </summary>
 internal static class BuiltInLeaves
 {
     internal sealed class Entry
@@ -33,20 +40,15 @@ internal static class BuiltInLeaves
         public AggregateComponent[] Components { get; }
     }
 
-    private static AggregateComponent[] Floats(params string[] names)
+    private static AggregateComponent[] Floats(params string[] names) => Components(names, isDouble: false);
+
+    private static AggregateComponent[] Doubles(params string[] names) => Components(names, isDouble: true);
+
+    private static AggregateComponent[] Components(string[] names, bool isDouble)
     {
         var result = new AggregateComponent[names.Length];
         for (var i = 0; i < names.Length; i++)
-            result[i] = new AggregateComponent(names[i], IsDouble: false);
-
-        return result;
-    }
-
-    private static AggregateComponent[] Doubles(params string[] names)
-    {
-        var result = new AggregateComponent[names.Length];
-        for (var i = 0; i < names.Length; i++)
-            result[i] = new AggregateComponent(names[i], IsDouble: true);
+            result[i] = new AggregateComponent(names[i], isDouble);
 
         return result;
     }
@@ -126,14 +128,32 @@ internal static class BuiltInLeaves
         return SByName.TryGetValue(FullMetadataName(named), out var entry) ? entry : null;
     }
 
-    public static string FullMetadataName(INamedTypeSymbol type)
+    /// <summary><c>System.IEquatable&lt;T&gt;</c>, without building a name: this is asked for every interface of every closure type.</summary>
+    public static bool IsSystemIEquatable(INamedTypeSymbol type) =>
+        type is { Arity: 1, Name: "IEquatable", ContainingType: null, ContainingNamespace: { Name: "System", ContainingNamespace.IsGlobalNamespace: true } };
+
+    /// <summary>Names built so far, on the symbols themselves: a metadata symbol outlives the compilation, so its name is built once per process.</summary>
+    private static readonly ConditionalWeakTable<INamedTypeSymbol, string> SFullNames = new();
+
+    /// <summary>The metadata name with its namespace and containing types, as <c>Type.GetType</c> spells it.</summary>
+    public static string FullMetadataName(INamedTypeSymbol type) => SFullNames.GetValue(type, static t => BuildFullMetadataName(t));
+
+    private static string BuildFullMetadataName(INamedTypeSymbol type)
     {
         if (type.ContainingType is not null)
-            return $"{FullMetadataName(type.ContainingType)}+{type.MetadataName}";
+            return FullMetadataName(type.ContainingType) + "+" + type.MetadataName;
 
-        var ns = type.ContainingNamespace;
-        return ns is null || ns.IsGlobalNamespace 
-            ? type.MetadataName 
-            : $"{ns.ToDisplayString()}.{type.MetadataName}";
+        var builder = new StringBuilder();
+        AppendNamespace(builder, type.ContainingNamespace);
+        return builder.Append(type.MetadataName).ToString();
+    }
+
+    private static void AppendNamespace(StringBuilder builder, INamespaceSymbol? ns)
+    {
+        if (ns is null || ns.IsGlobalNamespace)
+            return;
+
+        AppendNamespace(builder, ns.ContainingNamespace);
+        builder.Append(ns.Name).Append('.');
     }
 }

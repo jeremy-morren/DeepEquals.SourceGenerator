@@ -3,6 +3,9 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 using System;
+using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Linq;
 using System.Threading;
 using DeepEquals.SourceGenerator.Analysis;
 using DeepEquals.SourceGenerator.Emit;
@@ -37,8 +40,16 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
                 static (ctx, ct) => Transform(ctx, MarkerKind.Options, ct))
             .Where(static m => m is not null)!;
 
-        context.RegisterSourceOutput(registrations, static (spc, model) => Output(spc, model));
-        context.RegisterSourceOutput(optionsOnly, static (spc, model) => Output(spc, model));
+        // Roslyn requires hint names to be unique across the compilation, case-insensitively, and each context
+        // names its files after itself. Two contexts whose names differ only by case would collide, so the set of
+        // colliding stems is computed over every context and each output consults it. The set is small and rarely
+        // changes, so a context's output still reruns only when its own model changes.
+        var collisions = registrations.Collect()
+            .Combine(optionsOnly.Collect())
+            .Select(static (pair, _) => CollidingHintNamePrefixes(pair.Left, pair.Right));
+
+        context.RegisterSourceOutput(registrations.Combine(collisions), static (spc, pair) => Output(spc, pair.Left, pair.Right));
+        context.RegisterSourceOutput(optionsOnly.Combine(collisions), static (spc, pair) => Output(spc, pair.Left, pair.Right));
     }
 
     private static ContextModel? Transform(GeneratorAttributeSyntaxContext context, MarkerKind marker, CancellationToken ct)
@@ -56,21 +67,46 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
             var name = context.TargetSymbol.Name;
             var location = LocationInfo.From(context.TargetNode);
             return ContextModel.Failed(
-                ContextAnalyzer.HintNameFor(context.TargetSymbol),
+                ContextAnalyzer.HintNamePrefixFor(context.TargetSymbol),
                 name,
                 location,
                 EquatableArray.Create(
                     DiagnosticInfo.Create(
                         Diagnostics.GeneratorFailed,
-                        location, 
+                        location,
                         "analysing",
-                        name, 
+                        name,
                         ex.GetType().FullName,
                         ex.Message)));
         }
     }
 
-    private static void Output(SourceProductionContext context, ContextModel model)
+    /// <summary>The hint-name stems that another context's stem equals case-insensitively, sorted.</summary>
+    private static EquatableArray<string> CollidingHintNamePrefixes(ImmutableArray<ContextModel> registrations, ImmutableArray<ContextModel> optionsOnly)
+    {
+        var prefixes = registrations.Select(m => m.HintNamePrefix)
+            .Concat(optionsOnly.Select(m => m.HintNamePrefix))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var colliding = prefixes
+            .GroupBy(p => p, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .SelectMany(g => g)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToArray();
+        return new EquatableArray<string>(colliding);
+    }
+
+    /// <summary>
+    /// A stem that collides case-insensitively with another context's gets a digest of its exact spelling, so the two
+    /// stay distinct however Roslyn compares them.
+    /// </summary>
+    private static string UniqueHintNamePrefix(string prefix, EquatableArray<string> collisions) =>
+        collisions.Contains(prefix, StringComparer.OrdinalIgnoreCase) 
+            ? $"{prefix}_{Naming.Digest(prefix, 8)}" 
+            : prefix;
+
+    private static void Output(SourceProductionContext context, ContextModel model, EquatableArray<string> collisions)
     {
         foreach (var diagnostic in model.Diagnostics)
             context.ReportDiagnostic(diagnostic.ToDiagnostic(model.CanonicalLocation));
@@ -78,10 +114,14 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
         if (model.HasErrors)
             return;
 
-        string source;
+        var prefix = UniqueHintNamePrefix(model.HintNamePrefix, collisions);
+        if (prefix != model.HintNamePrefix)
+            model = model with { HintNamePrefix = prefix };
+
+        IReadOnlyList<GeneratedFile> files;
         try
         {
-            source = Emitter.Emit(model, context.CancellationToken);
+            files = Emitter.Emit(model, context.CancellationToken);
         }
         catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
         {
@@ -96,7 +136,8 @@ public sealed class DeepEqualsGenerator : IIncrementalGenerator
             return;
         }
 
-        context.AddSource(model.HintName, SourceText.From(source, System.Text.Encoding.UTF8));
+        foreach (var file in files)
+            context.AddSource(file.HintName, SourceText.From(file.Source, System.Text.Encoding.UTF8));
     }
 }
 

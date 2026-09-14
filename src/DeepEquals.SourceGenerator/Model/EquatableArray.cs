@@ -56,18 +56,13 @@ internal readonly struct EquatableArray<T> : IEquatable<EquatableArray<T>>, IRea
         unchecked
         {
             var comparer = EqualityComparer<T>.Default;
-            return _items.Aggregate(17, 
-                (current, item) => current * 31 + (item is null ? 0 : comparer.GetHashCode(item)));
+            return _items.Aggregate(17, (current, item) => current * 31 + comparer.GetHashCode(item));
         }
     }
 
     public IEnumerator<T> GetEnumerator() => ((IEnumerable<T>)(_items ?? [])).GetEnumerator();
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-
-    public static bool operator ==(EquatableArray<T> left, EquatableArray<T> right) => left.Equals(right);
-
-    public static bool operator !=(EquatableArray<T> left, EquatableArray<T> right) => !left.Equals(right);
 }
 
 internal static class EquatableArray

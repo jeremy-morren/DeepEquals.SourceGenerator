@@ -10,6 +10,7 @@ using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Xunit;
 using Xunit.Abstractions;
+using static DeepEquals.SourceGenerator.Tests.TestMembers;
 
 namespace DeepEquals.SourceGenerator.Tests;
 
@@ -52,19 +53,6 @@ public sealed class ShapeTests
         foreach (var id in expectedWarnings) run.GeneratorDiagnosticIds.Should().Contain(id);
 
         return run;
-    }
-
-    private static void Set(object target, string member, object? value)
-    {
-        var type = target.GetType();
-        var field = type.GetField(member, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        if (field is not null)
-        {
-            field.SetValue(target, value);
-            return;
-        }
-
-        type.GetProperty(member)!.SetValue(target, value);
     }
 
     [Fact]

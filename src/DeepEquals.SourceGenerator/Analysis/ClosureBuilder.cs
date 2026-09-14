@@ -37,8 +37,6 @@ internal sealed class ClosureType
     /// <summary>Reached from a root, member, element or strategy attribute; false for built-in leaves admitted to object dispatch only.</summary>
     public bool Reached { get; set; }
 
-    public bool IsRoot { get; set; }
-
     /// <summary>A canonical container interface created for dispatch cases; the only container kind admitted as an assignable case.</summary>
     public bool IsCanonicalCase { get; set; }
 
@@ -71,27 +69,31 @@ internal sealed class ClosureType
 
     public List<ClosureType> Items { get; } = [];
 
-    public bool IsReadOnlyMemory { get; set; }
-
     public INamedTypeSymbol? CollectionInterface { get; set; }
 
     public List<ClosureMember> Members { get; } = [];
 
-    public bool HasStorageIgnoredByShape { get; set; }
-
-    /// <summary>Dispatch cases in emission order: assignable first, exact last.</summary>
-    public List<(ClosureType Type, bool IsExact)> Cases { get; } = [];
+    /// <summary>
+    /// Dispatch cases in emission order: assignable first, exact last. An exact case carries the index of the first
+    /// assignable case its type converts to, or -1: that is the case the runtime type would have selected, so the emitter
+    /// can test the exact type first and still land where the assignable chain would have.
+    /// </summary>
+        public List<(ClosureType Type, bool IsExact, int ResolvedAssignable, bool Hoistable)> Cases { get; } = [];
 
     public bool IsDispatchCapable => Kind == TypeKind.Dispatch || (Kind == TypeKind.Class && !Symbol.IsSealed);
+
+    private string? _displayName;
+
+    /// <summary>The symbol's display string, built once: the case sorts compare it for every pair.</summary>
+    public string DisplayName => _displayName ??= Symbol.ToDisplayString();
 
     public bool IsDeep => Kind is TypeKind.Class or TypeKind.Struct;
 
     public bool IsValueShape => Kind is TypeKind.Struct or TypeKind.KeyValuePair or TypeKind.ValueTuple or TypeKind.Memory or TypeKind.ImmutableArray or TypeKind.ArraySegment;
 
-    public bool IsContainer => Kind is TypeKind.Array or TypeKind.List or TypeKind.ImmutableArray or TypeKind.ArraySegment or TypeKind.Memory
-        or TypeKind.ListInterface or TypeKind.EnumerableInterface or TypeKind.Set or TypeKind.Dictionary;
+    public bool IsContainer => Kind.IsContainer();
 
-    public bool IsProduct => Kind is TypeKind.KeyValuePair or TypeKind.ValueTuple or TypeKind.Tuple;
+    public bool IsProduct => Kind.IsProduct();
 }
 
 /// <summary>A selected instance field at the symbol level.</summary>
@@ -140,8 +142,7 @@ internal sealed class ClosureResult
 }
 
 /// <summary>
-/// Builds the closure of the registered roots:
-/// classification, member selection, the upward crawl and dispatch cases.
+/// Builds the closure of the registered roots: classification, member selection, the upward crawl and dispatch cases.
 /// </summary>
 internal sealed class ClosureBuilder
 {
@@ -160,14 +161,15 @@ internal sealed class ClosureBuilder
     private readonly Queue<(ClosureType Type, string Path)> _work = new();
     private readonly INamedTypeSymbol? _referenceAssemblyAttribute;
     private readonly INamedTypeSymbol? _ignoreAttribute;
+    private readonly AssignabilityCache _assignable;
+
+    // Answers asked once per member type or assembly and cached for the run: each is a symbol walk.
+    private readonly Dictionary<IAssemblySymbol, bool> _referenceAssemblies = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<ITypeSymbol, INamedTypeSymbol?> _constraintOnly = new(SymbolEqualityComparer.IncludeNullability);
+    private readonly Dictionary<ITypeSymbol, bool> _nameable = new(SymbolEqualityComparer.IncludeNullability);
     private readonly INamedTypeSymbol? _inlineArrayAttribute;
-    // private readonly INamedTypeSymbol? _compilerGeneratedAttribute;
-    // private readonly INamedTypeSymbol? _immutableArray;
     private readonly INamedTypeSymbol? _iReadOnlySet;
-    // private readonly INamedTypeSymbol? _memory;
-    // private readonly INamedTypeSymbol? _readOnlyMemory;
-    // private readonly INamedTypeSymbol? _arraySegment;
-    // private readonly INamedTypeSymbol? _tupleBase;
+    private readonly bool _contextObsolete;
     private bool _failed;
     private bool _regexWarned;
 
@@ -181,12 +183,15 @@ internal sealed class ClosureBuilder
         CancellationToken cancellationToken)
     {
         _compilation = compilation;
+        _assignable = new AssignabilityCache(compilation);
         _context = context;
         _options = options;
         _capabilities = capabilities;
         _registrations = registrations;
         _diagnostics = diagnostics;
         _cancellationToken = cancellationToken;
+        // Inside an obsolete context no use of an obsolete symbol is reported, error level included.
+        _contextObsolete = ObsoleteInfo.InObsoleteContext(context);
         _referenceAssemblyAttribute = CapabilityProbe.Find(compilation, KnownTypes.ReferenceAssemblyAttribute);
         _ignoreAttribute = CapabilityProbe.Find(compilation, KnownTypes.IgnoreAttribute);
         _inlineArrayAttribute = CapabilityProbe.Find(compilation, KnownTypes.InlineArrayAttribute);
@@ -203,7 +208,6 @@ internal sealed class ClosureBuilder
         {
             var root = Get(type, type.ToDisplayString());
             root.Reached = true;
-            root.IsRoot = true;
         }
 
         foreach (var (type, _) in _registrations.SimpleTypes)
@@ -319,6 +323,11 @@ internal sealed class ClosureBuilder
         _types.Add(symbol, created);
         _ordered.Add(created);
         _work.Enqueue((created, path));
+
+        // Generated code names every closure type; an error-level [Obsolete] there is CS0619, which no pragma suppresses.
+        if (!_contextObsolete && ObsoleteInfo.IsError(ObsoleteInfo.Find(symbol)))
+            Fail(Diagnostics.ObsoleteErrorType, null, symbol.ToDisplayString(), path);
+
         return created;
     }
 
@@ -367,13 +376,7 @@ internal sealed class ClosureBuilder
 
         var builtIn = BuiltInLeaves.Find(symbol);
         if (builtIn is not null)
-            return WithEquatable(new ClosureType(symbol, TypeKind.Leaf)
-            {
-                LeafRule = builtIn.Rule,
-                DefaultCompatible = builtIn.DefaultCompatible,
-                Width = builtIn.Width,
-                AggregateComponents = builtIn.Components,
-            });
+            return BuiltInLeaf(symbol, builtIn);
 
         if (symbol.TypeKind == RoslynTypeKind.Enum) 
             return new ClosureType(symbol, TypeKind.Leaf)
@@ -403,9 +406,9 @@ internal sealed class ClosureBuilder
             
             case INamedTypeSymbol named:
             {
-                var shape = ClassifyShape(named, out var collectionInterface, out var isReadOnlyMemory);
+                var shape = ClassifyShape(named, out var collectionInterface);
                 if (shape is not null) 
-                    return new ClosureType(symbol, shape.Value) { CollectionInterface = collectionInterface, IsReadOnlyMemory = isReadOnlyMemory };
+                    return new ClosureType(symbol, shape.Value) { CollectionInterface = collectionInterface };
 
                 if (named.TypeKind == RoslynTypeKind.Interface || named.IsAbstract) 
                     return new ClosureType(symbol, TypeKind.Dispatch);
@@ -448,17 +451,15 @@ internal sealed class ClosureBuilder
                 continue;
             }
 
-            if (!_compilation.IsAssignable(symbol, registration.Target) ||
+            if (!_assignable.IsAssignable(symbol, registration.Target) ||
                 symbol.IsValueType && registration.Target.SpecialType == SpecialType.System_Object)
                 continue;
             
-            if (covering is null) 
+            // Two registrations related by assignability were already reduced to the broader one (DEQ030), so two that
+            // both cover the type are unrelated, and the choice between them is ambiguous (DEQ031).
+            if (covering is null)
                 covering = registration;
-            else if (_compilation.IsAssignable(covering.Target, registration.Target))
-            {} // covering is narrower; keep it
-            else if (_compilation.IsAssignable(registration.Target, covering.Target)) 
-                covering = registration;
-            else 
+            else
                 second = registration;
         }
 
@@ -485,7 +486,7 @@ internal sealed class ClosureBuilder
                 return true;
                  
             if ((!symbol.IsValueType || simple.TypeKind == RoslynTypeKind.Interface || simple.TypeKind == RoslynTypeKind.Class) && 
-                _compilation.IsAssignable(symbol, simple) &&
+                _assignable.IsAssignable(symbol, simple) &&
                 simple.SpecialType != SpecialType.System_Object)
                 return true;
         }
@@ -498,13 +499,22 @@ internal sealed class ClosureBuilder
     /// Only the exact self instantiation counts: a <c>Derived</c> inheriting <c>IEquatable{Base}</c> keeps <c>EqualityComparer{Derived}.Default</c>,
     /// whose interface dispatch it cannot be proved to match statically.
     /// </summary>
+    /// <summary>A built-in leaf with the rule, width and components of its table entry.</summary>
+    private static ClosureType BuiltInLeaf(ITypeSymbol symbol, BuiltInLeaves.Entry entry) =>
+        WithEquatable(new ClosureType(symbol, TypeKind.Leaf)
+        {
+            LeafRule = entry.Rule,
+            DefaultCompatible = entry.DefaultCompatible,
+            Width = entry.Width,
+            AggregateComponents = entry.Components,
+        });
+
     private static ClosureType WithEquatable(ClosureType type)
     {
         var symbol = type.Symbol;
         foreach (var iface in symbol.AllInterfaces)
         {
-            if (!iface.IsGenericType || 
-                BuiltInLeaves.FullMetadataName(iface.OriginalDefinition) != "System.IEquatable`1" || 
+            if (!BuiltInLeaves.IsSystemIEquatable(iface) ||
                 !SymbolEqualityComparer.Default.Equals(iface.TypeArguments[0], symbol))
                 continue;
 
@@ -537,10 +547,9 @@ internal sealed class ClosureBuilder
         };
 
     /// <summary>Shape precedence: dictionary, set, product and memory, ordered collection. Only generic interfaces count.</summary>
-    private TypeKind? ClassifyShape(INamedTypeSymbol named, out INamedTypeSymbol? collectionInterface, out bool isReadOnlyMemory)
+    private TypeKind? ClassifyShape(INamedTypeSymbol named, out INamedTypeSymbol? collectionInterface)
     {
         collectionInterface = null;
-        isReadOnlyMemory = false;
 
         var dictionary = FindFamily(named, "System.Collections.Generic.IReadOnlyDictionary`2", "System.Collections.Generic.IDictionary`2");
         if (dictionary is not null)
@@ -584,10 +593,7 @@ internal sealed class ClosureBuilder
                 return TypeKind.Tuple;
             
             case "System.Memory`1":
-                return TypeKind.Memory;
-            
             case "System.ReadOnlyMemory`1":
-                isReadOnlyMemory = true;
                 return TypeKind.Memory;
             
             case "System.Collections.Generic.List`1":
@@ -629,7 +635,7 @@ internal sealed class ClosureBuilder
                 return;
 
             var name = BuiltInLeaves.FullMetadataName(candidate.OriginalDefinition);
-            if (metadataNames.Any(wanted => string.Equals(name, wanted, StringComparison.Ordinal)))
+            if (metadataNames.Any(wanted => name == wanted))
                 found.Add(candidate);
         }
 
@@ -645,7 +651,7 @@ internal sealed class ClosureBuilder
         foreach (var wanted in metadataNames)
         {
             var match = found.FirstOrDefault(f => 
-                string.Equals(BuiltInLeaves.FullMetadataName(f.OriginalDefinition), wanted, StringComparison.Ordinal));
+                BuiltInLeaves.FullMetadataName(f.OriginalDefinition) == wanted);
             if (match is null) continue;
             chosen = match;
             break;
@@ -770,17 +776,16 @@ internal sealed class ClosureBuilder
         }
 
         if (storage.Count <= 0) return;
-        
-        type.HasStorageIgnoredByShape = true;
+
         _diagnostics.Add(DiagnosticInfo.Create(
             Diagnostics.CollectionShapeIgnoresStorage, LocationInfo.From(named), named.ToDisplayString(), type.CollectionInterface!.ToDisplayString(), string.Join(", ", storage)));
     }
 
-    private static bool IsFrameworkType(INamedTypeSymbol type)
-    {
-        var ns = type.ContainingNamespace?.ToDisplayString() ?? string.Empty;
-        return ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal);
-    }
+    private static bool IsFrameworkType(INamedTypeSymbol type) =>
+        IsSystemNamespace(type.ContainingNamespace?.ToDisplayString() ?? string.Empty);
+
+    /// <summary><c>System</c> or a namespace under it.</summary>
+    private static bool IsSystemNamespace(string ns) => ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal);
 
     private static IEnumerable<ITypeSymbol> FlattenTuple(INamedTypeSymbol tuple, bool valueTuple)
     {
@@ -802,9 +807,7 @@ internal sealed class ClosureBuilder
     private void SelectMembers(ClosureType type, string path)
     {
         var named = (INamedTypeSymbol)type.Symbol;
-        var fromReferenceAssembly = 
-            _referenceAssemblyAttribute is not null && 
-            named.ContainingAssembly.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, _referenceAssemblyAttribute));
+        var fromReferenceAssembly = IsReferenceAssembly(named.ContainingAssembly);
 
         // Bases first, then the type; skip object.
         var chain = new List<INamedTypeSymbol>();
@@ -823,7 +826,10 @@ internal sealed class ClosureBuilder
                 return;
             }
 
-            var placeholdersOnly = named.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsStatic).All(f => f.Name.StartsWith("_dummy", StringComparison.Ordinal));
+            var placeholdersOnly = named.GetMembers()
+                .OfType<IFieldSymbol>()
+                .Where(f => !f.IsStatic)
+                .All(f => f.Name.StartsWith("_dummy", StringComparison.Ordinal));
             if (placeholdersOnly)
             {
                 Fail(Diagnostics.ReferenceAssemblyClass, LocationInfo.From(named), named.ToDisplayString());
@@ -832,8 +838,10 @@ internal sealed class ClosureBuilder
 
             _diagnostics.Add(DiagnosticInfo.Create(Diagnostics.ReferenceAssemblyStruct, LocationInfo.From(named), named.ToDisplayString()));
         }
-        else if (IsFrameworkType(named)) 
+        else if (IsFrameworkType(named))
+        {
             _diagnostics.Add(DiagnosticInfo.Create(Diagnostics.FrameworkTypeWalked, null, named.ToDisplayString()));
+        }
 
         var order = 0;
         foreach (var declaring in chain)
@@ -896,7 +904,7 @@ internal sealed class ClosureBuilder
                     continue;
                 }
 
-                if (TypeArgumentRules.FindConstraintOnlyInterface(field.Type) is { } constraintOnly)
+                if (FindConstraintOnlyInterface(field.Type) is { } constraintOnly)
                 {
                     var reason = SymbolEqualityComparer.Default.Equals(constraintOnly, field.Type)
                         ? "has a static abstract member without an implementation and cannot be an IEqualityComparer<T> type argument"
@@ -938,19 +946,29 @@ internal sealed class ClosureBuilder
                 // Compiler storage can never be read directly: C# cannot name <Name>k__BackingField even where the symbol is accessible.
                 var compilerStorage = field.IsImplicitlyDeclared || field.Name.StartsWith("<", StringComparison.Ordinal);
                 var genericDeclaring = IsGenericContext(declaring);
+                // .NET 9 matches a generic accessor by position and constraints; a constraint the context cannot name falls back.
+                var accessorAvailable = _capabilities.HasUnsafeAccessor &&
+                    (!genericDeclaring || (_capabilities.HasGenericUnsafeAccessor && ConstraintsNameable(declaring)));
+
+                // Naming an [Obsolete] member raises a warning, or at error level CS0619, which nothing suppresses. Its
+                // storage is read through an accessor instead wherever one exists, so no warning arises; at error level
+                // a delegate is the fallback, at warning level the member itself under the header's suppression.
+                var obsolete = !_contextObsolete
+                    ? ObsoleteInfo.ForMember(field).Select(o => o.Attribute).ToList()
+                    : [];
+                var obsoleteError = obsolete.Any(ObsoleteInfo.IsError);
+                var avoidMember = obsoleteError || (obsolete.Count > 0 && accessorAvailable);
+
                 MemberAccess access;
-                if (!compilerStorage && _compilation.IsSymbolAccessibleWithin(field, _context)) 
+                if (!compilerStorage && !avoidMember && SymbolAccess.IsAccessibleWithin(_compilation, field, _context))
                     access = MemberAccess.Direct;
-                else if (!_capabilities.HasUnsafeAccessor)
-                    access = MemberAccess.Delegate;
-                else if (!genericDeclaring) 
+                else if (compilerStorage && !avoidMember && ReadableThroughGetter(field, type.Symbol) && !(accessorAvailable && ComparedInPlace(field.Type)))
+                    access = MemberAccess.Getter;
+                else if (accessorAvailable)
                     access = MemberAccess.UnsafeAccessor;
                 else
-                    // .NET 9 matches a generic accessor by position and constraints; a constraint the context cannot name falls back.
-                    access = _capabilities.HasGenericUnsafeAccessor && ConstraintsNameable(declaring) 
-                        ? MemberAccess.UnsafeAccessor 
-                        : MemberAccess.Delegate;
-                    
+                    access = MemberAccess.Delegate;
+
 
                 type.Members.Add(new ClosureMember(field, name, memberType, access, CostOf(memberType), order++));
             }
@@ -962,6 +980,92 @@ internal sealed class ClosureBuilder
             var cost = a.Cost.CompareTo(b.Cost);
             return cost != 0 ? cost : a.Order.CompareTo(b.Order);
         });
+    }
+
+    /// <summary>
+    /// True when reading the auto-property that owns <paramref name="type"/> through its getter is exactly a read of the
+    /// field: the getter is the compiler's own, the context can call it, a call on a receiver of the declaring type cannot
+    /// dispatch to an override, and the name resolves to this property from the owning type.
+    /// </summary>
+    /// <summary>
+    /// A member of a value type wider than a register, read in place through <c>[UnsafeAccessor]</c> rather than through
+    /// its getter. A getter returns a copy: once per access for a struct whose members are compared one by one, and
+    /// for a decimal a copy the JIT spills field by field or with one wide store, on which the 64-bit reads of
+    /// <c>DeepEqualsHelpers.DecimalEquals</c> stall. Measured against a record's own <c>Equals</c>, which reads its
+    /// backing fields directly: 1.8 times its time through getters, less in place. Primitives keep their getters: a
+    /// double read in place compiles to the same load, and would cost a small struct its inlining at the use site.
+    /// </summary>
+    private static bool ComparedInPlace(ITypeSymbol type) =>
+        type.IsValueType && 
+        type.TypeKind != RoslynTypeKind.Enum && 
+        type.SpecialType is not
+            (SpecialType.System_Boolean or SpecialType.System_Char or SpecialType.System_SByte or SpecialType.System_Byte or
+             SpecialType.System_Int16 or SpecialType.System_UInt16 or SpecialType.System_Int32 or SpecialType.System_UInt32 or
+             SpecialType.System_Int64 or SpecialType.System_UInt64 or SpecialType.System_Single or SpecialType.System_Double or
+             SpecialType.System_IntPtr or SpecialType.System_UIntPtr);
+
+    private bool ReadableThroughGetter(IFieldSymbol field, ITypeSymbol owner)
+    {
+        if (field.AssociatedSymbol is not IPropertySymbol { GetMethod: { } getter } property ||
+            property.IsIndexer || 
+            property.ReturnsByRef ||
+            property.ReturnsByRefReadonly || 
+            property.IsStatic ||
+            property.ExplicitInterfaceImplementations.Length > 0)
+            return false;
+
+        var declaring = field.ContainingType;
+        var mayDispatch = property.IsVirtual || property.IsAbstract || property is { IsOverride: true, IsSealed: false };
+        if (mayDispatch && !declaring.IsSealed && !declaring.IsValueType)
+            return false; // a derived override would answer instead of this storage
+
+        // A getter that is not readonly would be called on a defensive copy of an `in` struct receiver.
+        if (declaring.IsValueType && !getter.IsReadOnly)
+            return false;
+
+        if (!SymbolAccess.IsAccessibleWithin(_compilation, property, _context) ||
+            !SymbolAccess.IsAccessibleWithin(_compilation, getter, _context))
+            return false;
+
+        if (!IsCompilerWrittenGetter(getter))
+            return false;
+
+        // A member of the same name between the owner and the declaring type would capture `owner.Name`.
+        for (var current = owner as INamedTypeSymbol; 
+             current is not null && !SymbolEqualityComparer.Default.Equals(current, declaring); 
+             current = current.BaseType)
+        {
+            if (current.GetMembers(property.Name).Length > 0)
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// The compiler's own getter: <c>get;</c> in source, a positional record property's synthesized accessor, or a
+    /// metadata accessor marked [CompilerGenerated]. A getter with a body, the <c>field</c> keyword's included, is the user's.
+    /// </summary>
+    private static bool IsCompilerWrittenGetter(IMethodSymbol getter)
+    {
+        var references = getter.DeclaringSyntaxReferences;
+        if (references.Length == 0)
+            return getter.IsImplicitlyDeclared || 
+                   getter.GetAttributes().Any(a => SymbolAccess.IsAttribute(a, KnownTypes.CompilerGeneratedAttribute));
+
+        foreach (var reference in references)
+        {
+            switch (reference.GetSyntax())
+            {
+                case Microsoft.CodeAnalysis.CSharp.Syntax.AccessorDeclarationSyntax { Body: null, ExpressionBody: null }:
+                case Microsoft.CodeAnalysis.CSharp.Syntax.ParameterSyntax:
+                    continue;
+                default:
+                    return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>True when the type or any containing type declares type parameters.</summary>
@@ -977,9 +1081,8 @@ internal sealed class ClosureBuilder
     private bool ConstraintsNameable(INamedTypeSymbol declaring)
     {
         for (var current = declaring.OriginalDefinition; current is not null; current = current.ContainingType)
-            if (current.TypeParameters.Any(
-                    parameter => parameter.ConstraintTypes.Any(
-                        constraint => constraint is not ITypeParameterSymbol && !IsNameable(constraint))))
+            if (current.TypeParameters.Any(parameter => 
+                    parameter.ConstraintTypes.Any(constraint => constraint is not ITypeParameterSymbol && !IsNameable(constraint))))
                 return false;
 
         return true;
@@ -1010,6 +1113,7 @@ internal sealed class ClosureBuilder
         var close = name.IndexOf('>');
         if (close <= 1) 
             return name;
+        
         var suffix = name[(close + 1)..];
         return suffix is "k__BackingField" or "P" 
             ? name[1..close] 
@@ -1018,7 +1122,7 @@ internal sealed class ClosureBuilder
 
     private bool HasIgnore(ISymbol symbol) => 
         _ignoreAttribute is not null && 
-        symbol.GetAttributes().Any(a => 
+        SymbolAccess.Attributes(symbol).Any(a =>
             SymbolEqualityComparer.Default.Equals(a.AttributeClass, _ignoreAttribute) && a.ConstructorArguments.Length == 0);
 
     private static bool HasBackingField(INamedTypeSymbol declaring, IPropertySymbol property) => 
@@ -1075,14 +1179,42 @@ internal sealed class ClosureBuilder
 
     private bool IsInlineArray(ITypeSymbol type) =>
         _inlineArrayAttribute is not null && 
-        type.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, _inlineArrayAttribute));
+        SymbolAccess.Attributes(type).Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, _inlineArrayAttribute));
 
-    private bool IsNameable(ITypeSymbol type) => type switch
+    private bool IsNameable(ITypeSymbol type)
     {
-        IArrayTypeSymbol array => IsNameable(array.ElementType),
-        INamedTypeSymbol named => _compilation.IsSymbolAccessibleWithin(named, _context) && named.TypeArguments.All(IsNameable),
-        _ => _compilation.IsSymbolAccessibleWithin(type, _context),
-    };
+        if (_nameable.TryGetValue(type, out var nameable))
+            return nameable;
+
+        nameable = type switch
+        {
+            IArrayTypeSymbol array => IsNameable(array.ElementType),
+            INamedTypeSymbol named => SymbolAccess.IsAccessibleWithin(_compilation, named, _context) && named.TypeArguments.All(IsNameable),
+            _ => SymbolAccess.IsAccessibleWithin(_compilation, type, _context),
+        };
+        _nameable[type] = nameable;
+        return nameable;
+    }
+
+    private INamedTypeSymbol? FindConstraintOnlyInterface(ITypeSymbol type)
+    {
+        if (!_constraintOnly.TryGetValue(type, out var found))
+            _constraintOnly[type] = found = TypeArgumentRules.FindConstraintOnlyInterface(type);
+
+        return found;
+    }
+
+    /// <summary>Whether the assembly is a reference assembly, whose private storage is placeholders.</summary>
+    private bool IsReferenceAssembly(IAssemblySymbol assembly)
+    {
+        if (_referenceAssemblyAttribute is null)
+            return false;
+
+        if (!_referenceAssemblies.TryGetValue(assembly, out var isReference))
+            _referenceAssemblies[assembly] = isReference = assembly.GetAttributes().Any(a => SymbolEqualityComparer.Default.Equals(a.AttributeClass, _referenceAssemblyAttribute));
+
+        return isReference;
+    }
 
     private static bool ShouldWarnLazy(ITypeSymbol type)
     {
@@ -1116,6 +1248,7 @@ internal sealed class ClosureBuilder
             Child(current, $"{path} : {current.Name}");
         }
 
+        // 'iface' name copyrighted by following line: Apple Inc. take note
         foreach (var iface in named.AllInterfaces)
         {
             if (IsExcludedInterface(iface))
@@ -1136,7 +1269,7 @@ internal sealed class ClosureBuilder
             return true;
 
         var ns = iface.ContainingNamespace?.ToDisplayString() ?? string.Empty;
-        if (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)) 
+        if (IsSystemNamespace(ns)) 
             return true;
 
         return _options.ExcludeInterfacesByPrefix
@@ -1153,14 +1286,7 @@ internal sealed class ClosureBuilder
             if (symbol is null || _types.ContainsKey(symbol) || FindCustom(symbol) is not null)
                 continue;
 
-            var admitted = WithEquatable(new ClosureType(symbol, TypeKind.Leaf)
-            {
-                LeafRule = entry.Rule,
-                DefaultCompatible = entry.DefaultCompatible,
-                Width = entry.Width,
-                AggregateComponents = entry.Components,
-                Reached = false,
-            });
+            var admitted = BuiltInLeaf(symbol, entry);
             _types.Add(symbol, admitted);
             _ordered.Add(admitted);
         }
@@ -1168,16 +1294,17 @@ internal sealed class ClosureBuilder
 
     private void ComputeDispatchCases()
     {
+        var canonical = _ordered.Where(t => t.IsCanonicalCase).ToList();
         foreach (var dispatch in _ordered.Where(t => t.IsDispatchCapable).ToList())
         {
-            var assignable = new List<ClosureType>(_ordered.Count);
-            var exact = new List<ClosureType>(_ordered.Count);
+            var assignable = new List<ClosureType>();
+            var exact = new List<ClosureType>();
             foreach (var candidate in _ordered)
             {
                 if (ReferenceEquals(candidate, dispatch) || candidate.Kind == TypeKind.Nullable) 
                     continue;
 
-                if (!_compilation.IsAssignable(candidate.Symbol, dispatch.Symbol)) 
+                if (!_assignable.IsAssignable(candidate.Symbol, dispatch.Symbol)) 
                     continue;
 
                 var isDispatchOnly = candidate.Kind == TypeKind.Dispatch;
@@ -1198,13 +1325,13 @@ internal sealed class ClosureBuilder
                 {
                     if (candidate.IsCanonicalCase)
                         assignable.Add(candidate);   // int[] and List<int> both select IEnumerable<int>; HashSet<T> and SortedSet<T> both select ISet<T>
-                    else if (candidate.IsValueShape && !ImplementsAnyCanonical(candidate))
+                    else if (candidate.IsValueShape && !ImplementsAnyCanonical(candidate, canonical))
                         exact.Add(candidate);        // a value container behind a dispatch type without a canonical case of its own
                 }
-                else if (candidate.Kind == TypeKind.Tuple) 
+                else
+                {
                     exact.Add(candidate);
-                else 
-                    exact.Add(candidate);
+                }
             }
 
             if (dispatch.Kind == TypeKind.Class || dispatch.Symbol.SpecialType == SpecialType.System_Object)
@@ -1214,11 +1341,29 @@ internal sealed class ClosureBuilder
             // then rule category, then name. Exact cases: by name; every runtime type matches at most one.
             assignable.Sort(CompareAssignable);
             assignable = TopologicalByAssignability(assignable);
-            exact.Sort((a, b) => string.CompareOrdinal(a.Symbol.ToDisplayString(), b.Symbol.ToDisplayString()));
+            exact.Sort((a, b) => string.CompareOrdinal(a.DisplayName, b.DisplayName));
 
-            foreach (var a in assignable) dispatch.Cases.Add((a, false));
+            // A sealed assignable case whose type converts to no earlier case is the first match for exactly its own
+            // runtime type, so its test can run before everything else and still select what the chain would.
+            for (var i = 0; i < assignable.Count; i++)
+            {
+                var a = assignable[i];
+                var hoistable = a.Symbol.IsSealed || a.Symbol.IsValueType;
+                for (var j = 0; hoistable && j < i; j++)
+                    hoistable = !_assignable.IsAssignable(a.Symbol, assignable[j].Symbol);
 
-            foreach (var e in exact) dispatch.Cases.Add((e, true));
+                dispatch.Cases.Add((a, false, -1, hoistable));
+            }
+
+            foreach (var e in exact)
+            {
+                var resolved = -1;
+                for (var i = 0; resolved < 0 && i < assignable.Count; i++)
+                    if (_assignable.IsAssignable(e.Symbol, assignable[i].Symbol))
+                        resolved = i;
+
+                dispatch.Cases.Add((e, true, resolved, false));
+            }
 
             if (dispatch is { Kind: TypeKind.Dispatch, Cases.Count: 0 } &&
                 dispatch.Symbol.SpecialType != SpecialType.System_Object)
@@ -1227,8 +1372,8 @@ internal sealed class ClosureBuilder
         }
     }
 
-    private bool ImplementsAnyCanonical(ClosureType candidate) => 
-        _ordered.Any(t => t.IsCanonicalCase && _compilation.IsAssignable(candidate.Symbol, t.Symbol));
+    private bool ImplementsAnyCanonical(ClosureType candidate, List<ClosureType> canonical) => 
+        canonical.Any(c => _assignable.IsAssignable(candidate.Symbol, c.Symbol));
 
     private static int CompareAssignable(ClosureType a, ClosureType b)
     {
@@ -1238,8 +1383,8 @@ internal sealed class ClosureBuilder
 
         var category = CategoryRank(a).CompareTo(CategoryRank(b));
         return category != 0
-            ? category :
-            string.CompareOrdinal(a.Symbol.ToDisplayString(), b.Symbol.ToDisplayString());
+            ? category 
+            : string.CompareOrdinal(a.DisplayName, b.DisplayName);
     }
 
     private static int ShapeRank(ClosureType type) => type.Kind switch
@@ -1268,7 +1413,7 @@ internal sealed class ClosureBuilder
             var insertAt = result.Count;
             for (var i = 0; i < result.Count; i++)
             {
-                if (!_compilation.IsAssignable(candidate.Symbol, result[i].Symbol) ||
+                if (!_assignable.IsAssignable(candidate.Symbol, result[i].Symbol) ||
                     SymbolEqualityComparer.Default.Equals(candidate.Symbol, result[i].Symbol)) 
                     continue;
                 insertAt = i;

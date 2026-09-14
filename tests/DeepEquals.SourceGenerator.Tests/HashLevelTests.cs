@@ -8,6 +8,7 @@ using System.Linq;
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Xunit;
+using static DeepEquals.SourceGenerator.Tests.TestMembers;
 
 namespace DeepEquals.SourceGenerator.Tests;
 
@@ -21,20 +22,15 @@ public sealed class HashLevelTests
         namespace Tests;
         """;
 
-    private static GeneratorRun Clean(string source)
-    {
-        var run = GeneratorHost.Run(Prelude + source);
-        run.GeneratorDiagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty();
-        run.CompileErrors.Should().BeEmpty(run.GeneratedSource);
-        return run;
-    }
+    private static GeneratorRun Clean(string source) => GeneratorHost.RunClean(Prelude + source);
 
-    private static void Set(object target, string member, object? value) => target.GetType().GetField(member)!.SetValue(target, value);
-
-    [Fact]
-    public void Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently()
+    [Theory]
+    [InlineData("")]
+    [InlineData("[DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path)]")]
+    [InlineData("[DeepEqualsSourceGenerationOptions(CycleHandling = DeepEqualsCycleHandling.Path, MatchingHashDepth = 1)]")]
+    public void Nested_lists_tuples_and_dictionaries_in_a_cycle_terminate_and_hash_consistently(string options)
     {
-        var run = Clean("""
+        var run = Clean($$"""
                         public sealed class N
                         {
                             public int V;
@@ -45,6 +41,7 @@ public sealed class HashLevelTests
                             public object? Any;
                         }
 
+                        {{options}}
                         [GenerateDeepEquals(typeof(N))]
                         public partial class Ctx : DeepEqualsContextBase { }
                         """);

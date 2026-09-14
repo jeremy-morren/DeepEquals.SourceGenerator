@@ -6,6 +6,7 @@
 //     the code is regenerated. To change what is generated, edit the attributes
 //     on the context class instead.
 // </auto-generated>
+{{FileNotice}}
 
 /*
 Context
@@ -13,7 +14,7 @@ Context
 
     Deep, by-value IEqualityComparer<T> implementations for the registered
     roots below and every type they reach. Comparison walks instance storage
-    (fields and property backing fields), never property getters; strings
+    (fields and property backing fields), never a getter you wrote; strings
     compare ordinally, floating point bitwise, sets and dictionaries as
     unordered multisets under this context's own equality; reference cycles
     terminate and equal graphs always hash alike.
@@ -23,17 +24,8 @@ Context
         {{ContextShortName}}.<TypeName>.GetHashCode(value)
         {{ContextShortName}}.GetEqualityComparer<T>()
 
-Registered roots
-{{Roots}}
-
-Closure ({{TypeCount}} types, {{WrapperCount}} public comparers)
-{{Closure}}
-
 Custom comparers
 {{CustomComparers}}
-
-Types compared through delegate field accessors (RequiresUnreferencedCode, RequiresDynamicCode)
-{{UnsafeTypes}}
 
 Options in effect
     MaxSwitchCases               = {{MaxSwitchCases}}
@@ -42,6 +34,9 @@ Options in effect
     MaxBinaryExpressionArity     = {{MaxBinaryExpressionArity}}
     StructPassByValueMaxByteSize = {{StructPassByValueMaxByteSize}}
     ExcludeInterfacesByPrefix    = {{ExcludeInterfacesByPrefix}}
+    CycleHandling                = {{CycleHandling}}
+    MaxDepth                     = {{MaxDepth}}
+    MatchingHashDepth            = {{MatchingHashDepth}}
 
 Target
     Language version:    C# {{LanguageVersion}}
@@ -57,6 +52,4 @@ Diagnostics reported while generating this context
 */
 
 {{NullableDirective}}
-// Suppress obsolete, experimental and preview members the consuming project already chose to use,
-// and compiler hints that carry no meaning for emitted source.
-#pragma warning disable {{SuppressedDiagnostics}}
+{{UserSuppressions}}

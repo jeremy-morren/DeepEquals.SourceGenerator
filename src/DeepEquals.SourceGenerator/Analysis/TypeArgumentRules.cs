@@ -23,12 +23,10 @@ internal static class TypeArgumentRules
         if (type is not INamedTypeSymbol { TypeKind: TypeKind.Interface } iface) 
             return false;
 
-        foreach (var source in iface.AllInterfaces.Concat([iface]))
-            foreach (var member in source.GetMembers())
-                if (member.IsStatic && member.IsAbstract && iface.FindImplementationForInterfaceMember(member) is null) 
-                    return true;
-
-        return false;
+        return iface.AllInterfaces
+            .Append(iface)
+            .SelectMany(source => source.GetMembers())
+            .Any(m => m.IsStatic && m.IsAbstract && iface.FindImplementationForInterfaceMember(m) is null);
     }
 
     /// <summary>The first constraint-only interface in the type or its element and argument types, else null.</summary>

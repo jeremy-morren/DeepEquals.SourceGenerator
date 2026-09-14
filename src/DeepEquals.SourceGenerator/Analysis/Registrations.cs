@@ -84,7 +84,10 @@ internal sealed class Registrations
         {
             foreach (var attribute in type.GetAttributes())
             {
-                var name = attribute.AttributeClass?.ToDisplayString();
+                var name = SymbolAccess.AttributeName(attribute, KnownTypes.GenerateDeepEqualsAttribute, KnownTypes.SimpleTypeAttribute, KnownTypes.CustomEqualityComparerAttribute, KnownTypes.IgnoreAttribute);
+                if (name is null)
+                    continue;
+
                 var location = LocationInfo.From(attribute) ?? contextLocation;
                 switch (name)
                 {

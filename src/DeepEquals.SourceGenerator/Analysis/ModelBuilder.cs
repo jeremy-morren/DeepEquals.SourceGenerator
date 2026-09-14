@@ -34,11 +34,15 @@ internal sealed class ModelBuilder
     private readonly CancellationToken _cancellationToken;
     private readonly List<ClosureType> _types;
     private readonly Dictionary<ClosureType, string> _shortNames = new();
+    private readonly Dictionary<ITypeSymbol, ClosureType> _typeBySymbol = new(SymbolEqualityComparer.Default);
+    private readonly Dictionary<INamedTypeSymbol, (string Short, string Global)> _declaringNames = new(SymbolEqualityComparer.IncludeNullability);
     private readonly Dictionary<(ClosureType, NodeKind), int> _nodes = new();
     private readonly List<(ClosureType Type, NodeKind Kind)> _nodeList = [];
     private readonly List<List<int>> _edges = [];
     private int[] _scc = [];
+    private List<int>[] _componentNodes = [];
     private bool[] _cyclic = [];
+    private bool[] _guarded = [];
     private bool[] _reachesCyclic = [];
     private bool[] _reachesUnsafe = [];
     private readonly Dictionary<ClosureType, int> _guardKinds = new();
@@ -54,16 +58,21 @@ internal sealed class ModelBuilder
         _diagnostics = diagnostics;
         _cancellationToken = cancellationToken;
         _types = closure.Types.OrderBy(t => t.Symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), StringComparer.Ordinal).ToList();
-        for (var i = 0; i < _types.Count; i++) 
+        for (var i = 0; i < _types.Count; i++)
+        {
             _types[i].Id = i;
+            if (!_typeBySymbol.ContainsKey(_types[i].Symbol))
+                _typeBySymbol.Add(_types[i].Symbol, _types[i]);
+        }
     }
 
-    public ContextModel Build(string hintName, LocationInfo? location)
+    public ContextModel Build(string hintNamePrefix, LocationInfo? location)
     {
         AssignNames();
         _cancellationToken.ThrowIfCancellationRequested();
         BuildGraph();
         Tarjan();
+        SelectGuards();
         Propagate();
         AssignKinds();
         _cancellationToken.ThrowIfCancellationRequested();
@@ -82,8 +91,10 @@ internal sealed class ModelBuilder
 
         foreach (var group in _types
             .Where(t => t.IsDeep)
-            .SelectMany(t => t.Members.Where(m => m.Access == MemberAccess.Delegate).Select(m => (Owner: t, Member: m)))
-            .GroupBy(x => x.Member.Declaring, (IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default)
+            .SelectMany(t => t.Members
+                .Where(m => m.Access == MemberAccess.Delegate)
+                .Select(m => (Owner: t, Member: m)))
+            .GroupBy(INamedTypeSymbol (x) => x.Member.Declaring, SymbolEqualityComparer.Default)
             .OrderBy(g => g.Key.ToDisplayString(), StringComparer.Ordinal))
         {
             var members = group
@@ -93,23 +104,28 @@ internal sealed class ModelBuilder
                 .OrderBy(m => m.FieldMetadataName, StringComparer.Ordinal)
                 .ToList();
             holders.Add(new AccessorHolderModel(
-                $"{DeclaringShort(group.Key)}_Accessors",
+                GeneratedNames.Accessors(DeclaringShort(group.Key)),
                 group.Key.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                 group.Key.IsValueType,
                 EquatableArray.Create(members)));
         }
 
-        var ns = _context.ContainingNamespace is null || _context.ContainingNamespace.IsGlobalNamespace 
-            ? string.Empty 
-            : _context.ContainingNamespace.ToDisplayString();
+        // The namespace and the containing declarations as the emitter writes them: every segment escaped, and each
+        // container with the keyword its own declaration uses, so a context inside a struct or record reopens it as one.
+        var segments = new List<string>();
+        for (var space = _context.ContainingNamespace; space is not null && !space.IsGlobalNamespace; space = space.ContainingNamespace)
+            segments.Add(Naming.Identifier(space.Name));
+
+        segments.Reverse();
+        var ns = string.Join(".", segments);
         var containing = new List<string>();
-        for (var outer = _context.ContainingType; outer is not null; outer = outer.ContainingType) 
-            containing.Add(outer.Name);
+        for (var outer = _context.ContainingType; outer is not null; outer = outer.ContainingType)
+            containing.Add($"{DeclarationKeyword(outer)} {Naming.TypeIdentifier(outer.Name)}");
 
         containing.Reverse();
 
         return new ContextModel(
-            hintName,
+            hintNamePrefix,
             ns,
             EquatableArray.Create(containing),
             _context.Name,
@@ -123,6 +139,23 @@ internal sealed class ModelBuilder
             EquatableArray.Create(CollectSuppressedIds()),
             anyUnsafe,
             EquatableArray.Create(_diagnostics));
+    }
+
+    /// <summary>
+    /// The keyword a partial declaration of <paramref name="type"/> must repeat:
+    /// class, struct, interface, record or record struct.
+    /// </summary>
+    private static string DeclarationKeyword(INamedTypeSymbol type)
+    {
+        if (type.IsRecord)
+            return type.IsValueType ? "record struct" : "record";
+
+        return type.TypeKind switch
+        {
+            RoslynTypeKind.Struct => "struct",
+            RoslynTypeKind.Interface => "interface",
+            _ => "class",
+        };
     }
 
     // ----- naming -----------------------------------------------------------------------------------------------------
@@ -141,10 +174,9 @@ internal sealed class ModelBuilder
             var colliding = new HashSet<ClosureType>();
             foreach (var type in _types)
             {
-                foreach (var identifier in Naming.IdentifiersFor(_shortNames[type]))
+                foreach (var identifier in GeneratedNames.All(_shortNames[type]))
                 {
-                    if (identifier == _context.Name
-                        || Array.IndexOf(Naming.ReservedNames, identifier) >= 0 
+                    if (identifier == _context.Name || Array.IndexOf(Naming.ReservedNames, identifier) >= 0 
                         && identifier == _shortNames[type] 
                         && !Array.Exists(Naming.HazardousNames, h => h == identifier))
                     {
@@ -160,8 +192,10 @@ internal sealed class ModelBuilder
                             colliding.Add(owner);
                         }
                     }
-                    else 
+                    else
+                    {
                         claims[identifier] = type;
+                    }
                 }
             }
 
@@ -192,35 +226,35 @@ internal sealed class ModelBuilder
         }
     }
 
-    private static string NameAt(ClosureType type, int rung)
-    {
-        switch (rung)
+    private static string NameAt(ClosureType type, int rung) =>
+        rung switch
         {
-            case 0:
-            case 1:
-            case 2:
-            case 3:
-                return Naming.Candidate(type.Symbol, rung);
-            case 4:
-                return $"{Naming.Candidate(type.Symbol, 3)}__{Naming.Digest(type.Symbol, 16)}";
-            default:
-                return $"{Naming.Candidate(type.Symbol, 3)}__{Naming.Digest(type.Symbol, 64)}";
-        }
-    }
+            0 or 1 or 2 or 3 => Naming.Candidate(type.Symbol, rung),
+            4 => $"{Naming.Candidate(type.Symbol, 3)}__{Naming.Digest(type.Symbol, 16)}",
+            _ => $"{Naming.Candidate(type.Symbol, 3)}__{Naming.Digest(type.Symbol, 64)}"
+        };
 
     private string Short(ClosureType type) => _shortNames[type];
 
-    private string DeclaringShort(INamedTypeSymbol declaring)
+    private string DeclaringShort(INamedTypeSymbol declaring) => DeclaringNames(declaring).Short;
+
+    /// <summary>The short and global names of a member's declaring type, built once per type: a member walk asks for both.</summary>
+    private (string Short, string Global) DeclaringNames(INamedTypeSymbol declaring)
     {
-        var type = _types.FirstOrDefault(t => SymbolEqualityComparer.Default.Equals(t.Symbol, declaring));
-        return type is not null ? Short(type) : Naming.Candidate(declaring, 2);
+        if (_declaringNames.TryGetValue(declaring, out var names))
+            return names;
+
+        var shortName = _typeBySymbol.TryGetValue(declaring, out var type) ? Short(type) : Naming.Candidate(declaring, 2);
+        names = (shortName, declaring.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat));
+        _declaringNames.Add(declaring, names);
+        return names;
     }
 
     private void CheckUserMembers()
     {
         var generated = new HashSet<string>(StringComparer.Ordinal);
         foreach (var type in _types) 
-            foreach (var identifier in Naming.IdentifiersFor(Short(type))) 
+            foreach (var identifier in GeneratedNames.All(Short(type))) 
                 generated.Add(identifier);
 
         foreach (var reserved in Naming.ReservedNames) 
@@ -241,13 +275,13 @@ internal sealed class ModelBuilder
 
     private int Node(ClosureType type, NodeKind kind)
     {
-        if (!_nodes.TryGetValue((type, kind), out var id))
-        {
-            id = _nodeList.Count;
-            _nodes[(type, kind)] = id;
-            _nodeList.Add((type, kind));
-            _edges.Add([]);
-        }
+        if (_nodes.TryGetValue((type, kind), out var id)) 
+            return id;
+        
+        id = _nodeList.Count;
+        _nodes[(type, kind)] = id;
+        _nodeList.Add((type, kind));
+        _edges.Add([]);
 
         return id;
     }
@@ -277,7 +311,7 @@ internal sealed class ModelBuilder
         }
 
         foreach (var dispatch in _types.Where(t => t.IsDispatchCapable))
-            foreach (var (c, exact) in dispatch.Cases)
+            foreach (var (c, exact, _, _) in dispatch.Cases)
                 if (exact && c.IsValueShape) 
                     Node(c, NodeKind.Boxed);
 
@@ -297,7 +331,10 @@ internal sealed class ModelBuilder
                     Link(node, Entry(type.Key!));
                     Link(node, Entry(type.Value!));
                 }
-                else Link(node, Entry(type.Element!));
+                else
+                {
+                    Link(node, Entry(type.Element!));
+                }
             }
             else if (type.IsProduct)
             {
@@ -307,13 +344,17 @@ internal sealed class ModelBuilder
                     Link(node, Entry(type.Key!));
                     Link(node, Entry(type.Value!));
                 }
-                else foreach (var item in type.Items) Link(node, Entry(item));
+                else
+                {
+                    foreach (var item in type.Items)
+                        Link(node, Entry(item));
+                }
             }
 
             if (type.IsDispatchCapable)
             {
                 var dispatch = Node(type, NodeKind.Dispatch);
-                foreach (var (c, exact) in type.Cases) 
+                foreach (var (c, exact, _, _) in type.Cases)
                     Link(dispatch, CaseTarget(c, exact));
             }
 
@@ -359,8 +400,10 @@ internal sealed class ModelBuilder
         // Iterative Tarjan so a large closure cannot overflow the generator's stack.
         for (var root = 0; root < n; root++)
         {
-            if (index[root] != -1) 
+            if (index[root] != -1)
                 continue;
+
+            _cancellationToken.ThrowIfCancellationRequested();
 
             Stack<(int Node, int Next)> frames = new();
             frames.Push((root, 0));
@@ -382,7 +425,10 @@ internal sealed class ModelBuilder
                         onStack[w] = true;
                         frames.Push((w, 0));
                     }
-                    else if (onStack[w]) low[v] = Math.Min(low[v], index[w]);
+                    else if (onStack[w])
+                    {
+                        low[v] = Math.Min(low[v], index[w]);
+                    }
 
                     continue;
                 }
@@ -395,22 +441,16 @@ internal sealed class ModelBuilder
 
                 if (low[v] == index[v])
                 {
-                    var size = 0;
                     int w;
                     do
                     {
                         w = stack.Pop();
                         onStack[w] = false;
                         _scc[w] = components;
-                        size++;
                     }
                     while (w != v);
 
                     components++;
-                    if (size > 1)
-                    {
-                        // mark below once all members are known
-                    }
                 }
             }
         }
@@ -419,8 +459,15 @@ internal sealed class ModelBuilder
         foreach (var c in _scc) 
             sizes[c]++;
 
-        for (var v = 0; v < n; v++) 
+        for (var v = 0; v < n; v++)
             _cyclic[v] = sizes[_scc[v]] > 1 || _edges[v].Contains(v);
+
+        _componentNodes = new List<int>[components];
+        for (var c = 0; c < components; c++)
+            _componentNodes[c] = new List<int>(sizes[c]);
+
+        for (var v = 0; v < n; v++)
+            _componentNodes[_scc[v]].Add(v);
     }
 
     private void Propagate()
@@ -440,6 +487,7 @@ internal sealed class ModelBuilder
         var changed = true;
         while (changed)
         {
+            _cancellationToken.ThrowIfCancellationRequested();
             changed = false;
             for (var v = 0; v < n; v++)
             {
@@ -461,9 +509,12 @@ internal sealed class ModelBuilder
         }
     }
 
-    private bool IsGuardedNode(int node)
+    private bool IsGuardedNode(int node) => _guarded[node];
+
+    /// <summary>A core that works on references and so can carry a guard: every cycle passes through at least one.</summary>
+    private bool IsGuardCandidate(int node)
     {
-        if (!_cyclic[node]) 
+        if (!_cyclic[node])
             return false;
 
         var (type, kind) = _nodeList[node];
@@ -476,17 +527,158 @@ internal sealed class ModelBuilder
         };
     }
 
+    /// <summary>
+    /// One guard per cycle is enough to terminate, and assuming equality at any cut of the cycles gives the same
+    /// coinductive answer. Every candidate starts guarded; containers, then tuples, then boxed adapters give theirs up
+    /// whenever the component's unguarded nodes stay acyclic without it. Class bodies go last, so a cyclic class keeps
+    /// the one guard its cycle needs and a tree of them enters one pair per node instead of one per node and per list.
+    /// </summary>
+    private void SelectGuards()
+    {
+        var n = _nodeList.Count;
+        _guarded = new bool[n];
+        for (var v = 0; v < n; v++)
+            _guarded[v] = IsGuardCandidate(v);
+
+        int RankNode(int v)
+        {
+            var (type, kind) = _nodeList[v];
+            if (kind == NodeKind.Boxed) 
+                return 2;
+            if (type.IsContainer) 
+                return 0;
+            return type.Kind == TypeKind.Tuple ? 1 : 3;
+        }
+
+        var order = Enumerable.Range(0, n)
+            .Where(v => _guarded[v])
+            .OrderBy(RankNode)
+            .ThenBy(v => v)
+            .ToList();
+
+        // With every candidate guarded, a component's unguarded nodes hold no cycle, so the first cycle a removal can
+        // create passes through the node it unguards, and a walk from that node alone decides. A component where that
+        // does not hold, which no known shape produces, keeps the full check.
+        var acyclicWithGuards = new Dictionary<int, bool>();
+        foreach (var v in order)
+        {
+            _cancellationToken.ThrowIfCancellationRequested();
+            var component = _scc[v];
+            if (!acyclicWithGuards.TryGetValue(component, out var acyclic))
+                acyclicWithGuards[component] = acyclic = !HasUnguardedCycle(component);
+
+            _guarded[v] = false;
+            if (acyclic ? ReachesItselfUnguarded(v) : HasUnguardedCycle(component))
+                _guarded[v] = true;
+        }
+    }
+
+    /// <summary>True when an unguarded path within <paramref name="node"/>'s component leads from it back to it.</summary>
+    private bool ReachesItselfUnguarded(int node)
+    {
+        var walk = BeginWalk();
+        var component = _scc[node];
+        _frames.Clear();
+        _frames.Push((node, 0));
+        _walkStamp[node] = walk;
+        while (_frames.Count > 0)
+        {
+            var (v, next) = _frames.Pop();
+            if (next >= _edges[v].Count)
+                continue;
+
+            _frames.Push((v, next + 1));
+            var w = _edges[v][next];
+            if (w == node)
+                return true;
+
+            if (_scc[w] != component || _guarded[w] || _walkStamp[w] == walk)
+                continue;
+
+            _walkStamp[w] = walk;
+            _frames.Push((w, 0));
+        }
+
+        return false;
+    }
+
+    /// <summary>The stamp of a new cycle walk, with the stamp and colour arrays sized to the current nodes.</summary>
+    private int BeginWalk()
+    {
+        var n = _nodeList.Count;
+        if (_walkStamp.Length != n)
+        {
+            _walkStamp = new int[n];
+            _colour = new byte[n];
+        }
+
+        return ++_walk;
+    }
+
+    /// <summary>
+    /// The colouring of the last cycle walk: a node coloured by walk <see cref="_walk"/> is on the walk (1) or done (2);
+    /// one coloured by an earlier walk is unvisited. Stamping saves clearing the arrays for each of the many walks.
+    /// </summary>
+    private int[] _walkStamp = [];
+    private byte[] _colour = [];
+    private int _walk;
+    private readonly Stack<(int Node, int Next)> _frames = new();
+
+    /// <summary>True when the unguarded nodes of <paramref name="component"/> contain a cycle, found by an iterative colouring walk.</summary>
+    private bool HasUnguardedCycle(int component)
+    {
+        var walk = BeginWalk();
+        foreach (var root in _componentNodes[component])
+        {
+            if (_guarded[root] || _walkStamp[root] == walk)
+                continue;
+
+            _cancellationToken.ThrowIfCancellationRequested();
+
+            _frames.Clear();
+            _frames.Push((root, 0));
+            _walkStamp[root] = walk;
+            _colour[root] = 1;
+            while (_frames.Count > 0)
+            {
+                var (v, next) = _frames.Pop();
+                if (next < _edges[v].Count)
+                {
+                    _frames.Push((v, next + 1));
+                    var w = _edges[v][next];
+                    if (_scc[w] != component || _guarded[w])
+                        continue;
+
+                    if (_walkStamp[w] == walk)
+                    {
+                        if (_colour[w] == 1)
+                            return true;
+
+                        continue;
+                    }
+
+                    _walkStamp[w] = walk;
+                    _colour[w] = 1;
+                    _frames.Push((w, 0));
+                    continue;
+                }
+
+                _colour[v] = 2;
+            }
+        }
+
+        return false;
+    }
+
     private void AssignKinds()
     {
         var next = 1;
         foreach (var type in _types)
         {
-            if (HasNode(type, NodeKind.Semantic) && 
-                IsGuardedNode(Node(type, NodeKind.Semantic)))
+            if (HasNode(type, NodeKind.Semantic) && IsGuardedNode(Node(type, NodeKind.Semantic)))
                 _guardKinds[type] = next++;
 
-            if (HasNode(type, NodeKind.Boxed) && 
-                IsGuardedNode(Node(type, NodeKind.Boxed)))
+            if (HasNode(type, NodeKind.Boxed) && IsGuardedNode(Node(type, NodeKind.Boxed)))
                 _boxedGuardKinds[type] = next++;
         }
     }
@@ -541,14 +733,13 @@ internal sealed class ModelBuilder
                 }
             }
 
-            foreach (var member in ordered)
-                members.Add(BuildMember(type, member));
+            members.AddRange(ordered.Select(member => BuildMember(type, member)));
         }
 
         var cases = new List<DispatchCase>(type.Cases.Count);
         if (type.IsDispatchCapable)
-            foreach (var (c, exact) in type.Cases) 
-                cases.Add(new DispatchCase(c.Id, exact, SameScc(dispatch, CaseTarget(c, exact))));
+            foreach (var (c, exact, resolved, hoistable) in type.Cases)
+                cases.Add(new DispatchCase(c.Id, exact, SameScc(dispatch, CaseTarget(c, exact)), resolved, hoistable));
 
         var passByValue = true;
         var inline = false;
@@ -557,7 +748,7 @@ internal sealed class ModelBuilder
             var estimate = EstimateSize(type, _options.StructPassByValueMaxByteSize + 1);
             passByValue = estimate <= _options.StructPassByValueMaxByteSize;
             inline = type.Members.Count <= 4 && 
-                     type.Members.All(m => m.Type.Kind == TypeKind.Leaf && m.Access == MemberAccess.Direct && m.Type.LeafRule != LeafRule.Custom);
+                     type.Members.All(m => m.Type.Kind == TypeKind.Leaf && m.Access is MemberAccess.Direct or MemberAccess.Getter && m.Type.LeafRule != LeafRule.Custom);
         }
 
         var itemsSameScc = new List<bool>(type.Items.Count);
@@ -565,6 +756,7 @@ internal sealed class ModelBuilder
             itemsSameScc.Add(SameScc(semantic, Entry(item)));
 
         var named = symbol as INamedTypeSymbol;
+        var integer = named?.EnumUnderlyingType ?? (type.LeafRule == LeafRule.WideInteger ? symbol : null);
         var unsafeType = IsUnsafe(type);
         var emitWrapper = type.Reached;
         var custom = type.Custom is not null ? customs.FirstOrDefault(c => c.Index == type.Custom.Index) : null;
@@ -575,23 +767,19 @@ internal sealed class ModelBuilder
             GlobalName: symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             ShortName: shortName,
             IsValueType: symbol.IsValueType,
-            IsReferenceTypeNullable: !symbol.IsValueType,
             IsSealed: symbol.IsSealed || symbol.IsValueType,
-            IsAbstract: symbol.IsAbstract && symbol.TypeKind != RoslynTypeKind.Interface,
-            IsInterface: symbol.TypeKind == RoslynTypeKind.Interface,
             IsObject: symbol.SpecialType == SpecialType.System_Object,
             Accessibility: AccessibilityKeyword(Min(EffectiveAccessibility(symbol), EffectiveAccessibility(_context))),
             EmitWrapper: emitWrapper,
             EmitConvenienceProperty: emitWrapper && !hazardous,
             IsUnsafe: unsafeType,
-            IsRoot: type.IsRoot,
             LeafRule: type.LeafRule,
             DefaultCompatible: type.DefaultCompatible,
             ImplementsIEquatable: type.ImplementsIEquatable,
             HasPublicEquatableEquals: type.HasPublicEquatableEquals,
             EnumUnderlyingGlobalName: named?.EnumUnderlyingType?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? string.Empty,
-            EnumUnderlyingWidth: named?.EnumUnderlyingType is not null ? type.Width : 0,
-            EnumUnderlyingUnsigned: named?.EnumUnderlyingType?.SpecialType is SpecialType.System_Byte or SpecialType.System_UInt16 or SpecialType.System_UInt32 or SpecialType.System_UInt64,
+            IntegerWidth: integer is null ? 0 : integer.SpecialType is SpecialType.System_IntPtr or SpecialType.System_UIntPtr ? 0 : type.Width,
+            IntegerUnsigned: integer?.SpecialType is SpecialType.System_Byte or SpecialType.System_UInt16 or SpecialType.System_UInt32 or SpecialType.System_UInt64 or SpecialType.System_UIntPtr || integer?.Name == "UInt128",
             AggregateComponents: new EquatableArray<AggregateComponent>(type.AggregateComponents),
             CustomComparerIndex: custom?.Index ?? -1,
             CustomWrapsNullable: type.CustomWrapsNullable,
@@ -604,22 +792,192 @@ internal sealed class ModelBuilder
             KeyIsSameScc: type.Key is not null && SameScc(semantic, Entry(type.Key)),
             ValueIsSameScc: type.Value is not null && SameScc(semantic, Entry(type.Value)),
             ItemsAreSameScc: EquatableArray.Create(itemsSameScc),
-            IsReadOnlyMemory: type.IsReadOnlyMemory,
             CollectionInterfaceGlobalName: type.CollectionInterface?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat) ?? string.Empty,
             Members: EquatableArray.Create(members),
             Cases: EquatableArray.Create(cases),
             TailMemberIndex: tailIndex,
             PassByValue: passByValue,
             InlineAsSmallStruct: inline,
-            HasStorageIgnoredByShape: type.HasStorageIgnoredByShape,
-            IsCyclic: cyclic,
             IsGuarded: _guardKinds.ContainsKey(type),
             NeedsState: NeedsState(type),
             HasBoxedAdapter: boxed is not null,
             BoxedAdapterGuarded: _boxedGuardKinds.ContainsKey(type),
             GuardKind: _guardKinds.TryGetValue(type, out var kind) ? kind : 0,
             BoxedGuardKind: _boxedGuardKinds.TryGetValue(type, out var boxedKind) ? boxedKind : 0,
-            HasShallowHash: cyclic);
+            HasShallowHash: cyclic && !_options.IsTree,
+            MatchHashLevels: MatchHashLevels(cyclic, semantic, dispatch),
+            BitBlockSize: BitBlock(type)?.Size ?? 0,
+            BitBlockChecks: EquatableArray.Create(BitBlockChecks(type)),
+            ObsoleteAttribute: ObsoleteInfo.Find(symbol) is { } obsolete ? ObsoleteInfo.Source(obsolete) : null);
+    }
+
+    // ----- matching fingerprint levels ------------------------------------------------------------------------------------
+    //
+    // Unordered matching buckets the entries of a set or dictionary by a fingerprint. It is never observed, so it can
+    // look further into a recursive type than the public hash, which follows one payload edge into a cycle. At
+    // MatchingHashDepth k the fingerprint is the level-k hash, and every type in a component some entry type belongs
+    // to gets levels 2..k. A level-k hash depends only on the k-deep unrolling of a value, which a rolled cycle and its
+    // unrolling share, so equal values still fingerprint alike.
+
+    private HashSet<int>? _matchComponents;
+
+    private int MatchHashLevels(bool cyclic, int? semantic, int? dispatch)
+    {
+        var depth = _options.IsTree ? 1 : _options.MatchingHashDepth;
+        if (depth <= 1 || !cyclic)
+            return 1;
+
+        _matchComponents ??= MatchComponents();
+        return (semantic is { } s && _matchComponents.Contains(_scc[s])) ||
+               (dispatch is { } d && _matchComponents.Contains(_scc[d]))
+            ? depth
+            : 1;
+    }
+
+    /// <summary>The components holding a cyclic entry type of some set or dictionary: the key, the value or the element.</summary>
+    private HashSet<int> MatchComponents()
+    {
+        var components = new HashSet<int>();
+        foreach (var type in _types.Where(t => t.Kind is TypeKind.Set or TypeKind.Dictionary))
+            foreach (var entry in type.Kind == TypeKind.Dictionary ? [type.Key, type.Value] : new[] { type.Element })
+                if (entry is not null && Entry(entry) is { } node && _cyclic[node])
+                    components.Add(_scc[node]);
+
+        return components;
+    }
+
+    // ----- bit blocks ---------------------------------------------------------------------------------------------------
+    //
+    // A bit block is a value whose equality under this context is exactly the equality of its storage bytes, with no
+    // references and no padding, so a sequence of them is one contiguous block of bytes. Leaves come from a fixed list.
+    // A struct qualifies when every field is a bit block, every field is compared, and a declaration-order walk at
+    // natural alignment leaves no gap; the emitted code checks the runtime size once more, since the runtime owns layout.
+
+    private readonly Dictionary<ClosureType, (int Size, int Align)?> _bitBlocks = new();
+
+    private (int Size, int Align)? BitBlock(ClosureType type)
+    {
+        if (_bitBlocks.TryGetValue(type, out var known))
+            return known;
+
+        _bitBlocks[type] = null;   // provisional, guards recursion
+        var result = type.Kind switch
+        {
+            TypeKind.Leaf => BitBlockLeaf(type),
+            TypeKind.Struct => BitBlockStruct(type),
+            _ => null,
+        };
+        _bitBlocks[type] = result;
+        return result;
+    }
+
+    private static (int Size, int Align)? BitBlockLeaf(ClosureType type)
+    {
+        var symbol = type.Symbol;
+        return type.LeafRule switch
+        {
+            LeafRule.Primitive =>
+                // bool is excluded: the runtime does not normalize its byte, so two true values can differ in storage.
+                symbol.SpecialType == SpecialType.System_Boolean ? null : (type.Width, type.Width),
+            LeafRule.WideInteger => symbol.SpecialType switch
+            {
+                SpecialType.System_Int64 or SpecialType.System_UInt64 => (8, 8),
+                // nint and nuint change size with the process, so their bytes are not one definition everywhere.
+                SpecialType.System_IntPtr or SpecialType.System_UIntPtr => null,
+                _ => symbol.Name is "Int128" or "UInt128" ? (16, 16) : null,
+            },
+            LeafRule.Enum => (type.Width, type.Width),
+            LeafRule.Single => (4, 4),
+            LeafRule.Double => (8, 8),
+            LeafRule.Half => (2, 2),
+            LeafRule.DateTime => (8, 8),
+            LeafRule.Guid => (16, 4),
+            LeafRule.Decimal => (16, 8), // 8 is the widest alignment any runtime gives it; a narrower one only rejects more
+            LeafRule.Default =>
+                // TimeSpan is one long of ticks, and its default equality is the equality of those ticks.
+                symbol is INamedTypeSymbol named && BuiltInLeaves.FullMetadataName(named) == "System.TimeSpan"
+                    ? (8, 8)
+                    : null,
+            _ => null
+        };
+    }
+
+    private (int Size, int Align)? BitBlockStruct(ClosureType type)
+    {
+        if (type.Symbol is not INamedTypeSymbol named || named.IsGenericType || !named.Locations.Any(l => l.IsInSource))
+            return null;   // a referenced assembly's struct layout is not visible to the generator
+
+        for (var outer = named.ContainingType; outer is not null; outer = outer.ContainingType)
+            if (outer.IsGenericType)
+                return null;
+
+        // Roslyn decodes [StructLayout] into the type's layout and leaves it out of GetAttributes(), so it is read from the
+        // declarations. Only plain sequential layout is walked: Explicit, Auto, Pack and Size move bytes the walk cannot see.
+        foreach (var reference in named.DeclaringSyntaxReferences)
+        {
+            if (reference.GetSyntax(_cancellationToken) is not Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax declaration)
+                continue;
+
+            foreach (var attribute in declaration.AttributeLists.SelectMany(l => l.Attributes))
+            {
+                var name = attribute.Name.ToString();
+                if (!name.EndsWith("StructLayout", StringComparison.Ordinal) && !name.EndsWith("StructLayoutAttribute", StringComparison.Ordinal))
+                    continue;
+
+                var arguments = attribute.ArgumentList?.Arguments;
+                var sequential = 
+                    arguments is [{ NameEquals: null }] list &&
+                    list[0].ToString().EndsWith("LayoutKind.Sequential", StringComparison.Ordinal);
+                if (!sequential)
+                    return null;
+            }
+        }
+
+        var fields = named.GetMembers()
+            .OfType<IFieldSymbol>()
+            .Where(f => !f.IsStatic && !f.IsConst)
+            .ToList();
+        if (fields.Count == 0 || fields.Count != type.Members.Count || fields.Any(f => f.IsFixedSizeBuffer))
+            return null;
+
+        // Every field must be compared: an ignored field would still take part in a byte comparison.
+        var compared = new HashSet<IFieldSymbol>(type.Members.Select(m => m.Field), SymbolEqualityComparer.Default);
+        if (!fields.All(compared.Contains))
+            return null;
+
+        var byField = type.Members
+            .ToDictionary(IFieldSymbol (m) => m.Field, m => m.Type, SymbolEqualityComparer.Default);
+        var offset = 0;
+        var align = 1;
+        foreach (var field in fields)
+        {
+            if (BitBlock(byField[field]) is not { } member)
+                return null;
+
+            if (offset % member.Align != 0)
+                return null;   // the runtime would pad before this field
+
+            offset += member.Size;
+            align = Math.Max(align, member.Align);
+        }
+
+        return offset % align == 0 ? (offset, align) : null;
+    }
+
+    /// <summary>The runtime size checks a bit-block struct depends on: its own and every nested struct's, outermost first.</summary>
+    private List<BitBlockCheck> BitBlockChecks(ClosureType type)
+    {
+        var checks = new List<BitBlockCheck>();
+        if (type.Kind != TypeKind.Struct || BitBlock(type) is not { } block)
+            return checks;
+
+        checks.Add(new BitBlockCheck(type.Symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat), block.Size));
+        foreach (var member in type.Members.Where(m => m.Type.Kind == TypeKind.Struct))
+            foreach (var nested in BitBlockChecks(member.Type))
+                if (!checks.Contains(nested))
+                    checks.Add(nested);
+
+        return checks;
     }
 
     private MemberModel BuildMember(ClosureType owner, ClosureMember member)
@@ -651,7 +1009,7 @@ internal sealed class ModelBuilder
                 arguments.InsertRange(0, current.TypeArguments);
 
             accessorName = segment;
-            holderName = $"Generic_{Naming.Candidate(definition, 0)}_Accessors";
+            holderName = GeneratedNames.Accessors($"Generic_{Naming.Candidate(definition, 0)}");
             typeParameters = $"<{string.Join(", ", parameters.Select(p => p.Name))}>";
             typeArguments =
                 $"<{string.Join(", ", arguments.Select(a => a.WithNullableAnnotation(NullableAnnotation.None).ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)))}>";
@@ -664,13 +1022,11 @@ internal sealed class ModelBuilder
             Name: member.Name,
             FieldMetadataName: member.Field.Name,
             AccessorName: accessorName,
-            DeclaringTypeGlobalName: member.Declaring.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+            DeclaringTypeGlobalName: DeclaringNames(member.Declaring).Global,
             DeclaringTypeShortName: declaringShort,
             DeclaringTypeIsValueType: member.Declaring.IsValueType,
-            DeclaringTypeIsGeneric: member.Declaring.IsGenericType,
             TypeId: member.Type.Id,
             Access: member.Access,
-            Cost: member.Cost,
             IsSameScc: SameScc(body, Entry(member.Type)),
             DeclarationOrder: member.Order,
             GenericAccessor: genericAccessor,
@@ -706,17 +1062,20 @@ internal sealed class ModelBuilder
     {
         var result = new List<CustomComparerModel>(_closure.Registrations.Custom.Count);
         var index = 0;
-        foreach (var registration in _closure.Registrations.Custom.Where(c => !c.Ignored).OrderBy(c => c.Order))
+        foreach (var registration in _closure.Registrations.Custom
+                     .Where(c => !c.Ignored)
+                     .OrderBy(c => c.Order))
         {
             var target = _types.FirstOrDefault(t => SymbolEqualityComparer.Default.Equals(t.Symbol, registration.Target));
-            if (target is null) continue;
+            if (target is null)
+                continue;
 
             registration.Index = index;
             result.Add(new CustomComparerModel(
                 index++,
                 registration.ComparerType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
                 registration.Target.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                $"{Short(target)}_ComparerHolder",
+                GeneratedNames.ComparerHolder(Short(target)),
                 registration.AcquisitionExpression,
                 registration.HolderTypedAsComparer,
                 registration.HandleNulls));
@@ -803,6 +1162,7 @@ internal sealed class ModelBuilder
                         result = Min(result, EffectiveAccessibility(argument));
 
                     return result;
+                
                 default:
                     return Accessibility.Public;
             }
@@ -828,32 +1188,62 @@ internal sealed class ModelBuilder
 
     // ----- suppressed diagnostics ---------------------------------------------------------------------------------------
 
-    private List<string> CollectSuppressedIds()
+    /// <summary>
+    /// The warnings generated code cannot avoid, because it has to name what the compared types use: an obsolete type,
+    /// containing type or type argument; a member obsolete at warning level where no accessor can read its storage
+    /// instead; a custom comparer type; and anything [Experimental] or a preview feature. Each is listed once, with the
+    /// symbol that brings it. Nothing is listed inside an obsolete context, where the compiler reports no obsolete use.
+    /// </summary>
+    private List<SuppressedDiagnostic> CollectSuppressedIds()
     {
-        var ids = new SortedSet<string>(StringComparer.Ordinal) { "CS0612", "CS0618", "CS8632" };
-        void Visit(ISymbol? symbol)
-        {
-            if (symbol is null) return;
+        var ids = new Dictionary<string, SuppressedDiagnostic>(StringComparer.Ordinal);
+        var obsoleteContext = ObsoleteInfo.InObsoleteContext(_context);
 
-            foreach (var attribute in symbol.GetAttributes())
+        void Add(string id, string reason)
+        {
+            if (!ids.ContainsKey(id))
+                ids[id] = new SuppressedDiagnostic(id, reason);
+        }
+
+        void Obsolete(AttributeData attribute, ISymbol owner)
+        {
+            if (!obsoleteContext && ObsoleteInfo.WarningId(attribute) is { } id)
+                Add(id, $"Suppress the {id} warning for [Obsolete] on {owner.ToDisplayString()}, which generated code names");
+        }
+
+        void ObsoleteName(ITypeSymbol type)
+        {
+            foreach (var attribute in ObsoleteInfo.All(type))
             {
-                var name = attribute.AttributeClass?.ToDisplayString();
+                var owner = attribute.AttributeClass is not null
+                    ? AttributeOwner(type, attribute) ?? type
+                    : type;
+                Obsolete(attribute, owner);
+            }
+        }
+
+        void Other(ISymbol? symbol)
+        {
+            if (symbol is null) 
+                return;
+
+            foreach (var attribute in SymbolAccess.Attributes(symbol))
+            {
+                var name = SymbolAccess.AttributeName(attribute, KnownTypes.ExperimentalAttribute, KnownTypes.RequiresPreviewFeaturesAttribute);
+                if (name is null)
+                    continue;
+
+                var display = symbol.ToDisplayString();
                 switch (name)
                 {
-                    case KnownTypes.ObsoleteAttribute:
-                        foreach (var argument in attribute.NamedArguments)
-                            if (argument is { Key: "DiagnosticId", Value.Value: string { Length: > 0 } id }) 
-                                ids.Add(id);
-
-                        break;
                     case KnownTypes.ExperimentalAttribute:
-                        if (attribute.ConstructorArguments.Length > 0 && 
+                        if (attribute.ConstructorArguments.Length > 0 &&
                             attribute.ConstructorArguments[0].Value is string { Length: > 0 } experimental)
-                            ids.Add(experimental);
+                            Add(experimental, $"Suppress the {experimental} warning for [Experimental] on {display}");
 
                         break;
                     case KnownTypes.RequiresPreviewFeaturesAttribute:
-                        ids.Add("CA2252");
+                        Add("CA2252", $"Suppress the CA2252 warning for [RequiresPreviewFeatures] on {display}");
                         break;
                 }
             }
@@ -861,18 +1251,58 @@ internal sealed class ModelBuilder
 
         foreach (var type in _types)
         {
-            Visit(type.Symbol);
-            if (type.Symbol is INamedTypeSymbol named) 
-                foreach (var argument in named.TypeArguments) 
-                    Visit(argument);
+            ObsoleteName(type.Symbol);
+            Other(type.Symbol);
+            if (type.Symbol is INamedTypeSymbol named)
+                foreach (var argument in named.TypeArguments)
+                    Other(argument);
 
             foreach (var member in type.Members)
             {
-                Visit(member.Field);
-                Visit(member.Field.AssociatedSymbol);
+                // An accessor names the declaring type; the member itself only when it is read directly or through its getter.
+                ObsoleteName(member.Field.ContainingType);
+                Other(member.Field);
+                Other(member.Field.AssociatedSymbol);
+                if (member.Access is MemberAccess.Direct or MemberAccess.Getter)
+                    foreach (var (symbol, attribute) in ObsoleteInfo.ForMember(member.Field))
+                        Obsolete(attribute, symbol);
             }
         }
 
-        return ids.ToList();
+        foreach (var custom in _closure.Registrations.Custom.Where(c => !c.Ignored))
+        {
+            ObsoleteName(custom.ComparerType);
+            Other(custom.ComparerType);
+        }
+
+        return ids.Values.OrderBy(s => s.Id, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>The type in <paramref name="type"/>'s name that carries <paramref name="attribute"/>, for the pragma's comment.</summary>
+    private static ISymbol? AttributeOwner(ITypeSymbol type, AttributeData attribute)
+    {
+        while (true)
+        {
+            switch (type)
+            {
+                case IArrayTypeSymbol array:
+                    type = array.ElementType;
+                    continue;
+
+                case INamedTypeSymbol named:
+                    for (var current = named; current is not null; current = current.ContainingType)
+                        if (SymbolAccess.Attributes(current).Contains(attribute))
+                            return current;
+
+                    foreach (var argument in named.TypeArguments)
+                        if (AttributeOwner(argument, attribute) is { } owner)
+                            return owner;
+
+                    return null;
+
+                default:
+                    return null;
+            }
+        }
     }
 }

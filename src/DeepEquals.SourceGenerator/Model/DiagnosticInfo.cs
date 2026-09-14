@@ -23,20 +23,8 @@ internal sealed record LocationInfo(string FilePath, TextSpan TextSpan, LinePosi
 
     public static LocationInfo? From(SyntaxNode? node) => node is null ? null : From(node.GetLocation());
 
-    public static LocationInfo? From(ISymbol? symbol)
-    {
-        if (symbol is null) 
-            return null;
-
-        foreach (var location in symbol.Locations)
-        {
-            var info = From(location);
-            if (info is not null) 
-                return info;
-        }
-
-        return null;
-    }
+    public static LocationInfo? From(ISymbol? symbol) =>
+        symbol?.Locations.Select(From).FirstOrDefault();
 
     public static LocationInfo? From(AttributeData attribute) => From(attribute.ApplicationSyntaxReference?.GetSyntax());
 }

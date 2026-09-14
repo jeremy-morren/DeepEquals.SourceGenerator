@@ -17,20 +17,17 @@ internal static class CapabilityProbe
     {
         // Runtime capabilities come from the identity of the core library, which a package cannot fake.
         var core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
-        var runtimeFamily = string.Equals(core.Name, "System.Runtime", StringComparison.Ordinal) || 
-                            string.Equals(core.Name, "System.Private.CoreLib", StringComparison.Ordinal);
+        var runtimeFamily = core.Name is "System.Runtime" or "System.Private.CoreLib";
         var coreMajor = runtimeFamily ? core.Identity.Version.Major : 0;
         var hasUnsafeAccessor = coreMajor >= 8;
         var hasGenericUnsafeAccessor = coreMajor >= 9;
 
-        var collections = Find(compilation, KnownTypes.Collections);
         var hashCode = Find(compilation, KnownTypes.HashCode);
         // The framework asset a consumer resolves may predate a BCL type the consumer has
         // (a net7.0 consumer gets the net6.0 asset, which has no Int128),
         // so framework overloads are probed on the asset, never inferred from the BCL.
         var hasHash128 = hashCode is not null &&
                          hashCode.GetMembers("Hash").OfType<IMethodSymbol>().Any(m => m.Parameters is [{ Type.Name: "Int128" }]);
-        var bitConverter = Find(compilation, "System.BitConverter");
         var nullable = Find(compilation, "System.Nullable");
         var @decimal = Find(compilation, "System.Decimal");
 
@@ -42,16 +39,18 @@ internal static class CapabilityProbe
             HasMemoryMarshal: HasMethod(Find(compilation, KnownTypes.MemoryMarshal), "Cast"),
             HasIReadOnlySet: Find(compilation, KnownTypes.IReadOnlySet) is not null,
             HasImmutableArray: Find(compilation, KnownTypes.ImmutableArray) is not null,
+            // Older System.Collections.Immutable releases, which .NET Framework consumers can resolve, predate AsSpan().
+            HasImmutableArrayAsSpan: HasMethod(Find(compilation, KnownTypes.ImmutableArray), "AsSpan"),
             HasUnsafeAccessor: hasUnsafeAccessor,
             HasGenericUnsafeAccessor: hasGenericUnsafeAccessor,
-            HasFrameworkSpanHelpers: HasMethod(collections, "TryGetSpan"),
             HasFrameworkHash128: hasHash128,
             HasNullableGetValueRefOrDefaultRef: HasMethod(nullable, "GetValueRefOrDefaultRef"),
-            HasSingleToInt32Bits: HasMethod(bitConverter, "SingleToInt32Bits"),
             HasDecimalGetBitsSpan: @decimal is not null && @decimal.GetMembers("GetBits").OfType<IMethodSymbol>().Any(m => m.Parameters.Length == 2),
             HasRequiresUnreferencedCode: Find(compilation, KnownTypes.RequiresUnreferencedCode) is not null,
             HasRequiresDynamicCode: Find(compilation, KnownTypes.RequiresDynamicCode) is not null,
-            HasUnconditionalSuppressMessage: Find(compilation, KnownTypes.UnconditionalSuppressMessage) is not null);
+            HasUnconditionalSuppressMessage: Find(compilation, KnownTypes.UnconditionalSuppressMessage) is not null,
+            // The netstandard2.1 asset has no block helpers: System.IO.Hashing warns on the runtimes it serves.
+            HasFrameworkBlocks: Find(compilation, KnownTypes.Blocks) is not null);
     }
 
     /// <summary>
@@ -61,11 +60,17 @@ internal static class CapabilityProbe
     /// </summary>
     public static INamedTypeSymbol? Find(Compilation compilation, string metadataName)
     {
+        // The core library ranks first, so a type it has is the answer without a search over every reference.
+        var core = compilation.GetSpecialType(SpecialType.System_Object).ContainingAssembly;
+        if (core.GetTypeByMetadataName(metadataName) is { TypeKind: not Microsoft.CodeAnalysis.TypeKind.Error } inCore &&
+            SymbolAccess.IsAccessibleWithin(compilation, inCore, compilation.Assembly))
+            return inCore;
+
         INamedTypeSymbol? best = null;
         foreach (var candidate in compilation.GetTypesByMetadataName(metadataName))
         {
             if (candidate.TypeKind == Microsoft.CodeAnalysis.TypeKind.Error || 
-                !compilation.IsSymbolAccessibleWithin(candidate, compilation.Assembly))
+                !SymbolAccess.IsAccessibleWithin(compilation, candidate, compilation.Assembly))
                 continue;
 
             if (best is null || Rank(compilation, candidate) < Rank(compilation, best))

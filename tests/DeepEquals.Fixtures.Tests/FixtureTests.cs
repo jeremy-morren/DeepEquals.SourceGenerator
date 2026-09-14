@@ -76,6 +76,11 @@ namespace DeepEquals.Fixtures
             d.Children.Add(d);
             FixtureContext.Node.Equals(c, d).Should().BeTrue("cycles through collections terminate");
             FixtureContext.Node.GetHashCode(c).Should().Be(FixtureContext.Node.GetHashCode(d));
+
+            PathFixtureContext.Node.Equals(a, b1).Should().BeTrue("Path equates rolled and unrolled cycles too");
+            PathFixtureContext.Node.GetHashCode(a).Should().Be(PathFixtureContext.Node.GetHashCode(b1));
+            PathFixtureContext.Node.Equals(c, d).Should().BeTrue();
+            PathFixtureContext.Holder.Equals(MakeHolder(), MakeHolder()).Should().BeTrue();
         }
 
         [Fact]
@@ -84,8 +89,13 @@ namespace DeepEquals.Fixtures
             var head1 = Chain(200_000);
             var head2 = Chain(200_000);
             FixtureContext.Node.Equals(head1, head2).Should().BeTrue();
+            PathFixtureContext.Node.Equals(head1, head2).Should().BeTrue("the chain is one path, walked in one frame");
+            TreeFixtureContext.Node.Equals(head1, head2).Should().BeTrue("a chain is walked in a loop, far past MaxDepth");
+            TreeFixtureContext.Node.GetHashCode(head1).Should().Be(TreeFixtureContext.Node.GetHashCode(head2));
             head2.Next.Next.Value = -1;
             FixtureContext.Node.Equals(head1, head2).Should().BeFalse();
+            PathFixtureContext.Node.Equals(head1, head2).Should().BeFalse();
+            TreeFixtureContext.Node.Equals(head1, head2).Should().BeFalse();
         }
 
         private static Node Chain(int length)
@@ -186,6 +196,40 @@ namespace DeepEquals.Fixtures
                 Tuple = new ValueTuple<int, string>(1, "one"),
                 RefTuple = new Tuple<int, Point>(2, new Point { X = 7, Y = 8 }),
             };
+        }
+
+        [Fact]
+        public void Tree_context_bounds_its_traversal()
+        {
+            // Acyclic data behaves as under Graph.
+            var h1 = MakeHolder();
+            var h2 = MakeHolder();
+            TreeFixtureContext.Holder.Equals(h1, h2).Should().BeTrue();
+            TreeFixtureContext.Holder.GetHashCode(h1).Should().Be(TreeFixtureContext.Holder.GetHashCode(h2));
+            h2.Words = new[] { "b", "a" };
+            TreeFixtureContext.Holder.Equals(h1, h2).Should().BeFalse();
+            TreeFixtureContext.Person.Equals(MakePerson("s"), MakePerson("s")).Should().BeTrue();
+
+            // The same reference is equal before any traversal, even when it closes a cycle.
+            var loop = new Node { Value = 1 };
+            loop.Next = loop;
+            TreeFixtureContext.Node.Equals(loop, loop).Should().BeTrue();
+
+            // A cycle the traversal enters throws: a looping chain through Brent's detector...
+            var other = new Node { Value = 1 };
+            other.Next = other;
+            Action chain = () => TreeFixtureContext.Node.Equals(loop, other);
+            chain.Should().Throw<DeepEqualsComplexityException>().Which.IsCycle.Should().BeTrue();
+
+            // ...and a cycle through a list through the depth bound.
+            var c = new Node { Value = 1, Children = new List<Node>(1) };
+            c.Children.Add(c);
+            var d = new Node { Value = 1, Children = new List<Node>(1) };
+            d.Children.Add(d);
+            Action children = () => TreeFixtureContext.Node.Equals(c, d);
+            children.Should().Throw<DeepEqualsComplexityException>().Which.MaxDepth.Should().Be(64);
+            Action hash = () => TreeFixtureContext.Node.GetHashCode(c);
+            hash.Should().Throw<DeepEqualsComplexityException>();
         }
 
         [Fact]

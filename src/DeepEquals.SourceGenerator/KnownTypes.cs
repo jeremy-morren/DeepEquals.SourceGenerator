@@ -4,7 +4,6 @@
 
 // ReSharper disable MemberCanBePrivate.Global
 // ReSharper disable InconsistentNaming
-// ReSharper disable UnusedMember.Global
 
 namespace DeepEquals.SourceGenerator;
 
@@ -22,21 +21,40 @@ internal static class KnownTypes
     public const string CustomEqualityComparerAttribute = $"{UserNamespace}.CustomEqualityComparerAttribute";
     public const string IgnoreAttribute = $"{UserNamespace}.DeepEqualsIgnoreAttribute";
     public const string ContextBase = $"{UserNamespace}.DeepEqualsContextBase";
-    public const string Collections = $"{FrameworkNamespace}.DeepEqualsCollections";
     public const string HashCode = $"{FrameworkNamespace}.DeepEqualsHashCode";
+    public const string Blocks = $"{FrameworkNamespace}.DeepEqualsBlocks";
+
+    // Emitted through an alias: the framework classes generated code names most often. Each file declares the aliases
+    // it uses, inside its namespace declaration (see FrameworkAliases). An alias there clashes with a type of the same
+    // name in that namespace, so the names start with an underscore, which no type name follows by convention.
+    public const string DeqState = "_DeqState";
+    public const string DeqHashCode = "_DeqHashCode";
+    public const string DeqHelpers = "_DeqHelpers";
+    public const string DeqCollections = "_DeqCollections";
+    public const string DeqUnordered = "_DeqUnordered";
+    public const string DeqReflection = "_DeqReflection";
+    public const string DeqBlocks = "_DeqBlocks";
+
+    /// <summary>Each alias and the global::-qualified class it names.</summary>
+    public static readonly (string Alias, string Target)[] FrameworkAliases =
+    [
+        (DeqBlocks, $"global::{Blocks}"),
+        (DeqCollections, $"global::{FrameworkNamespace}.DeepEqualsCollections"),
+        (DeqHashCode, $"global::{FrameworkNamespace}.DeepEqualsHashCode"),
+        (DeqHelpers, $"global::{FrameworkNamespace}.DeepEqualsHelpers"),
+        (DeqReflection, $"global::{FrameworkNamespace}.DeepEqualsReflection"),
+        (DeqState, $"global::{FrameworkNamespace}.DeepEqualsState"),
+        (DeqUnordered, $"global::{FrameworkNamespace}.DeepEqualsUnordered"),
+    ];
 
     // Emitted, global::-qualified.
     public const string GlobalFramework = $"global::{FrameworkNamespace}";
-    public const string GlobalState = $"{GlobalFramework}.DeepEqualsState";
-    public const string GlobalHashCode = $"{GlobalFramework}.DeepEqualsHashCode";
-    public const string GlobalHelpers = $"{GlobalFramework}.DeepEqualsHelpers";
-    public const string GlobalCollections = $"{GlobalFramework}.DeepEqualsCollections";
-    public const string GlobalUnordered = $"{GlobalFramework}.DeepEqualsUnordered";
-    public const string GlobalReflection = $"{GlobalFramework}.DeepEqualsReflection";
     public const string GlobalFieldGetter = $"{GlobalFramework}.FieldGetter";
     public const string GlobalHashOps = $"{GlobalFramework}.IDeepEqualsHashOps";
     public const string GlobalElementOps = $"{GlobalFramework}.IDeepEqualsElementOps";
     public const string GlobalStatelessElementOps = $"{GlobalFramework}.IDeepEqualsStatelessElementOps";
+    public const string GlobalDepthElementOps = $"{GlobalFramework}.IDeepEqualsDepthElementOps";
+    public const string GlobalDepthHashOps = $"{GlobalFramework}.IDeepEqualsDepthHashOps";
     public const string GlobalUnknownTypeException = $"{GlobalFramework}.DeepEqualsUnknownTypeException";
     public const string GlobalRuntimeHelpers = "global::System.Runtime.CompilerServices.RuntimeHelpers";
     public const string GlobalUnsafe = "global::System.Runtime.CompilerServices.Unsafe";
@@ -45,7 +63,6 @@ internal static class KnownTypes
     public const string GlobalEqualityComparer = "global::System.Collections.Generic.EqualityComparer";
     public const string GlobalIEqualityComparer = "global::System.Collections.Generic.IEqualityComparer";
     public const string GlobalStringComparison = "global::System.StringComparison";
-    public const string GlobalBitConverter = "global::System.BitConverter";
     public const string GlobalType = "global::System.Type";
     public const string GlobalObject = "global::System.Object";
 
@@ -55,7 +72,6 @@ internal static class KnownTypes
     public const string ReadOnlyMemory = "System.ReadOnlyMemory`1";
     public const string CollectionsMarshal = "System.Runtime.InteropServices.CollectionsMarshal";
     public const string MemoryMarshal = "System.Runtime.InteropServices.MemoryMarshal";
-    public const string Unsafe = "System.Runtime.CompilerServices.Unsafe";
     public const string IReadOnlySet = "System.Collections.Generic.IReadOnlySet`1";
     public const string ImmutableArray = "System.Collections.Immutable.ImmutableArray`1";
     public const string RequiresUnreferencedCode = "System.Diagnostics.CodeAnalysis.RequiresUnreferencedCodeAttribute";

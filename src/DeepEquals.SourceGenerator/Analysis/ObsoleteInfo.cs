@@ -1,0 +1,139 @@
+// Copyright 2026 The DeepEquals source generator project contributors. All rights reserved.
+// Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
+// Use of this source code is governed by the MIT License as found in the LICENSE.txt file
+
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+
+namespace DeepEquals.SourceGenerator.Analysis;
+
+/// <summary>
+/// <c>[Obsolete]</c> as the compiler applies it. Naming a type in code is a use of every obsolete type the name is built
+/// from: the type, its containing types, its type arguments and an array's element type. Inside a member or type that is
+/// itself obsolete no use is reported, at warning or error level.
+/// </summary>
+internal static class ObsoleteInfo
+{
+    /// <summary>The <c>[Obsolete]</c> on <paramref name="symbol"/> itself, or null.</summary>
+    private static AttributeData? Of(ISymbol? symbol) =>
+        symbol is null ? null : SymbolAccess.Attributes(symbol).FirstOrDefault(a => SymbolAccess.IsAttribute(a, KnownTypes.ObsoleteAttribute));
+
+    /// <summary>
+    /// Each symbol that reading a member through its name uses, with the <c>[Obsolete]</c> it carries: the field, its
+    /// property and the property's getter, in that order.
+    /// </summary>
+    public static IEnumerable<(ISymbol Symbol, AttributeData Attribute)> ForMember(IFieldSymbol field)
+    {
+        foreach (var symbol in new[] { field, field.AssociatedSymbol, (field.AssociatedSymbol as IPropertySymbol)?.GetMethod })
+            if (Of(symbol) is { } attribute)
+                yield return (symbol!, attribute);
+    }
+
+    /// <summary>An <c>[Obsolete(message, true)]</c>: its use is error CS0619, which no pragma suppresses.</summary>
+    public static bool IsError(AttributeData? attribute) =>
+        attribute is { ConstructorArguments.Length: > 1 } && attribute.ConstructorArguments[1].Value is true;
+
+    /// <summary>True when <paramref name="symbol"/> or a type containing it is obsolete, so uses inside it are not reported.</summary>
+    public static bool InObsoleteContext(ISymbol symbol)
+    {
+        for (var current = symbol; current is not null; current = current.ContainingType)
+            if (Of(current) is not null)
+                return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// The <c>[Obsolete]</c> that naming <paramref name="type"/> uses, error level first: on the type, a containing type, a
+    /// type argument or an element type. Null when naming it uses nothing obsolete.
+    /// </summary>
+    public static AttributeData? Find(ITypeSymbol type)
+    {
+        var found = All(type);
+        return found.FirstOrDefault(IsError) ?? found.FirstOrDefault();
+    }
+
+    /// <summary>Every <c>[Obsolete]</c> that naming <paramref name="type"/> uses, with the symbol that carries it.</summary>
+    public static List<AttributeData> All(ITypeSymbol type)
+    {
+        var found = new List<AttributeData>();
+        Collect(type, found, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default));
+        return found;
+    }
+
+    /// <summary>
+    /// The warning a use of <paramref name="attribute"/> raises: its own <c>DiagnosticId</c> when it has one, otherwise
+    /// CS0618 with a message and CS0612 without. Null at error level, which no pragma suppresses.
+    /// </summary>
+    public static string? WarningId(AttributeData attribute)
+    {
+        if (IsError(attribute))
+            return null;
+
+        foreach (var named in attribute.NamedArguments)
+            if (named is { Key: "DiagnosticId", Value.Value: string { Length: > 0 } id })
+                return id;
+
+        return attribute.ConstructorArguments.Length > 0 && attribute.ConstructorArguments[0].Value is string { Length: > 0 }
+            ? "CS0618"
+            : "CS0612";
+    }
+
+    private static void Collect(ITypeSymbol type, List<AttributeData> found, HashSet<ITypeSymbol> seen)
+    {
+        while (true)
+        {
+            if (!seen.Add(type))
+                return;
+
+            switch (type)
+            {
+                case IArrayTypeSymbol array:
+                    type = array.ElementType;
+                    continue;
+
+                case INamedTypeSymbol named:
+                    for (var current = named; current is not null; current = current.ContainingType)
+                        if (Of(current) is { } attribute)
+                            found.Add(attribute);
+
+                    foreach (var argument in named.TypeArguments) 
+                        Collect(argument, found, seen);
+
+                    return;
+            }
+
+            break;
+        }
+    }
+
+    /// <summary>
+    /// The attribute as C# source, to repeat on a generated comparer: the message, the error flag, and the
+    /// <c>DiagnosticId</c> and <c>UrlFormat</c> a .NET 5 attribute may carry, each only when the original has it.
+    /// </summary>
+    public static string Source(AttributeData attribute)
+    {
+        var arguments = new List<string>();
+        if (attribute.ConstructorArguments.Length > 0)
+            arguments.Add(Literal(attribute.ConstructorArguments[0].Value as string));
+
+        if (attribute.ConstructorArguments.Length > 1)
+            arguments.Add(IsError(attribute) ? "true" : "false");
+
+        foreach (var named in attribute.NamedArguments.OrderBy(n => n.Key, System.StringComparer.Ordinal))
+            if (named is { Key: "DiagnosticId" or "UrlFormat", Value.Value: string value })
+                arguments.Add($"{named.Key} = {Literal(value)}");
+
+        var text = new StringBuilder("[global::System.Obsolete");
+        if (arguments.Count > 0)
+            text.Append('(').Append(string.Join(", ", arguments)).Append(')');
+
+        return text.Append(']').ToString();
+    }
+
+    private static string Literal(string? value) =>
+        value is null ? "null" : SymbolDisplay.FormatLiteral(value, quote: true);
+}

@@ -2,6 +2,8 @@
 // Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
+using System.Linq;
+
 namespace DeepEquals.SourceGenerator.Model;
 
 /// <summary>The semantic kind of a closure type; decides which cores exist and which rule compares it.</summary>
@@ -57,6 +59,17 @@ internal enum TypeKind
 
     /// <summary>System.Tuple of any arity, Rest flattened; a reference product.</summary>
     Tuple,
+}
+
+internal static class TypeKindExtensions
+{
+    /// <summary>A sequence, set or dictionary: compared element by element or as an unordered multiset.</summary>
+    public static bool IsContainer(this TypeKind kind) => kind is TypeKind.Array or TypeKind.List or TypeKind.ImmutableArray
+        or TypeKind.ArraySegment or TypeKind.Memory or TypeKind.ListInterface or TypeKind.EnumerableInterface or TypeKind.Set
+        or TypeKind.Dictionary;
+
+    /// <summary>A key-value pair or tuple: compared item by item.</summary>
+    public static bool IsProduct(this TypeKind kind) => kind is TypeKind.KeyValuePair or TypeKind.ValueTuple or TypeKind.Tuple;
 }
 
 /// <summary>Which explicit rule a leaf uses.</summary>
@@ -120,6 +133,12 @@ internal enum MemberAccess
     /// <summary>The context can name the field: read it directly.</summary>
     Direct,
 
+    /// <summary>
+    /// Compiler storage behind an auto-property whose getter the compiler wrote: read through that getter, which returns
+    /// exactly the backing field and inlines to the same load. Needs no accessor, no reflection and nothing a trimmer can remove.
+    /// </summary>
+    Getter,
+
     /// <summary>An [UnsafeAccessor] extern on the context.</summary>
     UnsafeAccessor,
 
@@ -148,10 +167,8 @@ internal sealed record MemberModel(
     string DeclaringTypeGlobalName,
     string DeclaringTypeShortName,
     bool DeclaringTypeIsValueType,
-    bool DeclaringTypeIsGeneric,
     int TypeId,
     MemberAccess Access,
-    MemberCost Cost,
     bool IsSameScc,
     int DeclarationOrder,
     bool GenericAccessor,
@@ -162,8 +179,18 @@ internal sealed record MemberModel(
     string OpenDeclaringTypeGlobalName,
     string OpenFieldTypeGlobalName);
 
-/// <summary>One case of a dispatch core.</summary>
-internal sealed record DispatchCase(int TypeId, bool IsExact, bool IsSameScc);
+/// <summary>
+/// One case of a dispatch core. For an exact case, <paramref name="ResolvedAssignable"/> is the index among the
+/// assignable cases of the one its runtime type converts to first, or -1 when it converts to none. An assignable case is
+/// <paramref name="Hoistable"/> when its type is sealed and converts to no earlier case: its test may then run first.
+/// </summary>
+internal sealed record DispatchCase(int TypeId, bool IsExact, bool IsSameScc, int ResolvedAssignable, bool Hoistable);
+
+/// <summary>
+/// One runtime size check behind a bit-block struct: the struct, or a struct nested in it, must occupy exactly
+/// <paramref name="Size"/> bytes, the sum of its fields, for its bytes to be its value.
+/// </summary>
+internal sealed record BitBlockCheck(string GlobalName, int Size);
 
 /// <summary>The component of a floating-point aggregate leaf.</summary>
 internal sealed record AggregateComponent(string Expression, bool IsDouble);
@@ -185,24 +212,22 @@ internal sealed record TypeModel(
     string GlobalName,
     string ShortName,
     bool IsValueType,
-    bool IsReferenceTypeNullable,
     bool IsSealed,
-    bool IsAbstract,
-    bool IsInterface,
     bool IsObject,
     string Accessibility,
     bool EmitWrapper,
     bool EmitConvenienceProperty,
     bool IsUnsafe,
-    bool IsRoot,
     // Leaf details
     LeafRule LeafRule,
     bool DefaultCompatible,
     bool ImplementsIEquatable,
     bool HasPublicEquatableEquals,
     string EnumUnderlyingGlobalName,
-    int EnumUnderlyingWidth,
-    bool EnumUnderlyingUnsigned,
+    // The integer a leaf is: an enum's underlying type, or a wide integer itself. Its width in bytes (0 for nint and
+    // nuint, whose width varies with the process) and whether it is unsigned.
+    int IntegerWidth,
+    bool IntegerUnsigned,
     EquatableArray<AggregateComponent> AggregateComponents,
     int CustomComparerIndex,
     bool CustomWrapsNullable,
@@ -216,7 +241,6 @@ internal sealed record TypeModel(
     bool KeyIsSameScc,
     bool ValueIsSameScc,
     EquatableArray<bool> ItemsAreSameScc,
-    bool IsReadOnlyMemory,
     string CollectionInterfaceGlobalName,
     // Deep details
     EquatableArray<MemberModel> Members,
@@ -224,13 +248,27 @@ internal sealed record TypeModel(
     int TailMemberIndex,
     bool PassByValue,
     bool InlineAsSmallStruct,
-    bool HasStorageIgnoredByShape,
     // Graph results
-    bool IsCyclic,
     bool IsGuarded,
     bool NeedsState,
     bool HasBoxedAdapter,
     bool BoxedAdapterGuarded,
     int GuardKind,
     int BoxedGuardKind,
-    bool HasShallowHash);
+    bool HasShallowHash,
+    // The highest hash level emitted: 1 for the public hash alone, k when the matching fingerprint of an unordered
+    // collection reaches this type and follows payload edges k deep. Levels 2..k are MatchHashCode_T_L{n}.
+    int MatchHashLevels,
+    // Bit blocks: a value whose equality is its storage bytes, with no references and no padding. BitBlockSize is its
+    // size in bytes, or 0 when it is not one; a struct also carries the runtime size checks that must hold.
+    int BitBlockSize,
+    EquatableArray<BitBlockCheck> BitBlockChecks,
+    // The [Obsolete] that naming this type uses, as source to repeat on its comparer and convenience property; null
+    // when nothing in the name is obsolete.
+    string? ObsoleteAttribute = null)
+{
+    public bool IsBitBlock => BitBlockSize > 0;
+
+    /// <summary>A member is read through a reflection-built delegate, which trimming can break.</summary>
+    public bool ReadsThroughDelegates => Members.Any(m => m.Access == MemberAccess.Delegate);
+}

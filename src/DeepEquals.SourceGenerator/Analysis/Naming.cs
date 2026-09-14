@@ -5,6 +5,7 @@
 using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
+using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -17,8 +18,20 @@ internal static class Naming
     public static readonly string[] HazardousNames = 
         ["Equals", "GetHashCode", "ReferenceEquals", "GetType", "ToString", "MemberwiseClone", "Finalize", "Instance", "Cache", "GetEqualityComparer"];
 
-    public static readonly string[] ReservedNames = 
-        ["Cache", "GetEqualityComparer", "MaxComparisonPairs", "MaxUnorderedCollisionRun", "ComparerMap"];
+    public static readonly string[] ReservedNames =
+        ["Cache", "GetEqualityComparer", "MaxComparisonPairs", "MaxUnorderedCollisionRun", "MaxDepth", "MatchingHashDepth", "ComparerMap"];
+
+    /// <summary>A C#-safe identifier for a name: <c>@</c>-prefixed when the name is a keyword.</summary>
+    public static string Identifier(string name) =>
+        SyntaxFacts.GetKeywordKind(name) != SyntaxKind.None ? $"@{name}" : name;
+
+    /// <summary>
+    /// A type name as a declaration writes it: a keyword, or a name of lower-case ASCII letters only, is written with
+    /// <c>@</c>. The compiler warns on every declaration of a lower-case type name (CS8981, such names may become
+    /// keywords) unless it is verbatim, and the generator redeclares the user's types.
+    /// </summary>
+    public static string TypeIdentifier(string name) =>
+        name.Length > 0 && name.All(c => c is >= 'a' and <= 'z') ? $"@{name}" : Identifier(name);
 
     /// <summary>Escapes one metadata-name segment: literal underscores and every non-identifier character become _uXXXX.</summary>
     public static string EscapeSegment(string segment)
@@ -27,8 +40,7 @@ internal static class Naming
         for (var i = 0; i < segment.Length; i++)
         {
             var c = segment[i];
-            var ok = c != '_' 
-                     && (i == 0 ? SyntaxFacts.IsIdentifierStartCharacter(c) : SyntaxFacts.IsIdentifierPartCharacter(c));
+            var ok = c != '_' && (i == 0 ? SyntaxFacts.IsIdentifierStartCharacter(c) : SyntaxFacts.IsIdentifierPartCharacter(c));
             if (ok)
             {
                 builder?.Append(c);
@@ -130,10 +142,12 @@ internal static class Naming
     /// <summary>
     /// The digest rung: the first <paramref name="digits"/> hex digits of SHA-256 over the assembly-qualified identity.
     /// </summary>
-    public static string Digest(ITypeSymbol symbol, int digits)
+    public static string Digest(ITypeSymbol symbol, int digits) =>
+        Digest($"{symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}, {symbol.ContainingAssembly?.Identity.GetDisplayName() ?? string.Empty}", digits);
+
+    /// <summary>The first <paramref name="digits"/> hex digits of SHA-256 over <paramref name="identity"/>.</summary>
+    public static string Digest(string identity, int digits)
     {
-        var identity =
-            $"{symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}, {symbol.ContainingAssembly?.Identity.GetDisplayName() ?? string.Empty}";
         using var sha = SHA256.Create();
         var hash = sha.ComputeHash(Encoding.UTF8.GetBytes(identity));
         var hex = new StringBuilder(digits);
@@ -142,26 +156,4 @@ internal static class Naming
 
         return hex.ToString(0, Math.Min(digits, hex.Length));
     }
-
-    /// <summary>Every identifier a type claims from its short name.</summary>
-    public static string[] IdentifiersFor(string shortName) =>
-    [
-        shortName,
-        $"{shortName}EqualityComparer",
-        $"Equals_{shortName}",
-        $"EqualsExact_{shortName}",
-        $"EqualsMembers_{shortName}",
-        $"EqualsBoxed_{shortName}",
-        $"GetHashCode_{shortName}",
-        $"ShallowHashCode_{shortName}",
-        $"Equals_SpanOf{shortName}",
-        $"GetHashCode_SpanOf{shortName}",
-        $"Kind_{shortName}",
-        $"Kind_Boxed_{shortName}",
-        $"{shortName}Ops",
-        $"{shortName}ShallowOps",
-        $"{shortName}_ComparerHolder",
-        $"{shortName}_Dispatch",
-        $"{shortName}_Accessors",
-    ];
 }

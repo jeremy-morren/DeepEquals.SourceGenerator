@@ -5,8 +5,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using DeepEquals.SourceGenerator.Model;
 using Microsoft.CodeAnalysis;
@@ -34,11 +32,46 @@ internal static class ContextAnalyzer
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        // The driver calls this on every compilation, so on every keystroke. A compilation whose declarations,
+        // references and options are those of the last one analysed for this context gets that model again.
+        var cacheKey = $"{context.SemanticModel.Compilation.AssemblyName}|{marker}|{publicViewSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)}";
+        var fingerprint = DeclarationFingerprint.Of(context.SemanticModel.Compilation) ^ (ulong)GeneratorInfo.EffectiveVersion.GetHashCode();
+        if (ModelCache.TryGet(cacheKey, fingerprint, out var cached))
+            return cached;
+
+        CountAnalysis(context.SemanticModel.Compilation.AssemblyName ?? string.Empty);
+        var model = AnalyzeCore(context, cancellationToken);
+
+        // A model with a diagnostic carries the position it was reported at, which a later edit can move; only a model
+        // without one is the same whatever moved.
+        if (model.Diagnostics.Count == 0)
+            ModelCache.Set(cacheKey, fingerprint, model);
+
+        return model;
+    }
+
+    /// <summary>Analyses per assembly name, for tests of what the cache skips; bounded, since every test compilation has a name.</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> SAnalysisRuns = new(StringComparer.Ordinal);
+
+    private static void CountAnalysis(string assemblyName)
+    {
+        if (SAnalysisRuns.Count >= 1024 && !SAnalysisRuns.ContainsKey(assemblyName))
+            SAnalysisRuns.Clear();
+
+        SAnalysisRuns.AddOrUpdate(assemblyName, 1, static (_, n) => n + 1);
+    }
+
+    /// <summary>How many times the analysis has run for compilations of <paramref name="assemblyName"/>.</summary>
+    internal static int AnalysisRuns(string assemblyName) => SAnalysisRuns.TryGetValue(assemblyName, out var n) ? n : 0;
+
+    private static ContextModel AnalyzeCore(GeneratorAttributeSyntaxContext context, CancellationToken cancellationToken)
+    {
         var compilation = AllImportView.Get(context.SemanticModel.Compilation);
-        var symbol = compilation.GetSemanticModel(context.TargetNode.SyntaxTree).GetDeclaredSymbol(context.TargetNode, cancellationToken) as INamedTypeSymbol
+        var symbol = compilation.GetSemanticModel(context.TargetNode.SyntaxTree)
+                         .GetDeclaredSymbol(context.TargetNode, cancellationToken) as INamedTypeSymbol
                      ?? throw new InvalidOperationException("The context symbol could not be re-resolved in the All-import view.");
 
-        var hintName = HintNameFor(symbol);
+        var hintName = HintNamePrefixFor(symbol);
         var location = LocationInfo.From(context.TargetNode);
         var diagnostics = new List<DiagnosticInfo>();
 
@@ -46,6 +79,9 @@ internal static class ContextAnalyzer
             return ContextModel.Failed(hintName, symbol.Name, location, EquatableArray.Create(diagnostics));
 
         var contextBase = CapabilityProbe.Find(compilation, KnownTypes.ContextBase)!;
+        if (!FrameworkVersionMatches(contextBase.ContainingAssembly, location, diagnostics))
+            return ContextModel.Failed(hintName, symbol.Name, location, EquatableArray.Create(diagnostics));
+
         var chain = ContextChain(symbol, contextBase);
         var options = OptionsReader.Read(chain, location, diagnostics);
         var languageVersion = ((CSharpParseOptions)context.TargetNode.SyntaxTree.Options).LanguageVersion;
@@ -63,20 +99,51 @@ internal static class ContextAnalyzer
         return modelBuilder.Build(hintName, location);
     }
 
-    /// <summary>The context's namespace-qualified name plus a short hash of it; hint names must be unique per generator.</summary>
-    public static string HintNameFor(ISymbol symbol)
+    /// <summary>
+    /// The namespace-qualified name of the context, the stem every hint name of the context starts with: the context
+    /// file is <c>{stem}.g.cs</c> and each type file <c>{stem}.{TypeName}.g.cs</c>, the layout System.Text.Json uses.
+    /// Built from the raw symbol names, never a display string: a keyword name such as <c>@class</c> would put an
+    /// <c>@</c> into a hint name, which Roslyn rejects. A context is non-generic, so every segment is an identifier.
+    /// </summary>
+    public static string HintNamePrefixFor(ISymbol symbol)
     {
-        var full = symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-        if (full.StartsWith("global::", StringComparison.Ordinal))
-            full = full["global::".Length..];
+        var segments = new List<string>();
+        for (var type = symbol as INamedTypeSymbol; type is not null; type = type.ContainingType)
+            segments.Add(type.Name);
 
-        using var sha = SHA256.Create();
-        var digest = sha.ComputeHash(Encoding.UTF8.GetBytes(full));
-        var hex = new StringBuilder(8);
-        for (var i = 0; i < 4; i++) 
-            hex.Append(digest[i].ToString("x2"));
+        for (var ns = symbol.ContainingNamespace; ns is not null && !ns.IsGlobalNamespace; ns = ns.ContainingNamespace)
+            segments.Add(ns.Name);
 
-        return $"{full.Replace('.', '_').Replace('+', '_')}_{hex}.g.cs";
+        segments.Reverse();
+        return string.Join(".", segments);
+    }
+
+    /// <summary>
+    /// The generator and the framework ship at the same version and must be used at the same version; nothing else in
+    /// the generator reasons about older or newer framework assets. The informational version carries the prerelease
+    /// tag, so it is compared when both sides have one; otherwise the three-part assembly version stands in.
+    /// </summary>
+    private static bool FrameworkVersionMatches(IAssemblySymbol framework, LocationInfo? location, List<DiagnosticInfo> diagnostics)
+    {
+        var informational = framework.GetAttributes()
+            .Where(a => SymbolAccess.IsAttribute(a, "System.Reflection.AssemblyInformationalVersionAttribute"))
+            .Select(a => a.ConstructorArguments.Length == 1 ? a.ConstructorArguments[0].Value as string : null)
+            .FirstOrDefault(v => !string.IsNullOrEmpty(v));
+
+        var frameworkVersion = GeneratorInfo.WithoutBuildMetadata(informational) ?? framework.Identity.Version.ToString(3);
+        var generatorVersion = GeneratorInfo.EffectiveVersion;
+        if (informational is null)
+        {
+            // No informational version to compare: fall back to the three-part assembly version on both sides.
+            var dash = generatorVersion.IndexOf('-');
+            generatorVersion = dash < 0 ? generatorVersion : generatorVersion.Substring(0, dash);
+        }
+
+        if (frameworkVersion == generatorVersion)
+            return true;
+
+        diagnostics.Add(DiagnosticInfo.Create(Diagnostics.FrameworkVersionMismatch, location, frameworkVersion, generatorVersion));
+        return false;
     }
 
     private static bool IsCanonical(GeneratorAttributeSyntaxContext context, INamedTypeSymbol symbol, MarkerKind marker)
@@ -90,9 +157,9 @@ internal static class ContextAnalyzer
 
         foreach (var attribute in symbol.GetAttributes())
         {
-            var name = attribute.AttributeClass?.ToDisplayString();
-            var isRegistration = string.Equals(name, KnownTypes.GenerateDeepEqualsAttribute, StringComparison.Ordinal);
-            var isOptions = string.Equals(name, KnownTypes.OptionsAttribute, StringComparison.Ordinal);
+            var name = SymbolAccess.AttributeName(attribute, KnownTypes.GenerateDeepEqualsAttribute, KnownTypes.OptionsAttribute);
+            var isRegistration = name == KnownTypes.GenerateDeepEqualsAttribute;
+            var isOptions = name == KnownTypes.OptionsAttribute;
             if (!isRegistration && !isOptions)
                 continue;
 
@@ -153,7 +220,7 @@ internal static class ContextAnalyzer
                     break;
                 }
 
-                if (!outer.DeclaringSyntaxReferences.All(r => r.GetSyntax() is TypeDeclarationSyntax t && t.Modifiers.Any(SyntaxKind.PartialKeyword)))
+                if (!IsPartial(outer))
                 {
                     problem = $"the containing type '{outer.Name}' must be partial";
                     break;
@@ -173,7 +240,7 @@ internal static class ContextAnalyzer
             return false;
         }
 
-        if (!symbol.DeclaringSyntaxReferences.All(r => r.GetSyntax() is TypeDeclarationSyntax t && t.Modifiers.Any(SyntaxKind.PartialKeyword)))
+        if (!IsPartial(symbol))
         {
             diagnostics.Add(DiagnosticInfo.Create(Diagnostics.ContextNotPartial, location, symbol.Name));
             return false;
@@ -181,6 +248,10 @@ internal static class ContextAnalyzer
 
         return true;
     }
+
+    /// <summary>Every declaration of <paramref name="type"/> carries <c>partial</c>, so generated code can add to it.</summary>
+    private static bool IsPartial(INamedTypeSymbol type) =>
+        type.DeclaringSyntaxReferences.All(r => r.GetSyntax() is TypeDeclarationSyntax t && t.Modifiers.Any(SyntaxKind.PartialKeyword));
 
     /// <summary>The Roslyn floor predates IsFileLocal; the modifier token is the same on every version.</summary>
     private static bool IsFileLocal(INamedTypeSymbol symbol) =>
