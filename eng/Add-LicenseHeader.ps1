@@ -29,7 +29,7 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [string[]] $Path = @(),
-    [string] $Author = 'Jeremy Morren <jeremy.morren@outlook.com>',
+    [string] $Author = 'The DeepEquals source generator project contributors',
     [string] $License = 'MIT License',
     [string] $LicenseFile = 'LICENSE.txt',
     [string] $Repository
