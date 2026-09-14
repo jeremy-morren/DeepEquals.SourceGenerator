@@ -6,6 +6,9 @@ using System;
 using System.Collections.Generic;
 using DeepEquals.SourceGeneration.Framework;
 
+// ReSharper disable UnusedMember.Global
+// ReSharper disable MemberCanBePrivate.Global
+
 // ReSharper disable once CheckNamespace
 namespace DeepEquals.SourceGeneration;
 
@@ -19,19 +22,20 @@ public abstract class DeepEqualsContextBase
     /// </summary>
     protected static object? LookupEqualityComparer(Dictionary<Type, object> comparers, Type type)
     {
-#if NET6_0_OR_GREATER
-        ArgumentNullException.ThrowIfNull(comparers);
-#else
-        if (comparers is null) throw new ArgumentNullException(nameof(comparers));
-#endif
-#if !NETSTANDARD2_0
-        return comparers.GetValueOrDefault(type);
-#else
+        if (comparers is null)
+            throw new ArgumentNullException(nameof(comparers));
+
         return comparers.TryGetValue(type, out var comparer) ? comparer : null;
-#endif
     }
 
+    /// <summary>
+    /// Looks a comparer up by exact type, already typed for the generic static cache that stores it, so the call that
+    /// reads the cache needs no cast. Never throws.
+    /// </summary>
+    protected static IEqualityComparer<T>? LookupEqualityComparer<T>(Dictionary<Type, object> comparers)
+        => LookupEqualityComparer(comparers, typeof(T)) as IEqualityComparer<T>;
+
     /// <summary>Returns the cached comparer or throws <see cref="DeepEqualsMissingComparerException"/> for <typeparamref name="T"/>.</summary>
-    protected static IEqualityComparer<T> RequireEqualityComparer<T>(object? comparer)
-        => comparer as IEqualityComparer<T> ?? throw new DeepEqualsMissingComparerException(typeof(T));
+    protected static IEqualityComparer<T> RequireEqualityComparer<T>(IEqualityComparer<T>? comparer)
+        => comparer ?? throw new DeepEqualsMissingComparerException(typeof(T));
 }

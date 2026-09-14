@@ -59,7 +59,7 @@ public sealed class StateTests
             state.TryEnter(1, xs[8], ys[8]).Should().BeTrue();
             state.HasSpilled.Should().BeTrue();
             pools.Pairs.Rents.Should().Be(1);
-            pools.Ints.Rents.Should().Be(1);
+            pools.Ints.Rents.Should().Be(2, "the index and the cached pair hashes");
 
             for (var i = 0; i < 9; i++)
                 state.TryEnter(1, xs[i], ys[i]).Should().BeFalse($"pair {i} was retained across the spill");
@@ -97,7 +97,7 @@ public sealed class StateTests
             state.Count.Should().Be(2 * n);
             pools.Pairs.Rents.Should().BeGreaterThan(2, "capacity doubled several times");
             pools.Pairs.Outstanding.Should().Be(1, "only the current journal is held");
-            pools.Ints.Outstanding.Should().Be(1, "only the current index is held");
+            pools.Ints.Outstanding.Should().Be(2, "only the current index and hash cache are held");
         }
         finally
         {

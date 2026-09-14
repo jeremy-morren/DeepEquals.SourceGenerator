@@ -3,31 +3,23 @@
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
 #if NETSTANDARD2_0
-using System;
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 
+// ReSharper disable UnusedMember.Global
+// ReSharper disable ConvertToAutoPropertyWhenPossible
 // ReSharper disable InconsistentNaming
 
 namespace DeepEquals.SourceGeneration.Framework;
 
 public static partial class DeepEqualsHashCode
 {
-    private static ulong s_marvinSeed = GenerateMarvinSeed();
+    private static ulong s_marvinSeed = RandomSeed();
 
     /// <summary>The Marvin seed used by <see cref="Hash(string)"/> on this asset. Settable from the test assembly only.</summary>
     internal static ulong MarvinSeed
     {
         get => s_marvinSeed;
         set => s_marvinSeed = value;
-    }
-
-    private static ulong GenerateMarvinSeed()
-    {
-        var bytes = new byte[8];
-        using (var rng = RandomNumberGenerator.Create())
-            rng.GetBytes(bytes);
-        return BitConverter.ToUInt64(bytes, 0);
     }
 
     /// <summary>

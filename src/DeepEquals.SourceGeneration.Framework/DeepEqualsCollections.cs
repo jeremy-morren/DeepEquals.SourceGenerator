@@ -2,7 +2,6 @@
 // Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
-#if !NETSTANDARD2_0
 using System;
 using System.Collections.Generic;
 
@@ -12,7 +11,7 @@ using System.Runtime.InteropServices;
 
 namespace DeepEquals.SourceGeneration.Framework;
 
-/// <summary>Span extraction for interface-typed collection views. Absent from the netstandard2.0 asset on purpose.</summary>
+/// <summary>Span extraction for interface-typed collection views</summary>
 public static class DeepEqualsCollections
 {
     /// <summary>
@@ -39,4 +38,3 @@ public static class DeepEqualsCollections
         return false;
     }
 }
-#endif

@@ -26,7 +26,7 @@ public static partial class DeepEqualsHashCode
     private const uint Prime4 = 668265263U;
     private const uint Prime5 = 374761393U;
 
-    private static uint s_seed = GenerateSeed();
+    private static uint s_seed = unchecked((uint)RandomSeed());
 
     /// <summary>The per-process seed. Settable from the test assembly only, so hash tests are deterministic.</summary>
     internal static uint Seed
@@ -35,16 +35,17 @@ public static partial class DeepEqualsHashCode
         set => s_seed = value;
     }
 
-    private static uint GenerateSeed()
+    /// <summary>Eight bytes from the operating system's cryptographic generator: every per-process hash seed starts here.</summary>
+    internal static ulong RandomSeed()
     {
 #if NETSTANDARD2_1_OR_GREATER || NETCOREAPP
-        Span<byte> bytes = stackalloc byte[4];
+        Span<byte> bytes = stackalloc byte[8];
         RandomNumberGenerator.Fill(bytes);
-        return BitConverter.ToUInt32(bytes);
+        return BitConverter.ToUInt64(bytes);
 #else
-        var bytes = new byte[4];
+        var bytes = new byte[8];
         using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(bytes);
-        return BitConverter.ToUInt32(bytes, 0);
+        return BitConverter.ToUInt64(bytes, 0);
 #endif
     }
 
@@ -94,27 +95,23 @@ public static partial class DeepEqualsHashCode
     public static int Hash(ulong value) => Hash(unchecked((long)value));
 
     /// <summary>Seeded hash over all sixteen bytes; <see cref="Guid.GetHashCode"/> ignores six of them.</summary>
-    public static int Hash(Guid value)
-    {
-        ref var words = ref Unsafe.As<Guid, int>(ref value);
-        return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
-    }
+    public static int Hash(Guid value) => Hash128(ref value);
+
+    /// <summary>Seeded hash over all four words of a decimal's storage, matching <see cref="DeepEqualsHelpers.DecimalEquals"/>.</summary>
+    public static int Hash(in decimal value) => Hash128(ref Unsafe.AsRef(in value));
 
 #if NET7_0_OR_GREATER
     /// <summary>Seeded hash over all four 32-bit words.</summary>
-    public static int Hash(Int128 value)
-    {
-        ref var words = ref Unsafe.As<Int128, int>(ref value);
-        return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
-    }
+    public static int Hash(Int128 value) => Hash128(ref value);
 
     /// <summary>Seeded hash over all four 32-bit words.</summary>
-    public static int Hash(UInt128 value)
-    {
-        ref var words = ref Unsafe.As<UInt128, int>(ref value);
-        return Combine(words, Unsafe.Add(ref words, 1), Unsafe.Add(ref words, 2), Unsafe.Add(ref words, 3));
-    }
+    public static int Hash(UInt128 value) => Hash128(ref value);
 #endif
+
+    /// <summary>The seeded hash of the four 32-bit storage words of a 16-byte value.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int Hash128<T>(ref T value) where T : unmanaged =>
+        Combine(DeepEqualsHelpers.Word(ref value, 0), DeepEqualsHelpers.Word(ref value, 1), DeepEqualsHelpers.Word(ref value, 2), DeepEqualsHelpers.Word(ref value, 3));
 
     /// <summary>
     /// Ordinal string hash: 0 for null, <see cref="string.GetHashCode()"/> where the runtime randomizes it, and a seeded
@@ -133,13 +130,44 @@ public static partial class DeepEqualsHashCode
 
     // ----- Variable-length input --------------------------------------------------------------------------------------
 
-#if !NETSTANDARD2_0
     /// <summary>
     /// Hashes a span of elements through <typeparamref name="TOps"/> as one xxHash32 stream, four elements per round with
     /// no per-element bookkeeping. Equal to <see cref="Streaming"/> fed the same hashes and to <c>Combine</c> for 1 to 32 elements.
     /// </summary>
     public static int HashSpan<T, TOps>(ReadOnlySpan<T> items)
         where TOps : struct, IDeepEqualsHashOps<T>
+        => HashStream<T, PlainOps<T, TOps>>(items, 0);
+
+    /// <summary>
+    /// <see cref="HashSpan{T, TOps}(ReadOnlySpan{T})"/> under <c>CycleHandling.Tree</c>: every element is hashed at the
+    /// caller's <paramref name="depth"/>. The same stream, so equal to <see cref="Streaming"/> fed the same hashes.
+    /// </summary>
+    public static int HashSpan<T, TOps>(ReadOnlySpan<T> items, int depth)
+        where TOps : struct, IDeepEqualsDepthHashOps<T>
+        => HashStream<T, DepthOps<T, TOps>>(items, depth);
+
+    /// <summary>The element hash a span stream calls, with or without a depth: the adapters below erase the difference.</summary>
+    private interface ISpanOps<in T>
+    {
+        int GetHashCode(T value, int depth);
+    }
+
+    private readonly struct PlainOps<T, TOps> : ISpanOps<T>
+        where TOps : struct, IDeepEqualsHashOps<T>
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetHashCode(T value, int depth) => default(TOps).GetHashCode(value);
+    }
+
+    private readonly struct DepthOps<T, TOps> : ISpanOps<T>
+        where TOps : struct, IDeepEqualsDepthHashOps<T>
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int GetHashCode(T value, int depth) => default(TOps).GetHashCode(value, depth);
+    }
+
+    private static int HashStream<T, TW>(ReadOnlySpan<T> items, int depth)
+        where TW : struct, ISpanOps<T>
     {
         unchecked
         {
@@ -155,22 +183,21 @@ public static partial class DeepEqualsHashCode
                 var v4 = seed - Prime1;
                 for (; i + 4 <= length; i += 4)
                 {
-                    v1 = Round(v1, (uint)default(TOps).GetHashCode(items[i]));
-                    v2 = Round(v2, (uint)default(TOps).GetHashCode(items[i + 1]));
-                    v3 = Round(v3, (uint)default(TOps).GetHashCode(items[i + 2]));
-                    v4 = Round(v4, (uint)default(TOps).GetHashCode(items[i + 3]));
+                    v1 = Round(v1, (uint)default(TW).GetHashCode(items[i], depth));
+                    v2 = Round(v2, (uint)default(TW).GetHashCode(items[i + 1], depth));
+                    v3 = Round(v3, (uint)default(TW).GetHashCode(items[i + 2], depth));
+                    v4 = Round(v4, (uint)default(TW).GetHashCode(items[i + 3], depth));
                 }
                 hash = MixState(v1, v2, v3, v4);
             }
             else hash = seed + Prime5;
 
             hash += (uint)length * 4;
-            for (; i < length; i++) hash = QueueRound(hash, (uint)default(TOps).GetHashCode(items[i]));
+            for (; i < length; i++) hash = QueueRound(hash, (uint)default(TW).GetHashCode(items[i], depth));
 
             return FinalizeEmptyZero(MixFinal(hash), length);
         }
     }
-#endif
 
     /// <summary>
     /// Streaming form for indexer loops and enumerators: the same xxHash32 stream as the fixed-arity overloads, paying a
