@@ -35,6 +35,10 @@ internal sealed class Emitter
     private readonly SortedSet<int> _blockGuards = [];
     private readonly List<(TypeModel Type, List<DispatchCase> Exact)> _pendingDispatchHolders = [];
 
+    /// <summary>The accessors and generic accessor holders written so far, by name: each goes in the first file that needs it.</summary>
+    private readonly HashSet<string> _emittedAccessors = new(StringComparer.Ordinal);
+    private Dictionary<string, List<MemberModel>>? _genericHolders;
+
     /// <summary>The writer of the file being emitted; every emit method writes here, and the file loop swaps it.</summary>
     private CodeWriter _w;
 
@@ -334,6 +338,7 @@ internal sealed class Emitter
             var afterDirective = file.Body.Length;
             EmitCores(type);
             EmitDispatchHolders();
+            EmitAccessors(type);
             if (file.Body.Length == afterDirective)
             {
                 file.Body.Truncate(beforePrivate);
@@ -354,7 +359,6 @@ internal sealed class Emitter
         EmitConstants();
         EmitBlockGuards();
         EmitLookup();
-        EmitAccessors();
         EmitAccessorHolders();
         EmitCustomComparerHolders();
 
@@ -2849,58 +2853,77 @@ internal sealed class Emitter
 
     // ----- accessors ------------------------------------------------------------------------------------------------------------
 
-    private void EmitAccessors()
+    /// <summary>
+    /// The <c>[UnsafeAccessor]</c> externs the members of <paramref name="type"/> read through, in this type's file.
+    /// Every type that reads a field shares its accessor, and every construction of a generic definition shares its
+    /// holder, so each is written once, in the file of the first type in emission order that needs it; a later file
+    /// calls it like any other member of the partial context.
+    /// </summary>
+    private void EmitAccessors(TypeModel type)
     {
-        var emitted = new HashSet<string>(StringComparer.Ordinal);
-        var generic = new Dictionary<string, List<MemberModel>>(StringComparer.Ordinal);
+        var any = false;
+        foreach (var member in type.Members)
+        {
+            if (member.Access != MemberAccess.UnsafeAccessor || member.GenericAccessor || !_emittedAccessors.Add(member.AccessorName))
+                continue;
+
+            var fieldType = Type(member.TypeId);
+            var receiver = member.DeclaringTypeIsValueType ? $"ref {member.DeclaringTypeGlobalName} o" : $"{member.DeclaringTypeGlobalName} o";
+            _w.Line($"[{KnownTypes.GlobalUnsafeAccessor}({KnownTypes.GlobalUnsafeAccessorKind}.Field, Name = \"{member.FieldMetadataName}\")]");
+            _w.Line($"private static extern ref {Param(fieldType)} {member.AccessorName}({receiver});");
+            any = true;
+        }
+
+        if (any)
+            _w.Line();
+
+        // The runtime maps the holder's class type parameters onto the declaring type's, so one holder per definition
+        // carries every accessor of that definition, whichever types read them; call sites name the constructed arguments.
+        foreach (var member in type.Members)
+        {
+            if (member.Access != MemberAccess.UnsafeAccessor || !member.GenericAccessor || !_emittedAccessors.Add(member.GenericHolderName))
+                continue;
+
+            using (_w.Block($"private static class {member.GenericHolderName}{member.GenericTypeParameters}{member.GenericConstraints}"))
+            {
+                foreach (var accessor in GenericHolders()[member.GenericHolderName])
+                {
+                    var openReceiver = accessor.DeclaringTypeIsValueType ? $"ref {accessor.OpenDeclaringTypeGlobalName} o" : $"{accessor.OpenDeclaringTypeGlobalName} o";
+                    _w.Line($"[{KnownTypes.GlobalUnsafeAccessor}({KnownTypes.GlobalUnsafeAccessorKind}.Field, Name = \"{accessor.FieldMetadataName}\")]");
+                    _w.Line($"internal static extern ref {accessor.OpenFieldTypeGlobalName} {accessor.AccessorName}({openReceiver});");
+                }
+            }
+
+            _w.Line();
+        }
+    }
+
+    /// <summary>Every generic accessor holder with its accessors in name order, over the whole closure; built on first use.</summary>
+    private Dictionary<string, List<MemberModel>> GenericHolders()
+    {
+        if (_genericHolders is not null)
+            return _genericHolders;
+
+        _genericHolders = new Dictionary<string, List<MemberModel>>(StringComparer.Ordinal);
         foreach (var type in _types)
         {
             foreach (var member in type.Members)
             {
-                if (member.Access != MemberAccess.UnsafeAccessor) continue;
-
-                if (member.GenericAccessor)
-                {
-                    if (!generic.TryGetValue(member.GenericHolderName, out var list))
-                        generic[member.GenericHolderName] = list = [];
-
-                    if (list.All(m => m.AccessorName != member.AccessorName))
-                        list.Add(member);
-
-                    continue;
-                }
-
-                if (!emitted.Add(member.AccessorName))
+                if (member.Access != MemberAccess.UnsafeAccessor || !member.GenericAccessor)
                     continue;
 
-                var fieldType = Type(member.TypeId);
-                var receiver = member.DeclaringTypeIsValueType ? $"ref {member.DeclaringTypeGlobalName} o" : $"{member.DeclaringTypeGlobalName} o";
-                _w.Line($"[{KnownTypes.GlobalUnsafeAccessor}({KnownTypes.GlobalUnsafeAccessorKind}.Field, Name = \"{member.FieldMetadataName}\")]");
-                _w.Line($"private static extern ref {Param(fieldType)} {member.AccessorName}({receiver});");
+                if (!_genericHolders.TryGetValue(member.GenericHolderName, out var list))
+                    _genericHolders[member.GenericHolderName] = list = [];
+
+                if (list.All(m => m.AccessorName != member.AccessorName))
+                    list.Add(member);
             }
         }
 
-        if (emitted.Count > 0)
-            _w.Line();
+        foreach (var list in _genericHolders.Values)
+            list.Sort((a, b) => string.CompareOrdinal(a.AccessorName, b.AccessorName));
 
-        // The runtime maps the holder's class type parameters onto the declaring type's,
-        // so one holder per definition carries every accessor of that definition;
-        // call sites name the constructed arguments.
-        foreach (var holder in generic.OrderBy(h => h.Key, StringComparer.Ordinal))
-        {
-            var first = holder.Value[0];
-            using (_w.Block($"private static class {holder.Key}{first.GenericTypeParameters}{first.GenericConstraints}"))
-            {
-                foreach (var member in holder.Value.OrderBy(m => m.AccessorName, StringComparer.Ordinal))
-                {
-                    var openReceiver = member.DeclaringTypeIsValueType ? $"ref {member.OpenDeclaringTypeGlobalName} o" : $"{member.OpenDeclaringTypeGlobalName} o";
-                    _w.Line($"[{KnownTypes.GlobalUnsafeAccessor}({KnownTypes.GlobalUnsafeAccessorKind}.Field, Name = \"{member.FieldMetadataName}\")]");
-                    _w.Line($"internal static extern ref {member.OpenFieldTypeGlobalName} {member.AccessorName}({openReceiver});");
-                }
-
-            }
-            _w.Line();
-        }
+        return _genericHolders;
     }
 
     private void EmitAccessorHolders()

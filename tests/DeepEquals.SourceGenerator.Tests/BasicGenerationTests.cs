@@ -123,6 +123,38 @@ public sealed class BasicGenerationTests
     }
 
     /// <summary>
+    /// An <c>[UnsafeAccessor]</c> extern lives in the file of the type whose members read it, not in the context file.
+    /// Every type reading one field shares its accessor, so it is written once, in the file of the first such type in
+    /// emission order, and the others call it across the partial class.
+    /// </summary>
+    [Fact]
+    public void Unsafe_accessors_sit_in_the_file_of_the_first_type_that_reads_them()
+    {
+        var run = RunAndAssertClean(
+            """
+            public class Base { private int _hidden; public Base(int hidden) { _hidden = hidden; } }
+            public sealed class First : Base { public First(int hidden) : base(hidden) { } }
+            public sealed class Second : Base { public Second(int hidden) : base(hidden) { } }
+
+            [GenerateDeepEquals(typeof(First))]
+            [GenerateDeepEquals(typeof(Second))]
+            public partial class Ctx : DeepEqualsContextBase { }
+            """);
+
+        var files = run.Result.Results.Single().GeneratedSources.ToDictionary(s => s.HintName, s => s.SourceText.ToString());
+        var externs = files.ToDictionary(f => f.Key, f => System.Text.RegularExpressions.Regex.Matches(f.Value, @"private static extern ref int (\w+)\(global::Tests\.Base o\);").Count);
+        if (externs.Values.Sum() == 0)
+            return; // the delegate path on a runtime without [UnsafeAccessor]
+
+        // Base is in the closure as the registered classes' base and sorts first, so its own file carries the accessor.
+        externs["Tests.Ctx.Base.g.cs"].Should().Be(1, "Base is the first type in emission order that reads Base._hidden; found {0}", string.Join(", ", externs.Select(e => $"{e.Key}={e.Value}")));
+        externs.Where(e => e.Key != "Tests.Ctx.Base.g.cs").Should().OnlyContain(e => e.Value == 0, "one accessor serves every reader");
+        files["Tests.Ctx.g.cs"].Should().NotContain("UnsafeAccessor(", "the context file carries no accessor");
+        foreach (var reader in new[] { "Tests.Ctx.First.g.cs", "Tests.Ctx.Second.g.cs" })
+            files[reader].Should().Contain("hidden(", "{0} reads the field through Base's accessor", reader).And.NotContain("extern");
+    }
+
+    /// <summary>
     /// Framework classes are named through aliases a file declares for what it uses, inside its namespace declaration;
     /// the namespace is file-scoped from C# 10 and a block below it (the fixtures compile the block form at C# 7.3).
     /// </summary>
