@@ -34,4 +34,9 @@
         <Project Path="smoke/consumers/Trimming.Safe/Trimming.Safe.csproj" />
         <Project Path="smoke/consumers/Trimming.Unsafe/Trimming.Unsafe.csproj" />
     </Folder>
+    <Folder Name="/benchmarks/">
+        <File Path="benchmarks/Directory.Build.props" />
+        <Project Path="benchmarks/DeepEquals.Benchmarks/DeepEquals.Benchmarks.csproj" />
+        <Project Path="benchmarks/DeepEquals.Generator.Benchmarks/DeepEquals.Generator.Benchmarks.csproj" />
+    </Folder>
 </Solution>

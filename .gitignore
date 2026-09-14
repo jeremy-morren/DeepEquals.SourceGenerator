@@ -369,3 +369,4 @@ artifacts/
 
 # The downstream projects restore into a folder of their own; see downstream/NuGet.config.
 downstream/.packages/
+BenchmarkDotNet.Artifacts/
