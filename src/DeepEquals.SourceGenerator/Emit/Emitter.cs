@@ -1201,7 +1201,7 @@ internal sealed class Emitter
     {
         switch (type.Kind)
         {
-            case TypeKind.Leaf when WideLeafWords(type, value, local, words):
+            case TypeKind.Leaf when WideLeafWords(type, value, local, words, reference && WordsInPlace):
                 return;
 
             case TypeKind.Struct when type.InlineAsSmallStruct:
@@ -1218,10 +1218,20 @@ internal sealed class Emitter
     }
 
     /// <summary>
-    /// Reads a wide leaf into <paramref name="local"/> and appends its 32-bit words: always the storage bits and never a
-    /// numeric conversion. False when the leaf is not wide.
+    /// Whether a wide leaf reached by reference contributes its words in place. Only on the .NET 8 asset, the one with
+    /// <c>[UnsafeAccessor]</c> but not its generic form: its JIT copies a record struct's decimal with one vector store
+    /// from which the four-byte word reads do not forward, and reading in place halves the struct's hash (FutureNotes
+    /// 2.7); on .NET 10 the copy is register-promoted and reading in place costs about a nanosecond instead.
     /// </summary>
-    private bool WideLeafWords(TypeModel type, string value, string local, List<string> words)
+    private bool WordsInPlace => _model.Capabilities.HasUnsafeAccessor && !_model.Capabilities.HasGenericUnsafeAccessor;
+
+    /// <summary>
+    /// Reads a wide leaf into <paramref name="local"/> and appends its 32-bit words: always the storage bits and never a
+    /// numeric conversion. A 16-byte leaf or a <c>DateTimeOffset</c> reached by <paramref name="reference"/> (a field, or
+    /// an accessor's <c>ref</c>) is read word by word in place instead, so no copy stands between the storage and the
+    /// stream. False when the leaf is not wide.
+    /// </summary>
+    private bool WideLeafWords(TypeModel type, string value, string local, List<string> words, bool reference = false)
     {
         // ReSharper disable once SwitchStatementHandlesSomeKnownEnumValuesWithDefault
         switch (type.LeafRule)
@@ -1249,17 +1259,31 @@ internal sealed class Emitter
                 return true;
 
             case LeafRule.DateTimeOffset:
-                _w.Line($"global::System.DateTimeOffset {local} = {value};");
-                Bits64($"{local}t", $"unchecked((ulong){local}.Ticks)", words);
-                Bits64($"{local}o", $"unchecked((ulong){local}.Offset.Ticks)", words);
+                if (!reference)
+                    _w.Line($"global::System.DateTimeOffset {local} = {value};");
+                var dto = reference ? value : local;
+                Bits64($"{local}t", $"unchecked((ulong){dto}.Ticks)", words);
+                Bits64($"{local}o", $"unchecked((ulong){dto}.Offset.Ticks)", words);
                 return true;
 
             case LeafRule.Guid:
+                if (reference)
+                {
+                    Bits128(value, "Guid", words);
+                    return true;
+                }
+
                 _w.Line($"global::System.Guid {local} = {value};");
                 Bits128(local, "Guid", words);
                 return true;
 
             case LeafRule.Decimal:
+                if (reference)
+                {
+                    Bits128(value, "Decimal", words);
+                    return true;
+                }
+
                 _w.Line($"decimal {local} = {value};");
                 Bits128(local, "Decimal", words);
                 return true;
@@ -1901,13 +1925,13 @@ internal sealed class Emitter
 
         if (plan.UseSwitch)
         {
-            foreach (var c in plan.HotLeaves)
+            foreach (var c in plan.Chained)
             {
                 using (_w.Block($"if ({ExactTest("x", Type(c.TypeId))})"))
                     EmitKnownCaseEquals(type, c, plan.Assignable);
             }
 
-            using (_w.Block($"switch ({GeneratedNames.Dispatch(type.ShortName)}.CaseIndex.TryGetValue(x.GetType(), out int i) ? i : -1)"))
+            using (_w.Block($"switch ({GeneratedNames.Dispatch(type.ShortName)}.CaseIndex.TryGetValue({MapKey("x")}, out int i) ? i : -1)"))
             {
                 for (var k = 0; k < plan.Exact.Count; k++)
                 {
@@ -1985,9 +2009,12 @@ internal sealed class Emitter
     /// case for a runtime type. Sealed assignable cases no earlier case accepts (<see cref="Hoisted"/>, string above
     /// all) come first, one method-table compare each. Then the runtime types the closure knows (<see cref="Exact"/>):
     /// a sealed or value type is one method-table compare, an unsealed class one GetType compare, and above
-    /// MaxSwitchCases one lookup in a prebuilt map (<see cref="UseSwitch"/>), with the leaves that dominate real
-    /// payloads (<see cref="HotLeaves"/>) tested ahead of the map. Last, for runtime types the closure does not know,
-    /// the first assignable case a side matches decides.
+    /// MaxSwitchCases one lookup in a prebuilt map (<see cref="UseSwitch"/>), with the cases most likely behind the
+    /// static type tested ahead of the map (<see cref="Chained"/>): the leaves that dominate real payloads, then the
+    /// closure's own types, up to MaxSwitchCases of them. A test costs 0.3 ns on .NET 10 and 1.5 ns on .NET 8 against a
+    /// map lookup of 4 and 22 (FutureNotes 2.7), so the chain wins for a dozen cases, and a user type behind
+    /// <c>object</c> is likelier than a cold BCL leaf. Last, for runtime types the closure does not know, the first
+    /// assignable case a side matches decides.
     /// </summary>
     private sealed class DispatchCases
     {
@@ -1995,7 +2022,7 @@ internal sealed class Emitter
         public List<DispatchCase> Hoisted { get; init; } = [];
         public List<DispatchCase> Exact { get; init; } = [];
         public bool UseSwitch { get; init; }
-        public List<DispatchCase> HotLeaves { get; init; } = [];
+        public List<DispatchCase> Chained { get; init; } = [];
     }
 
     private DispatchCases DispatchPlan(TypeModel type)
@@ -2009,12 +2036,23 @@ internal sealed class Emitter
         return new DispatchCases
         {
             Assignable = assignable,
-            Hoisted = assignable.Where(c => c.Hoistable).ToList(),
+            // string first: the hoisted tests are disjoint exact-type compares, so their order changes only the cost.
+            Hoisted = assignable.Where(c => c.Hoistable).OrderBy(c => Type(c.TypeId).GlobalName == "string" ? 0 : 1).ToList(),
             Exact = exact,
             UseSwitch = useSwitch,
-            HotLeaves = useSwitch ? HotLeafCases(exact).ToList() : [],
+            Chained = useSwitch ? HotLeafCases(exact).Concat(OwnCases(exact).Take(_model.Options.MaxSwitchCases)).ToList() : [],
         };
     }
+
+    /// <summary>
+    /// The exact cases that are the closure's own rather than built-in leaves, landing on their own rule: deep types,
+    /// collections, tuples, enums, simple and custom leaves. Value types first, since an id, an enum or a money struct
+    /// is what a payload boxes most often, then reference types, each in the exact order.
+    /// </summary>
+    private IEnumerable<DispatchCase> OwnCases(List<DispatchCase> exact) =>
+        exact.Where(c => c.ResolvedAssignable < 0 && Type(c.TypeId) is var t &&
+                (t.Kind != TypeKind.Leaf || t.LeafRule is LeafRule.Enum or LeafRule.UserSimple or LeafRule.Custom))
+            .OrderBy(c => Type(c.TypeId).IsValueType ? 0 : 1);
 
     /// <summary>The built-in leaves that most object-typed values are, in the order they are tested ahead of a dispatch map.</summary>
     private static readonly string[] HotLeafNames =
@@ -2037,7 +2075,8 @@ internal sealed class Emitter
 
     /// <summary>
     /// A value whose runtime type is exactly the case, as that type: a leaf by cast, since its rule takes the value; a
-    /// struct unboxed in place; a class or tuple viewed without a check.
+    /// struct unboxed in place; a class or tuple viewed without a check. Unboxing a wide leaf in place instead was
+    /// measured and dropped (FutureNotes 2.7): no gain, and a Tier0 frame slot per reference in the dispatch core.
     /// </summary>
     private static string ExactOperand(TypeModel target, string value) =>
         target.Kind == TypeKind.Leaf ? $"(({target.GlobalName}){value})"
@@ -2052,9 +2091,12 @@ internal sealed class Emitter
     /// A static class <paramref name="holder"/> whose <paramref name="field"/> is a <c>Dictionary&lt;Type, TValue&gt;</c>
     /// built on first use, one <c>Add</c> per entry; the explicit static constructor keeps the build lazy.
     /// </summary>
-    private void EmitTypeMap(string holder, string field, string valueType, List<(string Type, string Value)> entries)
+    private void EmitTypeMap(string holder, string field, string valueType, List<(string Type, string Value)> entries, bool byHandle = false)
     {
-        var dictionary = $"global::System.Collections.Generic.Dictionary<{KnownTypes.GlobalType}, {valueType}>";
+        // A dispatch map keyed by the runtime type handle's address is the same lookup as by Type without
+        // Type.GetHashCode and Type.Equals, virtual calls that cost 30 ns on .NET 8 (MapByHandle says where it wins).
+        var key = byHandle ? "global::System.IntPtr" : KnownTypes.GlobalType;
+        var dictionary = $"global::System.Collections.Generic.Dictionary<{key}, {valueType}>";
         using (_w.Block($"private static class {holder}"))
         {
             _w.Line($"static {holder}() {{ }}");
@@ -2063,12 +2105,22 @@ internal sealed class Emitter
             {
                 _w.Line($"{dictionary} map = new {dictionary}({entries.Count});");
                 foreach (var (type, value) in entries)
-                    _w.Line($"map.Add(typeof({type}), {value});");
+                    _w.Line(byHandle ? $"map.Add(typeof({type}).TypeHandle.Value, {value});" : $"map.Add(typeof({type}), {value});");
 
                 _w.Return("map");
             }
         }
     }
+
+    /// <summary>
+    /// Whether a dispatch map is keyed by type handle rather than Type: on .NET 8 and later, where the lookup measured
+    /// 4 to 12 ns faster (FutureNotes 2.7). On .NET Framework <c>IntPtr</c> has no <c>IEquatable</c>, so the default
+    /// comparer boxes, and <c>TypeHandle.Value</c> is a 3.6 ns call: the handle map measured 12.6 ns against 9.6 by Type.
+    /// </summary>
+    private bool MapByHandle => _model.Capabilities.HasUnsafeAccessor;
+
+    /// <summary>The key a dispatch map is probed with for <paramref name="value"/>'s runtime type.</summary>
+    private string MapKey(string value) => MapByHandle ? $"{value}.GetType().TypeHandle.Value" : $"{value}.GetType()";
 
     /// <summary>The Dictionary{Type, int} holders of large dispatch shapes, emitted after the cores of the type that asked for them.</summary>
     private void EmitDispatchHolders()
@@ -2076,7 +2128,7 @@ internal sealed class Emitter
         foreach (var (type, exact) in _pendingDispatchHolders)
         {
             var cases = exact.Select((c, k) => (Type(c.TypeId).GlobalName, k.ToString(System.Globalization.CultureInfo.InvariantCulture))).ToList();
-            EmitTypeMap($"{GeneratedNames.Dispatch(type.ShortName)}", "CaseIndex", "int", cases);
+            EmitTypeMap($"{GeneratedNames.Dispatch(type.ShortName)}", "CaseIndex", "int", cases, byHandle: MapByHandle);
             _w.Line();
         }
 
@@ -2150,10 +2202,10 @@ internal sealed class Emitter
 
             if (plan.UseSwitch)
             {
-                foreach (var c in plan.HotLeaves)
+                foreach (var c in plan.Chained)
                     _w.Line($"if ({ExactTest("o", Type(c.TypeId))}) return {KnownCaseHash(type, c, plan.Assignable, level)};");
 
-                using (_w.Block($"switch ({GeneratedNames.Dispatch(type.ShortName)}.CaseIndex.TryGetValue(o.GetType(), out int i) ? i : -1)"))
+                using (_w.Block($"switch ({GeneratedNames.Dispatch(type.ShortName)}.CaseIndex.TryGetValue({MapKey("o")}, out int i) ? i : -1)"))
                 {
                     for (var k = 0; k < plan.Exact.Count; k++)
                         _w.Line($"case {k}: return {KnownCaseHash(type, plan.Exact[k], plan.Assignable, level)};");
@@ -2724,8 +2776,8 @@ internal sealed class Emitter
                 : Eq(key, "a", "b");
             _w.Arrow($"public bool Equals({elementName} a, {elementName} b{stateParam})", entryEq);
             // The matching fingerprint stays 32-bit: it keys the packed (hash, index) entries of the unordered runtime.
-            var fingerprint = EntryHash(type, key, value, "a", forMatching: true);
-            _w.Arrow($"public int GetHashCode({elementName} a{HashDepthParam(type)})", fingerprint);
+            using (_w.Member($"public int GetHashCode({elementName} a{HashDepthParam(type)})"))
+                _w.Return(EntryHash(type, key, value, "a", forMatching: true));
         }
 
         // Level 1 hash, and the deeper levels a fingerprint reaches: Combine(Count, sum of entry hashes) with empty-zero finalization.
@@ -2736,20 +2788,25 @@ internal sealed class Emitter
                 _w.Line("if (o is null) return 0;");
                 EmitHashGuard(type);
                 _w.Line("int sum = 0;");
-                var entry = $"foreach ({elementName} e in {{0}}) sum = unchecked(sum + {EntryHash(type, key, value, "e", forMatching: false, level)});";
+                void SumLoop(string source)
+                {
+                    using (_w.Block($"foreach ({elementName} e in {source})"))
+                        _w.Line($"sum = unchecked(sum + {EntryHash(type, key, value, "e", forMatching: false, level)});");
+                }
+
                 if (isConcrete)
                 {
                     _w.Line("int count = o.Count;");
-                    _w.Line(string.Format(entry, "o"));
+                    SumLoop("o");
                 }
                 else
                 {
                     _w.Line($"{iface} oi = o;");
                     _w.Line("int count = oi.Count;");
                     using (_w.Block($"if (o is {concrete} known)"))
-                        _w.Line(string.Format(entry, "known"));
+                        SumLoop("known");
                     using (_w.Block("else"))
-                        _w.Line(string.Format(entry, $"(global::System.Collections.Generic.IEnumerable<{elementName}>)o"));
+                        SumLoop($"(global::System.Collections.Generic.IEnumerable<{elementName}>)o");
                 }
 
                 _w.Line($"int h = {KnownTypes.DeqHashCode}.Combine(count, sum);");
@@ -2785,12 +2842,29 @@ internal sealed class Emitter
     /// </summary>
     private string EntryHash(TypeModel container, TypeModel key, TypeModel? value, string entry, bool forMatching, int level = 1)
     {
+        var words = new List<string>();
         if (value is null)
-            return forMatching ? FingerprintWord(key, entry) : HashOrOmit(key, entry, level, container.ElementIsSameScc) ?? "0";
+        {
+            EntryWords(key, entry, forMatching, level, container.ElementIsSameScc, $"{entry}w", words);
+            return words.Count == 1 ? words[0] : Combine(words);
+        }
 
-        var k = forMatching ? FingerprintWord(key, $"{entry}.Key") : HashOrOmit(key, $"{entry}.Key", level, container.KeyIsSameScc) ?? "0";
-        var v = forMatching ? FingerprintWord(value, $"{entry}.Value") : HashOrOmit(value, $"{entry}.Value", level, container.ValueIsSameScc) ?? "0";
-        return Combine([k, v]);
+        EntryWords(key, $"{entry}.Key", forMatching, level, container.KeyIsSameScc, $"{entry}k", words);
+        EntryWords(value, $"{entry}.Value", forMatching, level, container.ValueIsSameScc, $"{entry}v", words);
+        return Combine(words);
+    }
+
+    /// <summary>
+    /// The words one part of an entry contributes to the entry's hash, in statement context: a wide leaf is read once
+    /// into <paramref name="local"/> and split into its words, so the entry mixes them into one stream instead of
+    /// finishing a nested hash first; anything else contributes its single fingerprint or hash word, <c>0</c> when omitted.
+    /// </summary>
+    private void EntryWords(TypeModel part, string value, bool forMatching, int level, bool sameScc, string local, List<string> words)
+    {
+        if (part.Kind == TypeKind.Leaf && WideLeafWords(part, value, local, words))
+            return;
+
+        words.Add(forMatching ? FingerprintWord(part, value) : HashOrOmit(part, value, level, sameScc) ?? "0");
     }
 
     // ----- products -------------------------------------------------------------------------------------------------------------
