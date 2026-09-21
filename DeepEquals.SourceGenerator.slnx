@@ -5,6 +5,7 @@
         <File Path="README.md" />
         <File Path="docs/Diagnostics.md" />
         <File Path="docs/Implementation.md" />
+        <File Path="version.props" />
     </Folder>
     <Folder Name="/src/">
         <Project Path="src/DeepEquals.SourceGeneration.Framework/DeepEquals.SourceGeneration.Framework.csproj" />

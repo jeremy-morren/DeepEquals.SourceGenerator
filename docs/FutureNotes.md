@@ -106,6 +106,10 @@ stateless matching pass over that matrix is the candidate fix; the fingerprint b
 `Graph`, 58 µs under `Path` and 15 µs under `Tree`: `Path` and `Tree` re-compare a shared subgraph once per path to it.
 Documented; such data belongs under `Graph`.
 
+**Object dispatch costs about 3.5 ns per value over a virtual `Equals`** on .NET 10 and .NET 8, which is Payload's
+1.5; the state, the closure size and the cycle mode are not involved (§2.7). **.NET Framework 4.7.2 trails the
+hand-written code** on Customer and list equality by about 20% and on Payload by 70% (§2.7).
+
 **Remaining size.** See §3 for what still costs bytes and the options not taken.
 
 ## 2. Performance findings
@@ -273,6 +277,155 @@ including the browser interpreter, where it was in doubt because XxHash3 emulate
 `double[]` and `Point3[]` of 1,000 compare in 1 to 2% of the built-in time in the browser and hash in 4 to 8%. The byte
 path therefore stays on for WebAssembly.
 
+### 2.7 Emitter changes measured on 16 and 17 September 2026
+
+**How.** The scenario harness, `ShortRun` in process, on an idle machine overnight (17 September, 02:00 to 05:00): the
+full equality suite twice per package on .NET 10 and .NET 8, targeted runs on .NET Framework 4.7.2, and a scratch probe
+project. Every number is the generated-over-built-in ratio inside one run, and a change counts only where both repeats
+and both runtimes agree. A daytime attempt on 16 September, with the machine in use, drifted 20 to 40% between launches
+on the built-in side alone and is not quoted. Packages `1.0.0-alpha260916100` (baseline) to `107` (final) are in the
+local feed until the smoke suite needs it emptied (§8); the raw reports are under `D:\Temp\deepequals\night`.
+
+**What was built**, one package per step:
+
+- **A. Boxed leaves unboxed in place** (101). A dispatch core compared a boxed decimal as `DecimalEquals((decimal)x,
+  (decimal)y)`, two copies out of the boxes; the case took `Unsafe.Unbox<decimal>(x)` instead. **No effect; reverted.**
+- **C. `string` first among the hoisted dispatch tests** (102). The hoisted sealed cases kept the assignable order, which
+  sorts by display name, so `System.TimeZoneInfo` and `System.Version` were tested before `string`. **No effect; kept**,
+  since it costs nothing and matches the comment that claimed it.
+- **B. Wide leaves flattened into entry hashes** (103). A dictionary value or set element of a wide leaf hashed as a
+  nested `Hash(decimal)`, four words with their own finalization, inside `Combine(key, value)`; the entry stream takes
+  the four words directly (`EntryWords`), as a member stream already did. **Kept.**
+- **D. Wide leaf words read in place** (104). A member stream copied a decimal, Guid or `DateTimeOffset` reached
+  through a field or `[UnsafeAccessor]` into a local before splitting it into words; the words are read through the
+  reference instead (`WideLeafWords`, `reference`). **Kept for the .NET 8 asset only** (`WordsInPlace`).
+- **E. The dispatch map keyed by type handle** (105). Above `MaxSwitchCases` a dispatch core looks its runtime type up
+  in a `Dictionary<Type, int>`; it is now a `Dictionary<IntPtr, int>` over `TypeHandle.Value`, so the lookup hashes and
+  compares a pointer instead of calling `Type.GetHashCode` and `Type.Equals`. **Kept.**
+
+**Result**, baseline against A to D together, both repeats:
+
+| Scenario | .NET 10 | .NET 8 |
+|---|---|---|
+| Payload (object dispatch) Equals | 1.60, 1.68 → 1.51, 1.53 | 1.30, 1.37 → 1.38, 1.45 |
+| Payload hash | 1.50, 1.56 → 1.59, 1.53 | 1.16, 1.26 → 1.15, 1.19 |
+| Customer hash | 1.26, 1.28 → 1.25, 1.24 | 1.26, 1.24 → 1.27, 1.25 |
+| `Dictionary<string, decimal>` x100 hash | 1.37, 1.39 → 1.25, 1.20 (812 → 746, 797 → 701 ns) | 1.32, 1.36 → 1.18, 1.26 (821 → 745, 824 → 767 ns) |
+| `Dictionary<SkuId, int>` x100 hash | 2.06, 1.98 → 2.07, 2.01 | 2.08, 2.08 → 2.06, 2.07 |
+| `IReadOnlyList<OrderLine>` x100 hash | 1.36, 1.38 → 1.35, 1.38 | 1.38, 1.40 → 1.37, 1.43 |
+| Order hash | 1.47, 1.49 → 1.48, 1.47 | 1.39, 1.42 → 1.34, 1.34 |
+| `record struct Money` hash | 1.65, 1.90 → 2.21, 2.12 (4.9 → 5.6, 4.8 → 5.4 ns) | 2.89, 2.81 → 1.53, 1.39 (11.9 → 6.3, 10.9 → 5.6 ns) |
+| `record struct Point3` hash | 2.23, 2.58 → 2.39, 2.45 | 2.48, 2.57 → 2.48, 2.59 |
+| everything else | within 0.05 | within 0.05 |
+
+Isolation runs on .NET 8: 103 (A, B and C without D) leaves Money's hash at 11.5 ns, so the halving is D alone; 101
+(A alone) leaves Payload at 1.36. On .NET 10, D costs Money 0.6 ns in both repeats, and a variant that took one
+`ref readonly` local instead of four accessor calls (106) cost 1.1 ns: there the copy is register-promoted and the
+word reads out of it are free, while on .NET 8 the copy is one vector store from which the four-byte reads do not
+forward (§2.1, §2.2). Customer's decimal, a class field, moved on neither runtime. Hence the gate: in place only on the
+asset that has `[UnsafeAccessor]` but not its generic form, which is .NET 8 exactly.
+
+**B showed nothing on 16 September and 8 to 14% overnight**: the string-keyed dictionary hashes an entry in about 8 ns
+and the nested finalization overlaps with the next entry's stream, so the saving is a fraction of a round per entry,
+visible only on a quiet machine.
+
+**Where Payload's 1.5 comes from.** A probe project with four contexts over the same `Payload` (a `Dictionary<string,
+object>` of eight values of eight types, plus one `object`), nanoseconds, .NET 10 / .NET 8:
+
+| Comparison | .NET 10 | .NET 8 |
+|---|---|---|
+| hand-written (virtual `Equals` per value) | 81 | 139 |
+| generated, Graph, the downstream context | 115 | 178 |
+| generated, Graph, a context of `Payload` alone | 110 | 185 |
+| generated, Path | 120 | 177 |
+| generated, Tree (no state) | 111 | 171 |
+| the dictionary alone, generated / hand loop | 116 / 78 | 235 / 129 |
+
+The state costs nothing: Graph, Path and Tree agree, and the closure size does not matter. The gap is per dispatched
+value, about 3.5 ns over a virtual `Equals` on both runtimes. A one-entry dictionary per value type (below) puts it in
+the chain plus the call: 0.3 to 0.4 ns per `is` test on .NET 10 and 1.5 ns on .NET 8, from `int` (fourth test) to
+`DateTime` (tenth), and the map path for a type that is not a hot leaf (`SkuId`) at 7 ns on .NET 10 and 24 ns on
+.NET 8 over the hand loop before E, 4 and 22 after it. The dispatch core is at Tier1 with PGO
+(`DOTNET_JitDisasmSummary`: IL 4,147 bytes, 8 KB of code), so it is not an unoptimized method. One-entry dictionary,
+generated under Tree / hand loop:
+
+| Value | .NET 10 | .NET 8 |
+|---|---|---|
+| `int` | 11.1 / 6.8 | 31.7 / 15.8 |
+| `long` | 9.6 / 5.1 | 28.3 / 13.5 |
+| `string` | 12.0 / 7.2 | 31.7 / 16.4 |
+| `decimal` | 11.9 / 8.9 | 33.3 / 18.4 |
+| `DateTime` | 12.8 / 6.2 | 40.9 / 15.8 |
+| `Guid` | 12.9 / 6.2 | 39.2 / 15.5 |
+| `SkuId`, through the map | 21.5 / 6.4 | 55.7 / 16.8 |
+| `SkuId`, map keyed by handle (E) | 17.7 / 6.3 | 53.2 / 16.3 |
+
+On .NET 8 the one-entry call carries about 12 ns more fixed cost than on .NET 10, which the eight-entry Payload does
+not show per value; the `Comparer` checks of the string-keyed fast path, which on .NET 8 unwrap the dictionary's
+internal non-randomized comparer through a virtual call per side, are the candidate, unmeasured. E on the Payload
+scenario itself: 182 → 165 ns on .NET 8 (ratio 1.45 → 1.27), unresolved on .NET 10, where the built-in side moved 30%
+between the two runs.
+
+**F. The closure's own cases chained ahead of the map** (109, from the same numbers). The chain costs less than the
+map until about a dozen tests on either runtime, and a user type behind `object` is likelier than
+`System.Drawing.Size`, so above `MaxSwitchCases` the chain now holds the hot leaves and then up to `MaxSwitchCases` of
+the closure's own exact cases, value types first (an id, an enum, a money struct is what a payload boxes most often),
+and only the rest go through the map (`DispatchCases.Chained`, `OwnCases`). In the probe's context the `SkuId` value
+went from the map to the twelfth test: 21.5 → 15.0 ns under Tree and 32 → 18 under Graph on .NET 10. The Payload
+scenario was measured only with the machine in use afterwards and could not resolve it. The cost side: a cold BCL
+leaf now passes up to twelve more tests before the map, about 4 ns on .NET 10 and 18 on .NET 8.
+
+**.NET Framework 4.7.2** (one run each, unchanged by A to D) has gaps of its own that .NET Core does not: Customer
+Equals 1.24, `IReadOnlyList<OrderLine>` Equals 1.22, Payload Equals 1.72 and hash 1.68, Money hash 1.94,
+`Dictionary<SkuId, int>` hash 1.58, while `Dictionary<string, decimal>` Equals is 0.78 and Customer's hash 0.66. The
+probe on net472 (morning of 17 September, one run) places Payload's gap in the dispatch core again, at about 13 ns
+per value over a virtual `Equals` (a hand loop calling the generated `object` comparer per value: 299 ns; the generated
+dictionary core: 282; the hand loop with virtual `Equals`: 196), but not in the type tests, which cost 0.3 to 0.5 ns
+each there as on Core, nor in the map, 9.6 ns by `Type`. What the 60-case core spends the rest on is unattributed; a
+hand-written chain of a few cases against the generated core would say whether the Framework JIT handles the method's
+size badly. E is a loss there, 12.6 ns against 9.6: `IntPtr` has no `IEquatable<IntPtr>` on .NET Framework, so the
+default comparer boxes, and `TypeHandle.Value` is a 3.6 ns call; hence `MapByHandle` keys by handle only on .NET 8
+and later. A Graph state costs about 24 ns per top-level call on net472 against 3 on Core, since the netstandard2.0
+asset has no `InlineArray` and zeroes eight explicit pair fields. The Customer and list equality gaps are unmeasured;
+the getter copies of decimal, Guid and `DateTime` members through `in` parameters, the §2.2 stall on an older JIT with
+no `[UnsafeAccessor]` to avoid it, are the candidate, and a `ref`-returning `DynamicMethod` accessor (`ldflda`) would be
+the netstandard2.0 counterpart to test. Money's hash and the `SkuId` dictionary's are the seeded Marvin and the seeded
+stream against the runtime's native, non-randomized string hash and two multiply-adds: floors, by the decision to keep
+the seed.
+
+**Floors, not defects of these changes.** `Dictionary<SkuId, int>`'s hash at 2.0 and Point3's at 2.5 are the seeded
+stream against the record's two multiply-adds. An unordered hash sums per-entry hashes, and without a finalization per
+entry the sum is linear in the entries, so two dictionaries that swap values between keys collide whatever the seed;
+the per-entry finalization stays. Trees under Graph at 6.0 (12.1 µs against 2.0), Path at 3.4 and Tree at 1.2 are
+§2.4; the chain suite puts Graph at 19 ns per node (10 nodes: 190 ns against Tree's 13), and a 100,000-node chain at
+2.9 ms Graph, 3.3 ms Path, 0.14 ms Tree. Bit blocks are unchanged: 16 doubles compare in 2.0 ns against 10.7 and hash
+in 7.1 against 11.3; the same 16 doubles hashed through an `IReadOnlyList<double>` view cost 42 ns, six times the array.
+
+**Tier0 frame size bounds recursion.** The first form of A unboxed every value leaf in place, including the rules that
+take the value (`==` on `Guid`, `.Equals` on the drawing structs, the component reads of a `Matrix4x4`). It failed
+`Tree_boxed_struct_cycle_through_object_throws`: a `Cell -> object -> Cell` chain 512 deep hit
+`InsufficientExecutionStackException` before the depth guard. The test runs the cores a handful of times, so they are
+at Tier0 (`DOTNET_JitDisasm` shows `MinOpts`), where every by-value copy made from a reference and every byref
+temporary gets its own frame slot: the `object` dispatch core's frame went from 0x880 to 0xCA0 bytes with all leaves
+unboxed in place, and 0x8A0 with decimal and `DateTimeOffset` alone. A dispatch core over every BCL leaf is on the
+recursion path of any cyclic type behind `object`, so its Tier0 frame is a budget, not a detail.
+
+**The final form** (107: B, C, D gated to .NET 8, E; A reverted), one full run against both baseline repeats:
+
+| Scenario | .NET 10 baseline → final | .NET 8 baseline → final |
+|---|---|---|
+| Payload Equals | 1.60, 1.68 → 1.57 | 1.30, 1.37 → 1.33 |
+| Payload hash | 1.50, 1.56 → 1.47 | 1.16, 1.26 → 1.17 |
+| `Dictionary<string, decimal>` x100 hash | 1.37, 1.39 → 1.28 | 1.32, 1.36 → 1.21 |
+| `record struct Money` hash | 1.65, 1.90 → 1.92 (4.9, 4.8 → 4.8 ns) | 2.89, 2.81 → 1.34 (11.9, 10.9 → 5.4 ns) |
+| Order hash | 1.47, 1.49 → 1.45 | 1.39, 1.42 → 1.34 |
+| everything else | within the repeats' own spread | within the repeats' own spread |
+
+What the night settles: the four ideas of 16 September were worth a tenth of a nanosecond each on .NET 10, the .NET 8
+decimal copy was the one real defect and is fixed where it exists, and the ratios still above one are the object
+dispatch chain (§1, now shorter for the closure's own types through E and F), the seeded hash against a record's
+polynomial, and the cycle guards, none of which these changes touch.
+
 ## 3. Generated size
 
 **Measured** over the downstream models (144 files, C# 14) and the scale closures of §1:
@@ -436,6 +589,11 @@ analysis; the generator tests compile every generated file that way and fail on 
   --save-to=report.xml`, where the pattern file is `<Patterns><Pattern>DeepEquals.SourceGenerator.*</Pattern></Patterns>`,
   gives own and total time per function in XML; both tools live under
   `%LocalAppData%\JetBrains\Installations\dotTrace<version>`. The two profilers agreed on every hotspot.
+- **BenchmarkDotNet truncates a scenario name** in its tables to its first five and last five characters with the
+  length in brackets: `Dicti(...) x100 [26]` is `Dictionary<SkuId,int> x100` and `[31]` is `Dictionary<string,decimal>
+  x100`. Read the length before attributing a row. A `--filter` glob matches the full name including the parameter, so
+  `"*EqualityBenchmarks*_Equals*string,decimal*"` selects one scenario, and `--job Long` adds a `LongRun` job beside the
+  config's `ShortRun` rather than replacing it.
 - **The Mono smoke test needs `C:\Program Files\Mono\bin` on `PATH`** and skips otherwise. A browser test failing with
   `STATUS_INVALID_IMAGE_FORMAT` means a damaged Chromium headless shell;
   `playwright.ps1 install --force chromium-headless-shell` fixes it.
