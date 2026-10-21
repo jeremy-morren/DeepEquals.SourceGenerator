@@ -64,15 +64,22 @@ internal sealed class CodeWriter
     }
 
     /// <summary>
-    /// Writes <paramref name="text"/>, which may span several lines. An expression builder returns a string, so a
-    /// wide one can only be broken up by putting newlines in that string; every line it contains is written at the
-    /// block's indentation, and whatever relative indentation the expression carries is added on top of it.
+    /// Writes <paramref name="text"/>: one statement that embeds none, or any line outside a method body. It may span
+    /// several lines. An expression builder returns a string, so a wide one can only be broken up by putting
+    /// newlines in that string; every line it contains is written at the block's indentation, and whatever
+    /// relative indentation the expression carries is added on top of it.
     /// </summary>
     public void Line(string text)
     {
-        text = SplitEmbedded(text);
-        Count(text);
+        Count(Statement.Simple);
         WriteLines(text);
+    }
+
+    /// <summary>A local declaration, which C# does not accept as the whole body of a control statement (CS1023).</summary>
+    public void Local(string declaration)
+    {
+        Count(Statement.Declaration);
+        WriteLines(declaration);
     }
 
     private void WriteLines(string text)
@@ -123,8 +130,9 @@ internal sealed class CodeWriter
     {
         var start = _builder.Length;
         var indent = _indent;
-        Open(signature);
-        return new MemberCloser(this, signature, start, indent, _builder.Length);
+        Open(signature, Kind.None);
+        var bodyStart = _builder.Length;
+        return new Scope(() => CloseMember(signature, start, indent, bodyStart));
     }
 
     private void CloseMember(string signature, int start, int indent, int bodyStart)
@@ -170,41 +178,110 @@ internal sealed class CodeWriter
     private static string IndentLines(string text) => IndentUnit + text.Replace("\n", "\n" + IndentUnit);
 
     /// <summary>
-    /// A braced block, closed when the returned scope is disposed. The emitter's own nesting then mirrors the
+    /// A braced block that keeps its braces, closed when the returned scope is disposed: a type or member, or a
+    /// <c>try</c>, <c>finally</c>, <c>switch</c> or <c>using</c>. The emitter's own nesting then mirrors the
     /// generated code's, and the compiler rather than convention keeps the braces balanced.
     /// </summary>
     public IDisposable Block(string header)
     {
-        Open(header);
-        return new Closer(this);
+        Open(header, Kind.None);
+        return new Scope(Close);
     }
+
+    /// <summary>A <c>try</c> whose <c>finally</c> holds <paramref name="cleanup"/>, written when the returned scope is disposed.</summary>
+    public IDisposable TryFinally(string cleanup)
+    {
+        var body = Block("try");
+        return new Scope(() =>
+        {
+            body.Dispose();
+            using (Block("finally"))
+                Line(cleanup);
+        });
+    }
+
+    /// <summary>A scope that writes nothing, for a caller whose block turns out not to be needed.</summary>
+    public static IDisposable NoScope { get; } = new Scope(null);
 
     /// <summary>A bare braced block, for a switch section that declares locals.</summary>
     public IDisposable Block()
     {
-        Count("{");
-        OpenBrace(string.Empty);
-        return new Closer(this);
+        Count(Statement.Compound);
+        OpenBrace(Kind.None);
+        return new Scope(Close);
+    }
+
+    /// <summary>An <c>if</c> whose block loses its braces when it holds a single statement that can stand alone.</summary>
+    public IDisposable If(string condition)
+    {
+        Open($"if ({condition})", Kind.If);
+        return new Scope(Close);
+    }
+
+    /// <summary><c>if (condition)</c>, then <paramref name="statement"/> on the next line one level in.</summary>
+    public void If(string condition, string statement)
+    {
+        using (If(condition))
+            Line(statement);
+    }
+
+    /// <summary>The <c>else</c> of the <see cref="If(string)"/> closed just before it.</summary>
+    public IDisposable Else()
+    {
+        Open("else", Kind.Else);
+        return new Scope(Close);
     }
 
     /// <summary>A counted loop over <c>i</c> from zero to <paramref name="limit"/>, the shape every element walk takes.</summary>
-    public IDisposable For(string limit) => Block($"for (int i = 0; i < {limit}; i++)");
+    public IDisposable For(string limit)
+    {
+        Open($"for (int i = 0; i < {limit}; i++)", Kind.Loop);
+        return new Scope(Close);
+    }
+
+    /// <summary><c>foreach (iteration)</c>, where <paramref name="iteration"/> is the <c>T e in source</c> part.</summary>
+    public IDisposable Foreach(string iteration)
+    {
+        Open($"foreach ({iteration})", Kind.Loop);
+        return new Scope(Close);
+    }
+
+    /// <summary><c>foreach (iteration)</c>, then <paramref name="statement"/> on the next line one level in.</summary>
+    public void Foreach(string iteration, string statement)
+    {
+        using (Foreach(iteration))
+            Line(statement);
+    }
+
+    public IDisposable While(string condition)
+    {
+        Open($"while ({condition})", Kind.Loop);
+        return new Scope(Close);
+    }
 
     /// <summary>
     /// Opens a block that a later <see cref="Close"/> ends. For the file skeleton only, whose namespace and
     /// containing types are a run of blocks whose number is not known until the model is read.
     /// </summary>
-    public void Open(string header)
+    public void Open(string header) => Open(header, Kind.None);
+
+    private void Open(string header, Kind kind)
     {
-        Line(header);
-        OpenBrace(header);
+        Count(kind switch
+        {
+            Kind.None => Statement.Compound,
+            Kind.If => Statement.If,
+            _ => Statement.Simple,
+        });
+        WriteLines(header);
+        OpenBrace(kind);
     }
 
-    private void OpenBrace(string header)
+    private void OpenBrace(Kind kind)
     {
         var braceStart = _builder.Length;
         WriteLines("{");
-        _frames.Add(new Frame(header, braceStart, _builder.Length - braceStart));
+        _frames.Add(new Frame(kind, braceStart, _builder.Length - braceStart));
         _indent++;
     }
 
@@ -246,220 +323,66 @@ internal sealed class CodeWriter
     /// <summary>The blocks open now, innermost last, each counting the statements written directly inside it.</summary>
     private readonly List<Frame> _frames = [];
 
-    private sealed class Frame(string header, int braceStart, int braceLength)
+    private sealed class Frame(Kind kind, int braceStart, int braceLength)
     {
-        public Kind Kind { get; } = HeaderKind(header);
+        public Kind Kind { get; } = kind;
         public int BraceStart { get; } = braceStart;
         public int BraceLength { get; } = braceLength;
         public int Statements { get; set; }
 
-        /// <summary>The first line of the first statement.</summary>
-        public string? First { get; set; }
+        /// <summary>What the first statement is.</summary>
+        public Statement? First { get; set; }
 
         /// <summary>The last statement ends with an <c>if</c> that has no <c>else</c>.</summary>
         public bool EndsWithOpenIf { get; set; }
     }
 
+    /// <summary>What a block's header makes it: a control statement's block can drop its braces, any other cannot.</summary>
     private enum Kind { None, If, Else, Loop }
 
+    /// <summary>What a statement is, as far as the control statement holding it is concerned.</summary>
+    private enum Statement
+    {
+        /// <summary>Accepted as an embedded statement: an expression, jump, loop or <c>else</c>.</summary>
+        Simple,
+
+        /// <summary>An <c>if</c>, which an <c>else</c> holding it alone would read as an <c>else if</c>.</summary>
+        If,
+
+        /// <summary>A local declaration, which C# does not accept as an embedded statement (CS1023).</summary>
+        Declaration,
+
+        /// <summary>A statement with a block of its own that is not a control statement's, kept braced for readability.</summary>
+        Compound,
+    }
+
     /// <summary>Counts a statement written directly in the innermost block, when that block could drop its braces.</summary>
-    private void Count(string text)
+    private void Count(Statement statement)
     {
         if (_frames.Count == 0 || _frames[^1].Kind == Kind.None)
             return;
 
-        var start = 0;
-        while (start < text.Length && char.IsWhiteSpace(text[start]))
-            start++;
-
-        if (start == text.Length ||
-            text[start] == '#' || 
-            string.CompareOrdinal(text, start, "//", 0, 2) == 0)
-            return;
-
         var frame = _frames[^1];
-        frame.Statements += Math.Max(1, TopLevelStatements(text));
-        frame.First ??= FirstLine(text).Trim();
-        frame.EndsWithOpenIf = CheckEndsWithOpenIf(text);
+        frame.Statements++;
+        frame.First ??= statement;
+
+        // An if ends open once its block closes; Close records that.
+        frame.EndsWithOpenIf = false;
     }
 
     /// <summary>
     /// Whether a block can drop its braces: it belongs to an <c>if</c>, <c>else</c>, <c>for</c>, <c>foreach</c> or
-    /// <c>while</c> and holds one statement that C# accepts as an embedded statement. A declaration is not one, and a
-    /// statement with a block of its own (<c>try</c>, <c>switch</c>, <c>unchecked</c>) keeps the braces around it
-    /// for readability. Under an <c>if</c> or <c>else</c> the statement must not end with an <c>if</c> lacking an
-    /// <c>else</c>, which would take the outer <c>else</c>; nor may an <c>else</c> hold a lone <c>if</c>, which
-    /// reads as an <c>else if</c>.
+    /// <c>while</c> and holds one statement that C# accepts as an embedded statement. Under an <c>if</c> or
+    /// <c>else</c> the statement must not end with an <c>if</c> lacking an <c>else</c>, which would take the outer
+    /// <c>else</c>; nor may an <c>else</c> hold a lone <c>if</c>, which reads as an <c>else if</c>.
     /// </summary>
     private static bool Embeddable(Frame frame)
     {
-        if (frame.Kind == Kind.None || frame.Statements != 1 || frame.First is not { } first)
-            return false;
-
-        if (first[0] == '{' || 
-            StartsWithWord(first, 0, "try", "switch", "unchecked", "checked", "do", "using", "lock", "fixed") || 
-            IsDeclaration(first))
+        if (frame.Kind == Kind.None || frame.Statements != 1 || frame.First is Statement.Declaration or Statement.Compound)
             return false;
 
         return frame.Kind == Kind.Loop || 
-               !frame.EndsWithOpenIf && !(frame.Kind == Kind.Else && StartsWithWord(first, 0, "if"));
-    }
-
-    private static Kind HeaderKind(string header)
-    {
-        if (StartsWithWord(header, 0, "if"))
-            return Kind.If;
-
-        if (StartsWithWord(header, 0, "else"))
-            return StartsWithWord(header, SkipSpaces(header, 4), "if") ? Kind.If : Kind.Else;
-
-        return StartsWithWord(header, 0, "for", "foreach", "while") ? Kind.Loop : Kind.None;
-    }
-
-    /// <summary>A local declaration, which C# does not accept as the whole body of a control statement (CS1023).</summary>
-    private static readonly System.Text.RegularExpressions.Regex Declaration = new(
-        @"^(?!(?:return|throw|yield|goto|await|break|continue|new|else)\b)(?:const\s+|ref\s+(?:readonly\s+)?|scoped\s+)?" +
-        @"(?:\([^()]*\)|(?:global::)?[A-Za-z_][\w.]*(?:<[^;=()]*>)?)(?:\[[,\s]*\])*\??\s+@?[A-Za-z_]\w*\s*(?:=(?![=>])|;)");
-
-    private static bool IsDeclaration(string line) => Declaration.IsMatch(line);
-
-    /// <summary>
-    /// <c>if (c) statement;</c> becomes the header, then the statement on the next line one level in; likewise
-    /// <c>else</c>, <c>for</c>, <c>foreach</c> and <c>while</c>, and again for the statement it holds. A header
-    /// followed by a block, or by more than one statement, is left as written.
-    /// </summary>
-    private static string SplitEmbedded(string text)
-    {
-        var headerEnd = EmbeddingHeaderEnd(text);
-        if (headerEnd < 0)
-            return text;
-
-        var rest = text[headerEnd..].TrimStart(' ');
-        if (rest.Length == 0 || rest[0] is '{' or ';' or '\n' || TopLevelStatements(rest) != 1)
-            return text;
-
-        return $"{text[..headerEnd]}\n{IndentLines(SplitEmbedded(rest))}";
-    }
-
-    /// <summary>Whether a statement written as text ends with an <c>if</c> that has no <c>else</c>.</summary>
-    private static bool CheckEndsWithOpenIf(string text)
-    {
-        var headerEnd = EmbeddingHeaderEnd(text);
-        if (headerEnd < 0)
-            return false;
-
-        return HeaderKind(text) == Kind.If || 
-               CheckEndsWithOpenIf(text[headerEnd..].TrimStart(' ', '\n'));
-    }
-
-    /// <summary>
-    /// The index just past the header of a statement that embeds another: past the parenthesised condition of
-    /// <c>if</c>, <c>else if</c>, <c>for</c>, <c>foreach</c> or <c>while</c>, or past a plain <c>else</c>; -1 for
-    /// any other statement.
-    /// </summary>
-    private static int EmbeddingHeaderEnd(string text)
-    {
-        var i = 0;
-        if (StartsWithWord(text, 0, "else"))
-        {
-            i = SkipSpaces(text, 4);
-            if (!StartsWithWord(text, i, "if"))
-                return 4;
-        }
-
-        foreach (var keyword in ConditionKeywords)
-        {
-            if (!StartsWithWord(text, i, keyword))
-                continue;
-
-            var open = SkipSpaces(text, i + keyword.Length);
-            if (open >= text.Length || text[open] != '(')
-                return -1;
-
-            var close = Scan(text, open, stopAtClose: true);
-            return close < 0 ? -1 : close + 1;
-        }
-
-        return -1;
-    }
-
-    private static readonly string[] ConditionKeywords = ["if", "foreach", "for", "while"];
-
-    /// <summary>The semicolons outside every bracket and literal: one per statement the text holds.</summary>
-    private static int TopLevelStatements(string text) => Scan(text, 0, stopAtClose: false);
-
-    /// <summary>
-    /// Walks <paramref name="text"/> from <paramref name="start"/>, skipping string and character literals. With
-    /// <paramref name="stopAtClose"/> it returns the index of the bracket closing the one at <paramref name="start"/>
-    /// (-1 if none); otherwise the number of semicolons at depth zero.
-    /// </summary>
-    private static int Scan(string text, int start, bool stopAtClose)
-    {
-        var depth = 0;
-        var semicolons = 0;
-        for (var i = start; i < text.Length; i++)
-        {
-            var c = text[i];
-            switch (c)
-            {
-                case '"' or '\'':
-                    var verbatim = c == '"' && i > 0 && text[i - 1] == '@';
-                    for (i++; i < text.Length; i++)
-                    {
-                        if (!verbatim && text[i] == '\\')
-                            i++;
-                        else if (text[i] == c && !(verbatim && i + 1 < text.Length && text[i + 1] == '"' && ++i > 0))
-                            break;
-                    }
-
-                    break;
-                
-                case '(' or '[' or '{':
-                    depth++;
-                    break;
-                
-                case ')' or ']' or '}':
-                    depth--;
-                    if (stopAtClose && depth == 0)
-                        return i;
-                    break;
-                
-                case ';' when depth == 0:
-                    semicolons++;
-                    break;
-            }
-        }
-
-        return stopAtClose ? -1 : semicolons;
-    }
-
-    /// <summary>Whether one of <paramref name="words"/> is at <paramref name="index"/> as a whole word. A loop, not LINQ: this runs several times per generated line.</summary>
-    private static bool StartsWithWord(string text, int index, params string[] words)
-    {
-        foreach (var word in words)
-        {
-            var end = index + word.Length;
-            if (end <= text.Length && 
-                string.CompareOrdinal(text, index, word, 0, word.Length) == 0 &&
-                (end == text.Length || !(char.IsLetterOrDigit(text[end]) || text[end] == '_')))
-                return true;
-        }
-
-        return false;
-    }
-
-    private static int SkipSpaces(string text, int index)
-    {
-        while (index < text.Length && text[index] == ' ')
-            index++;
-
-        return index;
-    }
-
-    private static string FirstLine(string text)
-    {
-        var newline = text.IndexOf('\n');
-        return newline < 0 ? text : text[..newline];
+               !frame.EndsWithOpenIf && !(frame.Kind == Kind.Else && frame.First == Statement.If);
     }
 
     /// <summary>The number of characters written so far; a caller compares two readings to learn whether anything was written between them.</summary>
@@ -494,35 +417,8 @@ internal sealed class CodeWriter
         _builder.Append(text);
     }
 
-    private sealed class Closer : IDisposable
+    private sealed class Scope(Action? dispose) : IDisposable
     {
-        private readonly CodeWriter _writer;
-
-        public Closer(CodeWriter writer)
-        {
-            _writer = writer;
-        }
-
-        public void Dispose() => _writer.Close();
-    }
-
-    private sealed class MemberCloser : IDisposable
-    {
-        private readonly CodeWriter _writer;
-        private readonly string _signature;
-        private readonly int _start;
-        private readonly int _indent;
-        private readonly int _bodyStart;
-
-        public MemberCloser(CodeWriter writer, string signature, int start, int indent, int bodyStart)
-        {
-            _writer = writer;
-            _signature = signature;
-            _start = start;
-            _indent = indent;
-            _bodyStart = bodyStart;
-        }
-
-        public void Dispose() => _writer.CloseMember(_signature, _start, _indent, _bodyStart);
+        public void Dispose() => dispose?.Invoke();
     }
 }

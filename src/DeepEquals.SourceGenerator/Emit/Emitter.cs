@@ -571,8 +571,8 @@ internal sealed class Emitter
     /// <summary>Same reference is equal and one null is not; every reference-type Equals_ starts here.</summary>
     private void EmitReferencePrelude()
     {
-        _w.Line($"if ({RefEq("x", "y")}) return true;");
-        _w.Line("if (x is null || y is null) return false;");
+        _w.If(RefEq("x", "y"), "return true;");
+        _w.If("x is null || y is null", "return false;");
     }
 
     /// <summary>
@@ -582,32 +582,32 @@ internal sealed class Emitter
     private IDisposable GuardScope(TypeModel type, bool boxed = false)
     {
         if (!(boxed ? type.BoxedAdapterGuarded : type.IsGuarded))
-            return NoScope.Instance;
+            return NoScope;
 
         if (IsTree)
         {
             EmitDepthGuard(type);
-            return NoScope.Instance;
+            return NoScope;
         }
 
         if (!_model.Options.IsPath)
         {
             EmitTryEnter(type, boxed);
-            return NoScope.Instance;
+            return NoScope;
         }
 
         // Path: the pair is an ancestor only while this core runs, so it leaves the state on every return.
-        _w.Line("int pathMark = state.Mark();");
+        _w.Local("int pathMark = state.Mark();");
         EmitTryEnter(type, boxed);
-        return RollbackScope();
+        return _w.TryFinally("state.Rollback(pathMark);");
     }
 
     /// <summary>The state of Brent's cycle detection, declared before a tail loop: no saved node yet, and a first power of one.</summary>
     private void EmitBrentStart(TypeModel type)
     {
-        _w.Line($"{type.GlobalName}{Q()} tortoise = null;");
-        _w.Line("int power = 1;");
-        _w.Line("int lambda = 1;");
+        _w.Local($"{type.GlobalName}{Q()} tortoise = null;");
+        _w.Local("int power = 1;");
+        _w.Local("int lambda = 1;");
     }
 
     /// <summary>
@@ -618,8 +618,8 @@ internal sealed class Emitter
     /// </summary>
     private void EmitBrentStep(TypeModel type, string cursor)
     {
-        _w.Line($"if ({RefEq(cursor, "tortoise")}) {KnownTypes.DeqHelpers}.ThrowCycle(typeof({type.GlobalName}));");
-        using (_w.Block("if (lambda++ == power)"))
+        _w.If(RefEq(cursor, "tortoise"), $"{KnownTypes.DeqHelpers}.ThrowCycle(typeof({type.GlobalName}));");
+        using (_w.If("lambda++ == power"))
         {
             _w.Line($"tortoise = {cursor};");
             _w.Line("power <<= 1;");
@@ -627,20 +627,8 @@ internal sealed class Emitter
         }
     }
 
-    /// <summary>A <c>try</c> whose <c>finally</c> takes the state back to <c>pathMark</c>: the pairs entered since leave on every return.</summary>
-    private IDisposable RollbackScope()
-    {
-        var body = _w.Block("try");
-        return new ActionScope(() =>
-        {
-            body.Dispose();
-            using (_w.Block("finally"))
-                _w.Line("state.Rollback(pathMark);");
-        });
-    }
-
     private void EmitTryEnter(TypeModel type, bool boxed = false) =>
-        _w.Line($"if (!state.TryEnter({(boxed ? GeneratedNames.BoxedKind(type.ShortName) : GeneratedNames.Kind(type.ShortName))}, x, y)) return true;");
+        _w.If($"!state.TryEnter({(boxed ? GeneratedNames.BoxedKind(type.ShortName) : GeneratedNames.Kind(type.ShortName))}, x, y)", "return true;");
 
     /// <summary>
     /// Under Path, a tail loop is the chain of its ancestors: every node's pair stays entered while the loop walks on,
@@ -649,24 +637,11 @@ internal sealed class Emitter
     private IDisposable TailLoopScope(TypeModel type)
     {
         if (!type.IsGuarded || !_model.Options.IsPath)
-            return NoScope.Instance;
+            return NoScope;
 
-        _w.Line("int pathMark = state.Mark();");
-        return RollbackScope();
-    }
-
-    private sealed class NoScope : IDisposable
-    {
-        public static readonly NoScope Instance = new();
-
-        public void Dispose()
-        {
-        }
-    }
-
-    private sealed class ActionScope(Action dispose) : IDisposable
-    {
-        public void Dispose() => dispose();
+        // The pairs entered since leave on every return.
+        _w.Local("int pathMark = state.Mark();");
+        return _w.TryFinally("state.Rollback(pathMark);");
     }
 
     // ----- helpers -----------------------------------------------------------------------------------------------------
@@ -736,7 +711,7 @@ internal sealed class Emitter
     /// <summary>The Tree guard: one more level, a throw past MaxDepth, and a stack check, since MaxDepth bounds cycles, not the stack.</summary>
     private void EmitDepthGuard(TypeModel type)
     {
-        _w.Line($"if (++depth > MaxDepth) {KnownTypes.DeqHelpers}.ThrowDepthExceeded(typeof({type.GlobalName.TrimEnd('?')}), MaxDepth);");
+        _w.If("++depth > MaxDepth", $"{KnownTypes.DeqHelpers}.ThrowDepthExceeded(typeof({type.GlobalName.TrimEnd('?')}), MaxDepth);");
         _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
     }
 
@@ -803,7 +778,7 @@ internal sealed class Emitter
         for (var i = 0; i < predicates.Count; i += arity)
         {
             var chunk = predicates.GetRange(i, Math.Min(arity, predicates.Count - i));
-            _w.Line(ItemList("if (!(", chunk, " &&", ")) return false;"));
+            _w.If(ItemList("!(", chunk, " &&", ")"), "return false;");
         }
 
         if (terminalReturnTrue)
@@ -966,14 +941,15 @@ internal sealed class Emitter
     /// <c>x.Equals(y)</c> when that implementation is a public method on a struct or sealed class, otherwise through the constrained framework shim.
     /// Everything else, including a derived type that only inherits <c>IEquatable{Base}</c>, keeps <c>EqualityComparer{T}.Default</c>.
     /// Both direct forms are what the default comparer does for such a type after its null checks.
+    /// Every operand builder yields a primary expression, a cast arriving already parenthesised, so <c>x</c> takes the call as it is.
     /// </summary>
     private static string DefaultEq(TypeModel type, string x, string y)
     {
-        if (!type.ImplementsIEquatable) 
+        if (!type.ImplementsIEquatable)
             return $"{KnownTypes.GlobalEqualityComparer}<{type.GlobalName}>.Default.Equals({x}, {y})";
 
         return type is { HasPublicEquatableEquals: true, IsSealed: true }
-            ? $"({x}).Equals({y})"
+            ? $"{x}.Equals({y})"
             : $"{KnownTypes.DeqHelpers}.EquatableEquals<{type.GlobalName}>({x}, {y})";
     }
 
@@ -1015,7 +991,7 @@ internal sealed class Emitter
             return true;
         }
 
-        using (_w.Block($"if ({guard})"))
+        using (_w.If(guard))
             body();
 
         return false;
@@ -1051,9 +1027,10 @@ internal sealed class Emitter
         {
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
             // Named apart from the per-element path's local, which a struct's guarded byte path sits in front of.
-            _w.Line(ImmutableSpans
-                ? $"if (o is {immutable} ib) return ib.IsDefault ? 0 : {BlockHash("HashBlock", element, "ib.AsSpan()")};"
-                : $"if (o is {immutable} ib && ib.IsDefault) return 0;");
+            if (ImmutableSpans)
+                _w.If($"o is {immutable} ib", $"return ib.IsDefault ? 0 : {BlockHash("HashBlock", element, "ib.AsSpan()")};");
+            else
+                _w.If($"o is {immutable} ib && ib.IsDefault", "return 0;");
         }
 
         const string generic = "global::System.Collections.Generic.";
@@ -1259,7 +1236,7 @@ internal sealed class Emitter
 
             case LeafRule.DateTimeOffset:
                 if (!reference)
-                    _w.Line($"global::System.DateTimeOffset {local} = {value};");
+                    _w.Local($"global::System.DateTimeOffset {local} = {value};");
                 var dto = reference ? value : local;
                 Bits64($"{local}t", $"unchecked((ulong){dto}.Ticks)", words);
                 Bits64($"{local}o", $"unchecked((ulong){dto}.Offset.Ticks)", words);
@@ -1272,7 +1249,7 @@ internal sealed class Emitter
                     return true;
                 }
 
-                _w.Line($"global::System.Guid {local} = {value};");
+                _w.Local($"global::System.Guid {local} = {value};");
                 Bits128(local, "Guid", words);
                 return true;
 
@@ -1283,12 +1260,12 @@ internal sealed class Emitter
                     return true;
                 }
 
-                _w.Line($"decimal {local} = {value};");
+                _w.Local($"decimal {local} = {value};");
                 Bits128(local, "Decimal", words);
                 return true;
 
             case LeafRule.FloatAggregate:
-                _w.Line($"{type.GlobalName} {local} = {value};");
+                _w.Local($"{type.GlobalName} {local} = {value};");
                 var k = 0;
                 foreach (var component in type.AggregateComponents)
                 {
@@ -1310,7 +1287,7 @@ internal sealed class Emitter
     /// <summary>Sixty-four bits of storage, given as a <c>ulong</c> expression: its two 32-bit halves, read from a local.</summary>
     private void Bits64(string local, string bits, List<string> words)
     {
-        _w.Line($"ulong {local} = {bits};");
+        _w.Local($"ulong {local} = {bits};");
         words.Add($"unchecked((int){local})");
         words.Add($"unchecked((int)({local} >> 32))");
     }
@@ -1486,17 +1463,15 @@ internal sealed class Emitter
                 if (type.NeedsState && IsTree)
                 {
                     _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
-                    _w.Line("int depth = 0;");
+                    _w.Local("int depth = 0;");
                     _w.Return(body);
                 }
                 else if (type.NeedsState)
                 {
                     _w.Line($"{KnownTypes.GlobalRuntimeHelpers}.EnsureSufficientExecutionStack();");
-                    _w.Line($"{KnownTypes.DeqState} state = new {KnownTypes.DeqState}(MaxComparisonPairs);");
-                    using (_w.Block("try"))
+                    _w.Local($"{KnownTypes.DeqState} state = new {KnownTypes.DeqState}(MaxComparisonPairs);");
+                    using (_w.TryFinally("state.Dispose();"))
                         _w.Return(body);
-                    using (_w.Block("finally")) 
-                        _w.Line("state.Dispose();");
                 }
                 else
                 {
@@ -1513,7 +1488,7 @@ internal sealed class Emitter
             {
                 // Under Tree a hash walks the whole value, bounded by the same depth as equality.
                 if (type.NeedsState && IsTree)
-                    _w.Line("int depth = 0;");
+                    _w.Local("int depth = 0;");
 
                 _w.Return(WrapperHashBody(type));
             }
@@ -1620,14 +1595,14 @@ internal sealed class Emitter
             switch (type.Kind)
             {
                 case TypeKind.Memory:
-                    _w.Line("if (x.Length != y.Length) return false;");
+                    _w.If("x.Length != y.Length", "return false;");
                     _spanCores.Add(element.Id);
                     _w.Return($"{GeneratedNames.EqualsSpanOf(element.ShortName)}(x.Span, y.Span{StateArg(element)})");
                     break;
             
                 case TypeKind.ImmutableArray:
-                    _w.Line("if (x.IsDefault || y.IsDefault) return x.IsDefault && y.IsDefault;");
-                    _w.Line("if (x.Length != y.Length) return false;");
+                    _w.If("x.IsDefault || y.IsDefault", "return x.IsDefault && y.IsDefault;");
+                    _w.If("x.Length != y.Length", "return false;");
                     if (spans)
                     {
                         _spanCores.Add(element.Id);
@@ -1635,16 +1610,16 @@ internal sealed class Emitter
                     }
                     else
                     {
-                        _w.Line("int n = x.Length;");
-                        using (_w.For("n")) _w.Line($"if (!({Eq(element, "x[i]", "y[i]")})) return false;");
+                        _w.Local("int n = x.Length;");
+                        using (_w.For("n")) _w.If($"!({Eq(element, "x[i]", "y[i]")})", "return false;");
                         _w.Return("true");
                     }
                 
                     break;
             
                 default:
-                    _w.Line("if (x.Count != y.Count) return false;");
-                    _w.Line("if (x.Count == 0) return true;");
+                    _w.If("x.Count != y.Count", "return false;");
+                    _w.If("x.Count == 0", "return true;");
                     if (spans)
                     {
                         _spanCores.Add(element.Id);
@@ -1652,8 +1627,8 @@ internal sealed class Emitter
                     }
                     else
                     {
-                        _w.Line("int n = x.Count;");
-                        using (_w.For("n")) _w.Line($"if (!({Eq(element, "x.Array![x.Offset + i]", "y.Array![y.Offset + i]").Replace("![", Annotations ? "![" : "[")})) return false;");
+                        _w.Local("int n = x.Count;");
+                        using (_w.For("n")) _w.If($"!({Eq(element, "x.Array![x.Offset + i]", "y.Array![y.Offset + i]").Replace("![", Annotations ? "![" : "[")})", "return false;");
                         _w.Return("true");
                     }
 
@@ -1666,7 +1641,7 @@ internal sealed class Emitter
         using (_w.Member($"private static int {GeneratedNames.Hash(type.ShortName, 1)}({p} o{HashDepthParam(type)})"))
         {
             if (type.Kind == TypeKind.ImmutableArray)
-                _w.Line("if (o.IsDefault) return 0;");
+                _w.If("o.IsDefault", "return 0;");
 
             var spanOf = type.Kind switch
             {
@@ -1682,7 +1657,7 @@ internal sealed class Emitter
             else if (spans)
             {
                 if (type.Kind == TypeKind.ArraySegment)
-                    _w.Line("if (o.Count == 0) return 1;");
+                    _w.If("o.Count == 0", "return 1;");
                 _w.Return(HashSpanCall(type, element, spanOf));
             }
             else
@@ -1735,7 +1710,7 @@ internal sealed class Emitter
                 }
 
                 using (TailLoopScope(type))
-                using (_w.Block("while (true)"))
+                using (_w.While("true"))
                 {
                     EmitReferencePrelude();
                     if (type.IsGuarded && !IsTree)
@@ -1753,8 +1728,8 @@ internal sealed class Emitter
                         EmitBrentStep(type, "x");
 
                     var tail = type.Members[type.TailMemberIndex];
-                    _w.Line($"{type.GlobalName}{Q()} nextX = {Read(tail, "x", false)};");
-                    _w.Line($"{type.GlobalName}{Q()} nextY = {Read(tail, "y", false)};");
+                    _w.Local($"{type.GlobalName}{Q()} nextX = {Read(tail, "x", false)};");
+                    _w.Local($"{type.GlobalName}{Q()} nextY = {Read(tail, "y", false)};");
                     _w.Line("x = nextX;");
                     _w.Line("y = nextY;");
                 }
@@ -1823,7 +1798,7 @@ internal sealed class Emitter
             return Read(member, receiver, inReceiver);
 
         var local = $"h{member.DeclarationOrder}_{suffix}";
-        _w.Line($"{Param(type)} {local} = {Read(member, receiver, inReceiver)};");
+        _w.Local($"{Param(type)} {local} = {Read(member, receiver, inReceiver)};");
         return local;
     }
 
@@ -1841,7 +1816,7 @@ internal sealed class Emitter
         using (Method(type, $"private static int {name}({param}{HashDepthParam(type)})"))
         {
             if (!membersOnly && type.Kind == TypeKind.Class)
-                _w.Line("if (o is null) return 0;");
+                _w.If("o is null", "return 0;");
 
             // A sealed class carries its guard in GetHashCode_T; an unsealed one in HashMembers_T, behind its dispatch.
             if (type.Kind == TypeKind.Class && (membersOnly || type.IsSealed))
@@ -1869,15 +1844,15 @@ internal sealed class Emitter
     {
         var tail = type.Members[type.TailMemberIndex];
         EmitBrentStart(type);
-        _w.Line($"{KnownTypes.DeqHashCode}.Streaming h = default;");
-        using (_w.Block("while (true)"))
+        _w.Local($"{KnownTypes.DeqHashCode}.Streaming h = default;");
+        using (_w.While("true"))
         {
             var inputs = MemberHashWords(type.Members.Where((_, i) => i != type.TailMemberIndex), 1, inReceiver);
 
             _w.Line($"h.Add({Combine(inputs)});");
             EmitBrentStep(type, "o");
-            _w.Line($"{type.GlobalName}{Q()} next = {Read(tail, "o", inReceiver)};");
-            _w.Line("if (next is null) break;");
+            _w.Local($"{type.GlobalName}{Q()} next = {Read(tail, "o", inReceiver)};");
+            _w.If("next is null", "break;");
             _w.Line("o = next;");
         }
 
@@ -1926,7 +1901,7 @@ internal sealed class Emitter
         {
             foreach (var c in plan.Chained)
             {
-                using (_w.Block($"if ({ExactTest("x", Type(c.TypeId))})"))
+                using (_w.If(ExactTest("x", Type(c.TypeId))))
                     EmitKnownCaseEquals(type, c, plan.Assignable);
             }
 
@@ -1946,7 +1921,7 @@ internal sealed class Emitter
         {
             foreach (var c in plan.Exact)
             {
-                using (_w.Block($"if ({ExactTest("x", Type(c.TypeId))})"))
+                using (_w.If(ExactTest("x", Type(c.TypeId))))
                     EmitKnownCaseEquals(type, c, plan.Assignable);
             }
         }
@@ -1955,13 +1930,13 @@ internal sealed class Emitter
         foreach (var c in plan.Assignable)
         {
             if (c.Hoistable)
-                _w.Line($"if (y is {Type(c.TypeId).GlobalName}) return false;");
+                _w.If($"y is {Type(c.TypeId).GlobalName}", "return false;");
             else
                 EmitAssignableCaseEquals(c, bothSides: true);
         }
 
         // Neither side matched a case: different runtime types are unequal, the same unknown type cannot be compared.
-        _w.Line("if (x.GetType() != y.GetType()) return false;");
+        _w.If("x.GetType() != y.GetType()", "return false;");
         _w.Line($"throw new {KnownTypes.GlobalUnknownTypeException}(x.GetType());");
     }
 
@@ -1973,14 +1948,14 @@ internal sealed class Emitter
     {
         var target = Type(c.TypeId);
         var local = $"c{c.TypeId}";
-        using (_w.Block($"if (x is {target.GlobalName} x{local})"))
+        using (_w.If($"x is {target.GlobalName} x{local}"))
         {
-            _w.Line($"if (!(y is {target.GlobalName} y{local})) return false;");
+            _w.If($"!(y is {target.GlobalName} y{local})", "return false;");
             _w.Return($"{AssignableEq(target, $"x{local}", $"y{local}")}");
         }
 
         if (bothSides)
-            _w.Line($"if (y is {target.GlobalName}) return false;");
+            _w.If($"y is {target.GlobalName}", "return false;");
     }
 
     /// <summary>
@@ -1994,12 +1969,12 @@ internal sealed class Emitter
         {
             var a = Type(assignable[c.ResolvedAssignable].TypeId);
             var local = $"y{a.Id}";
-            _w.Line($"if (!(y is {a.GlobalName} {local})) return false;");
+            _w.If($"!(y is {a.GlobalName} {local})", "return false;");
             _w.Return(AssignableEq(a, AsCase(a, "x"), local));
             return;
         }
 
-        _w.Line($"if (!({ExactTest("y", target)})) return false;");
+        _w.If($"!({ExactTest("y", target)})", "return false;");
         _w.Return(ExactEq(type, target));
     }
 
@@ -2106,7 +2081,7 @@ internal sealed class Emitter
             _w.Line($"internal static readonly {dictionary} {field} = Build();");
             using (_w.Member($"private static {dictionary} Build()"))
             {
-                _w.Line($"{dictionary} map = new {dictionary}({entries.Count});");
+                _w.Local($"{dictionary} map = new {dictionary}({entries.Count});");
                 foreach (var (type, value) in entries)
                     _w.Line(byHandle ? $"map.Add(typeof({type}).TypeHandle.Value, {value});" : $"map.Add(typeof({type}), {value});");
 
@@ -2198,7 +2173,7 @@ internal sealed class Emitter
     {
         using (_w.Member($"private static int {HashName(type, level)}({Param(type)} o{HashDepthParam(type)})"))
         {
-            _w.Line("if (o is null) return 0;");
+            _w.If("o is null", "return 0;");
             var plan = DispatchPlan(type);
 
             foreach (var c in plan.Hoisted)
@@ -2207,7 +2182,7 @@ internal sealed class Emitter
             if (plan.UseSwitch)
             {
                 foreach (var c in plan.Chained)
-                    _w.Line($"if ({ExactTest("o", Type(c.TypeId))}) return {KnownCaseHash(type, c, plan.Assignable, level)};");
+                    _w.If(ExactTest("o", Type(c.TypeId)), $"return {KnownCaseHash(type, c, plan.Assignable, level)};");
 
                 using (_w.Block($"switch ({GeneratedNames.Dispatch(type.ShortName)}.CaseIndex.TryGetValue({MapKey("o")}, out int i) ? i : -1)"))
                 {
@@ -2220,7 +2195,7 @@ internal sealed class Emitter
             else
             {
                 foreach (var c in plan.Exact)
-                    _w.Line($"if ({ExactTest("o", Type(c.TypeId))}) return {KnownCaseHash(type, c, plan.Assignable, level)};");
+                    _w.If(ExactTest("o", Type(c.TypeId)), $"return {KnownCaseHash(type, c, plan.Assignable, level)};");
             }
 
             foreach (var c in plan.Assignable)
@@ -2237,7 +2212,7 @@ internal sealed class Emitter
     {
         var target = Type(c.TypeId);
         var local = $"c{c.TypeId}";
-        _w.Line($"if (o is {target.GlobalName} {local}) return {CaseHash(type, target, local, level, c.IsSameScc, isExact: false)};");
+        _w.If($"o is {target.GlobalName} {local}", $"return {CaseHash(type, target, local, level, c.IsSameScc, isExact: false)};");
     }
 
     /// <summary>The hash of a known exact case: the case type's own rule, or the assignable case its type converts to.</summary>
@@ -2319,8 +2294,8 @@ internal sealed class Emitter
 
         using (_w.Member($"private static bool {GeneratedNames.Equals(type.ShortName)}({p} x, {p} y{StateParam(type)})"))
         {
-            _w.Line($"if ({RefEq("x", "y")}) return true;");
-            _w.Line($"if (x is null || y is null || x.{count} != y.{count}) return false;");
+            _w.If(RefEq("x", "y"), "return true;");
+            _w.If($"x is null || y is null || x.{count} != y.{count}", "return false;");
             using (GuardScope(type))
             {
                 if (SpanAvailable(type))
@@ -2330,8 +2305,8 @@ internal sealed class Emitter
                 }
                 else
                 {
-                    _w.Line($"int n = x.{count};");
-                    using (_w.For("n")) _w.Line($"if (!({Eq(element, "x[i]", "y[i]")})) return false;");
+                    _w.Local($"int n = x.{count};");
+                    using (_w.For("n")) _w.If($"!({Eq(element, "x[i]", "y[i]")})", "return false;");
                     _w.Return("true");
                 }
             }
@@ -2342,7 +2317,7 @@ internal sealed class Emitter
         var blockOnly = false;
         using (_w.Member($"private static int {GeneratedNames.Hash(type.ShortName, 1)}({p} o{HashDepthParam(type)})"))
         {
-            _w.Line("if (o is null) return 0;");
+            _w.If("o is null", "return 0;");
             EmitHashGuard(type);
             if (BlockElement(element))
                 blockOnly = EmitBlockPath(element, () => _w.Return(SpanAvailable(type)
@@ -2388,7 +2363,7 @@ internal sealed class Emitter
                 switch (type.Kind)
                 {
                     case TypeKind.ImmutableArray:
-                        _w.Line("if (o.IsDefault) return 0;");
+                        _w.If("o.IsDefault", "return 0;");
                         break;
                     
                     case TypeKind.Memory:
@@ -2396,9 +2371,9 @@ internal sealed class Emitter
                         break;
                     
                     default:
-                        _w.Line("if (o is null) return 0;");
+                        _w.If("o is null", "return 0;");
                         if (type.Kind is TypeKind.ListInterface or TypeKind.EnumerableInterface && _model.Capabilities.HasImmutableArray)
-                            _w.Line($"if (o is {immutable} io && io.IsDefault) return 0;");
+                            _w.If($"o is {immutable} io && io.IsDefault", "return 0;");
                         break;
                 }
 
@@ -2415,27 +2390,27 @@ internal sealed class Emitter
     private void EmitStreamingWalk(TypeModel type, TypeModel element, string iface, int level)
     {
         string Item(string value) => HashWordExpr(element, value, level, type.ElementIsSameScc);
-        _w.Line($"{KnownTypes.DeqHashCode}.Streaming h = default;");
+        _w.Local($"{KnownTypes.DeqHashCode}.Streaming h = default;");
         switch (type.Kind)
         {
             case TypeKind.EnumerableInterface:
-                using (_w.Block($"foreach ({element.GlobalName} e in ({iface})o)")) _w.Line($"h.Add({Item("e")});");
+                using (_w.Foreach($"{element.GlobalName} e in ({iface})o")) _w.Line($"h.Add({Item("e")});");
                 break;
             case TypeKind.ListInterface:
-                _w.Line($"{iface} oi = o;");
-                _w.Line("int n = oi.Count;");
+                _w.Local($"{iface} oi = o;");
+                _w.Local("int n = oi.Count;");
                 using (_w.For("n")) _w.Line($"h.Add({Item("oi[i]")});");
                 break;
             case TypeKind.Memory:
-                _w.Line($"global::System.ReadOnlySpan<{element.GlobalName}> s = o.Span;");
+                _w.Local($"global::System.ReadOnlySpan<{element.GlobalName}> s = o.Span;");
                 using (_w.For("s.Length")) _w.Line($"h.Add({Item("s[i]")});");
                 break;
             case TypeKind.ArraySegment:
-                _w.Line("int n = o.Count;");
+                _w.Local("int n = o.Count;");
                 using (_w.For("n")) _w.Line($"h.Add({Item(Annotations ? "o.Array![o.Offset + i]" : "o.Array[o.Offset + i]")});");
                 break;
             default:
-                _w.Line($"int n = o.{(type.Kind == TypeKind.List ? "Count" : "Length")};");
+                _w.Local($"int n = o.{(type.Kind == TypeKind.List ? "Count" : "Length")};");
                 using (_w.For("n")) _w.Line($"h.Add({Item("o[i]")});");
                 break;
         }
@@ -2474,7 +2449,7 @@ internal sealed class Emitter
         var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
         using (_w.Member($"private static bool {GeneratedNames.EqualsSpanOf(element.ShortName)}({span} xs, {span} ys{stateParam})"))
         {
-            _w.Line("if (xs.Length != ys.Length) return false;");
+            _w.If("xs.Length != ys.Length", "return false;");
 
             // A bit-block element's rule is the equality of its bytes, so the whole span is one memory compare: exactly the
             // bitwise relation, NaN payloads and the sign of zero included.
@@ -2485,7 +2460,7 @@ internal sealed class Emitter
                 element.LeafRule != LeafRule.Custom && element.LeafRule != LeafRule.Enum) _w.Return("global::System.MemoryExtensions.SequenceEqual(xs, ys)");
             else
             {
-                using (_w.For("xs.Length")) _w.Line($"if (!({Eq(element, "xs[i]", "ys[i]")})) return false;");
+                using (_w.For("xs.Length")) _w.If($"!({Eq(element, "xs[i]", "ys[i]")})", "return false;");
                 _w.Return("true");
             }
 
@@ -2505,14 +2480,14 @@ internal sealed class Emitter
         {
             EmitReferencePrelude();
             EmitSpanCapture(element, "x", "y");
-            _w.Line($"{iface} xi = x;");
-            _w.Line($"{iface} yi = y;");
-            _w.Line("int count = xi.Count;");
-            _w.Line("if (count != yi.Count) return false;");
+            _w.Local($"{iface} xi = x;");
+            _w.Local($"{iface} yi = y;");
+            _w.Local("int count = xi.Count;");
+            _w.If("count != yi.Count", "return false;");
             using (GuardScope(type))
             {
                 EmitSpanCompare(element);
-                using (_w.For("count")) _w.Line($"if (!({Eq(element, "xi[i]", "yi[i]")})) return false;");
+                using (_w.For("count")) _w.If($"!({Eq(element, "xi[i]", "yi[i]")})", "return false;");
                 _w.Return("true");
             }
         }
@@ -2520,7 +2495,7 @@ internal sealed class Emitter
         var listBlockOnly = false;
         using (_w.Member($"private static int {GeneratedNames.Hash(type.ShortName, 1)}({p} o{HashDepthParam(type)})"))
         {
-            _w.Line("if (o is null) return 0;");
+            _w.If("o is null", "return 0;");
             EmitHashGuard(type);
             if (BlockElement(element))
                 listBlockOnly = EmitBlockPath(element, () => EmitInterfaceBlockHash(element, iface));
@@ -2553,10 +2528,10 @@ internal sealed class Emitter
         {
             _spanCores.Add(element.Id);
             var span = $"global::System.ReadOnlySpan<{element.GlobalName}>";
-            _w.Line($"{span} {x}s = default;");
-            _w.Line($"bool {x}Span = false;");
-            _w.Line($"{span} {y}s = default;");
-            _w.Line($"bool {y}Span = false;");
+            _w.Local($"{span} {x}s = default;");
+            _w.Local($"bool {x}Span = false;");
+            _w.Local($"{span} {y}s = default;");
+            _w.Local($"bool {y}Span = false;");
         }
 
         if (!_model.Capabilities.HasImmutableArray)
@@ -2565,25 +2540,25 @@ internal sealed class Emitter
         var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
         if (ImmutableSpans)
         {
-            using (_w.Block($"if ({x} is {immutable} i{x})"))
+            using (_w.If($"{x} is {immutable} i{x}"))
             {
-                _w.Line($"if (i{x}.IsDefault) return {y} is {immutable} i{y}d && i{y}d.IsDefault;");
+                _w.If($"i{x}.IsDefault", $"return {y} is {immutable} i{y}d && i{y}d.IsDefault;");
                 _w.Line($"{x}s = i{x}.AsSpan();");
                 _w.Line($"{x}Span = true;");
             }
 
-            using (_w.Block($"if ({y} is {immutable} i{y})"))
+            using (_w.If($"{y} is {immutable} i{y}"))
             {
-                _w.Line($"if (i{y}.IsDefault) return false;");
+                _w.If($"i{y}.IsDefault", "return false;");
                 _w.Line($"{y}s = i{y}.AsSpan();");
                 _w.Line($"{y}Span = true;");
             }
         }
         else
         {
-            _w.Line($"bool {x}Default = {x} is {immutable} i{x} && i{x}.IsDefault;");
-            _w.Line($"bool {y}Default = {y} is {immutable} i{y} && i{y}.IsDefault;");
-            _w.Line($"if ({x}Default || {y}Default) return {x}Default && {y}Default;");
+            _w.Local($"bool {x}Default = {x} is {immutable} i{x} && i{x}.IsDefault;");
+            _w.Local($"bool {y}Default = {y} is {immutable} i{y} && i{y}.IsDefault;");
+            _w.If($"{x}Default || {y}Default", $"return {x}Default && {y}Default;");
         }
     }
 
@@ -2595,7 +2570,7 @@ internal sealed class Emitter
 
         var xSpan = $"(xSpan || {KnownTypes.DeqCollections}.TryGetSpan(x, out xs))";
         var ySpan = $"(ySpan || {KnownTypes.DeqCollections}.TryGetSpan(y, out ys))";
-        _w.Line($"if ({xSpan} && {ySpan}) return {GeneratedNames.EqualsSpanOf(element.ShortName)}(xs, ys{StateArg(element)});");
+        _w.If($"{xSpan} && {ySpan}", $"return {GeneratedNames.EqualsSpanOf(element.ShortName)}(xs, ys{StateArg(element)});");
     }
 
     /// <summary>The hash of an interface-typed collection through its span, when it has one; otherwise falls through. A default immutable array hashes to 0.</summary>
@@ -2604,13 +2579,14 @@ internal sealed class Emitter
         if (_model.Capabilities.HasImmutableArray)
         {
             var immutable = $"global::System.Collections.Immutable.ImmutableArray<{element.GlobalName}>";
-            _w.Line(ImmutableSpans
-                ? $"if ({o} is {immutable} io) return io.IsDefault ? 0 : {HashSpanCall(container, element, "io.AsSpan()")};"
-                : $"if ({o} is {immutable} io && io.IsDefault) return 0;");
+            if (ImmutableSpans)
+                _w.If($"{o} is {immutable} io", $"return io.IsDefault ? 0 : {HashSpanCall(container, element, "io.AsSpan()")};");
+            else
+                _w.If($"{o} is {immutable} io && io.IsDefault", "return 0;");
         }
 
         if (_model.Capabilities.HasReadOnlySpan)
-            _w.Line($"if ({KnownTypes.DeqCollections}.TryGetSpan({o}, out global::System.ReadOnlySpan<{element.GlobalName}> s)) return {HashSpanCall(container, element, "s")};");
+            _w.If($"{KnownTypes.DeqCollections}.TryGetSpan({o}, out global::System.ReadOnlySpan<{element.GlobalName}> s)", $"return {HashSpanCall(container, element, "s")};");
     }
 
     private void EmitEnumerableCores(TypeModel type)
@@ -2632,28 +2608,28 @@ internal sealed class Emitter
             EmitSpanCompare(element);
 
 
-            _w.Line($"int xCount = {AdvertisedCount("x", element, "xc", "xr")};");
-            _w.Line($"int yCount = {AdvertisedCount("y", element, "yc", "yr")};");
-            _w.Line("if (xCount >= 0 && yCount >= 0 && xCount != yCount) return false;");
-            _w.Line("int n = 0;");
+            _w.Local($"int xCount = {AdvertisedCount("x", element, "xc", "xr")};");
+            _w.Local($"int yCount = {AdvertisedCount("y", element, "yc", "yr")};");
+            _w.If("xCount >= 0 && yCount >= 0 && xCount != yCount", "return false;");
+            _w.Local("int n = 0;");
             using (_w.Block($"using (global::System.Collections.Generic.IEnumerator<{element.GlobalName}> ex = (({enumerable})x).GetEnumerator())"))
             {
                 using (_w.Block($"using (global::System.Collections.Generic.IEnumerator<{element.GlobalName}> ey = (({enumerable})y).GetEnumerator())"))
                 {
-                    using (_w.Block("while (true)"))
+                    using (_w.While("true"))
                     {
-                        _w.Line("bool mx = ex.MoveNext();");
-                        _w.Line("bool my = ey.MoveNext();");
-                        _w.Line("if (mx != my) return false;");
-                        _w.Line("if (!mx) break;");
-                        _w.Line($"{Param(element)} cx = ex.Current;");
-                        _w.Line($"{Param(element)} cy = ey.Current;");
-                        _w.Line($"if (!({Eq(element, "cx", "cy")})) return false;");
+                        _w.Local("bool mx = ex.MoveNext();");
+                        _w.Local("bool my = ey.MoveNext();");
+                        _w.If("mx != my", "return false;");
+                        _w.If("!mx", "break;");
+                        _w.Local($"{Param(element)} cx = ex.Current;");
+                        _w.Local($"{Param(element)} cy = ey.Current;");
+                        _w.If($"!({Eq(element, "cx", "cy")})", "return false;");
                         _w.Line("n++;");
                     }
                 }
             }
-            _w.Line("if ((xCount >= 0 && n != xCount) || (yCount >= 0 && n != yCount)) throw new global::System.InvalidOperationException(\"A collection enumerated a different number of elements than its Count advertised.\");");
+            _w.If("(xCount >= 0 && n != xCount) || (yCount >= 0 && n != yCount)", "throw new global::System.InvalidOperationException(\"A collection enumerated a different number of elements than its Count advertised.\");");
             _w.Return("true");
             guard.Dispose();
         }
@@ -2661,7 +2637,7 @@ internal sealed class Emitter
         var enumerableBlockOnly = false;
         using (_w.Member($"private static int {GeneratedNames.Hash(type.ShortName, 1)}({p} o{HashDepthParam(type)})"))
         {
-            _w.Line("if (o is null) return 0;");
+            _w.If("o is null", "return 0;");
             EmitHashGuard(type);
             if (BlockElement(element))
                 enumerableBlockOnly = EmitBlockPath(element, () => EmitInterfaceBlockHash(element, enumerable));
@@ -2677,12 +2653,12 @@ internal sealed class Emitter
         {
             using (_w.Member($"private static int {GeneratedNames.Hash(type.ShortName, 0)}({p} o)"))
             {
-                _w.Line("if (o is null) return 0;");
-                _w.Line($"int count = {AdvertisedCount("o", element, "c", "r")};");
-                using (_w.Block("if (count < 0)"))
+                _w.If("o is null", "return 0;");
+                _w.Local($"int count = {AdvertisedCount("o", element, "c", "r")};");
+                using (_w.If("count < 0"))
                 {
                     _w.Line("count = 0;");
-                    _w.Line($"foreach ({element.GlobalName} e in ({enumerable})o) count++;");
+                    _w.Foreach($"{element.GlobalName} e in ({enumerable})o", "count++;");
                 }
                 _w.Return(CountHash("count"));
             }
@@ -2725,17 +2701,17 @@ internal sealed class Emitter
             {
                 xs = "x";
                 ys = "y";
-                _w.Line("int count = x.Count;");
-                _w.Line("if (count != y.Count) return false;");
+                _w.Local("int count = x.Count;");
+                _w.If("count != y.Count", "return false;");
             }
             else
             {
                 xs = "xi";
                 ys = "yi";
-                _w.Line($"{iface} xi = x;");
-                _w.Line($"{iface} yi = y;");
-                _w.Line("int count = xi.Count;");
-                _w.Line("if (count != yi.Count) return false;");
+                _w.Local($"{iface} xi = x;");
+                _w.Local($"{iface} yi = y;");
+                _w.Local("int count = xi.Count;");
+                _w.If("count != yi.Count", "return false;");
             }
 
             var unorderedGuard = GuardScope(type);
@@ -2744,9 +2720,9 @@ internal sealed class Emitter
             {
                 var (cx, cy) = isConcrete ? ("x", "y") : ("hx", "hy");
                 var test = isConcrete
-                    ? $"if ({DefaultComparerTest(key, "x.Comparer")} && {DefaultComparerTest(key, "y.Comparer")})"
-                    : $"if (x is {concrete} hx && y is {concrete} hy && {DefaultComparerTest(key, "hx.Comparer")} && {DefaultComparerTest(key, "hy.Comparer")})";
-                using (_w.Block(test))
+                    ? $"{DefaultComparerTest(key, "x.Comparer")} && {DefaultComparerTest(key, "y.Comparer")}"
+                    : $"x is {concrete} hx && y is {concrete} hy && {DefaultComparerTest(key, "hx.Comparer")} && {DefaultComparerTest(key, "hy.Comparer")}";
+                using (_w.If(test))
                 {
                     if (!dictionary)
                     {
@@ -2754,10 +2730,10 @@ internal sealed class Emitter
                     }
                     else
                     {
-                        using (_w.Block($"foreach ({elementName} e in {cx})"))
+                        using (_w.Foreach($"{elementName} e in {cx}"))
                         {
-                            _w.Line($"{Param(value!)} v;");
-                            _w.Line($"if (!{cy}.TryGetValue(e.Key, out v) || !({Eq(value!, "e.Value", "v")})) return false;");
+                            _w.Local($"{Param(value!)} v;");
+                            _w.If($"!{cy}.TryGetValue(e.Key, out v) || !({Eq(value!, "e.Value", "v")})", "return false;");
                         }
 
                         _w.Return("true");
@@ -2791,32 +2767,32 @@ internal sealed class Emitter
         {
             using (_w.Member($"private static int {HashName(type, level)}({p} o{HashDepthParam(type)})"))
             {
-                _w.Line("if (o is null) return 0;");
+                _w.If("o is null", "return 0;");
                 EmitHashGuard(type);
-                _w.Line("int sum = 0;");
+                _w.Local("int sum = 0;");
                 
                 void SumLoop(string source)
                 {
-                    using (_w.Block($"foreach ({elementName} e in {source})"))
+                    using (_w.Foreach($"{elementName} e in {source}"))
                         _w.Line($"sum = unchecked(sum + {EntryHash(type, key, value, "e", forMatching: false, level)});");
                 }
 
                 if (isConcrete)
                 {
-                    _w.Line("int count = o.Count;");
+                    _w.Local("int count = o.Count;");
                     SumLoop("o");
                 }
                 else
                 {
-                    _w.Line($"{iface} oi = o;");
-                    _w.Line("int count = oi.Count;");
-                    using (_w.Block($"if (o is {concrete} known)"))
+                    _w.Local($"{iface} oi = o;");
+                    _w.Local("int count = oi.Count;");
+                    using (_w.If($"o is {concrete} known"))
                         SumLoop("known");
-                    using (_w.Block("else"))
+                    using (_w.Else())
                         SumLoop($"(global::System.Collections.Generic.IEnumerable<{elementName}>)o");
                 }
 
-                _w.Line($"int h = {KnownTypes.DeqHashCode}.Combine(count, sum);");
+                _w.Local($"int h = {KnownTypes.DeqHashCode}.Combine(count, sum);");
                 _w.Return("count == 0 && h == 0 ? 1 : h");
             }
         }
@@ -2908,7 +2884,7 @@ internal sealed class Emitter
             if (reference)
                 EmitReferencePrelude();
 
-            using (reference ? GuardScope(type) : NoScope.Instance)
+            using (reference ? GuardScope(type) : NoScope)
                 EmitPredicates(items, i => Eq(i.Type, $"x.{i.Path}", $"y.{i.Path}"), terminalReturnTrue: true);
         }
 
@@ -2918,7 +2894,7 @@ internal sealed class Emitter
             {
                 if (reference)
                 {
-                    _w.Line("if (o is null) return 0;");
+                    _w.If("o is null", "return 0;");
                     EmitHashGuard(type);
                 }
 
