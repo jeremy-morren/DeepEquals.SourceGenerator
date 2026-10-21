@@ -8,7 +8,9 @@
         -->
         <TargetFrameworks>netstandard2.0;netstandard2.1;net6.0;net8.0;net10.0</TargetFrameworks>
         <IsPackable>true</IsPackable>
-        
+        <Description>$(Description)
+This is the accompanying package for DeepEquals.SourceGenerator and is not intended to be referenced directly.</Description>
+
         <LangVersion>13</LangVersion>
         <Nullable>enable</Nullable>
         <ImplicitUsings>disable</ImplicitUsings>

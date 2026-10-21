@@ -17,10 +17,8 @@
         
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
 
-        <Description>
-            A Roslyn source generator that emits deep, by-value IEqualityComparer&lt;T&gt; implementations for a closed set of types: 
-            cycle-safe, allocation-conscious, exact-representation leaves, and unordered set/dictionary semantics.
-        </Description>
+        <Description>A Roslyn source generator that emits deep, by-value IEqualityComparer&lt;T&gt; implementations for a closed set of types:
+cycle-safe, allocation-conscious, exact-representation leaves, and unordered set/dictionary semantics.</Description>
         <PackageTags>equality;comparer;source-generator;roslyn;deep-equals</PackageTags>
     </PropertyGroup>
 
