@@ -1,0 +1,275 @@
+<?xml version="1.0"?>
+<Project>
+  <!--
+      Header templates, built the way Grpc.Tools builds .proto files (Google.Protobuf.Tools.targets): the same
+      extension points, compile and clean sequences, design-time gate and incremental check.
+
+      A <HeaderTemplate> item is a text template kept as a .cs file for editor support but never compiled. Each
+      '#region Name' ... '#endregion' in it becomes a 'Name' string[] of its lines, in an internal static class
+      {Filename} written to $(IntermediateOutputPath)Generated\{Filename}.g.cs, so the code that fills the template
+      reads its parts directly and nothing is split at run time. Every non-blank line must sit in a region.
+
+      Imported through CustomAfterMicrosoftCommonTargets, where a package's build targets would be, so that
+      $(IntermediateOutputPath) and $(Language) are already set.
+  -->
+
+  <PropertyGroup>
+    <MSBuildAllProjects>$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HeaderTemplate_ProjectSupported Condition=" '$(Language)' == 'C#' ">true</HeaderTemplate_ProjectSupported>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(HeaderTemplate_ProjectSupported)' == 'true' ">
+    <HeaderTemplate_OutputPath Condition=" '$(HeaderTemplate_OutputPath)' == '' ">$(IntermediateOutputPath)Generated\</HeaderTemplate_OutputPath>
+    <HeaderTemplate_Namespace Condition=" '$(HeaderTemplate_Namespace)' == '' ">$(RootNamespace)</HeaderTemplate_Namespace>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup Condition=" '$(HeaderTemplate_ProjectSupported)' == 'true' ">
+    <HeaderTemplate>
+      <OutputDir>$(HeaderTemplate_OutputPath)</OutputDir>
+      <Namespace>$(HeaderTemplate_Namespace)</Namespace>
+      <CompileOutputs>true</CompileOutputs>
+    </HeaderTemplate>
+  </ItemDefinitionGroup>
+
+  <ItemGroup Condition=" '$(HeaderTemplate_ProjectSupported)' == 'true' ">
+    <AvailableItemName Include="HeaderTemplate" />
+    <!-- A template is .cs for the editor's sake only. -->
+    <Compile Remove="@(HeaderTemplate)" />
+    <None Remove="@(HeaderTemplate)" />
+
+    <!-- Declare each output at evaluation, linked beside its template, so the IDE lists it in the project tree.
+         _HeaderTemplate_AugmentLanguageCompile leaves it as it is, so it is compiled once. -->
+    <_HeaderTemplate_Output Include="@(HeaderTemplate->WithMetadataValue('CompileOutputs', 'true'))">
+      <OutputPath>%(OutputDir)%(Filename).g.cs</OutputPath>
+      <OutputLink>%(RelativeDir)%(Filename).g.cs</OutputLink>
+    </_HeaderTemplate_Output>
+    <Compile Include="@(_HeaderTemplate_Output->'%(OutputPath)')">
+      <Link>%(OutputLink)</Link>
+      <Visible>true</Visible>
+      <AutoGen>true</AutoGen>
+    </Compile>
+  </ItemGroup>
+
+  <UsingTask TaskName="HeaderTemplateCompile"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Templates ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <GeneratedFiles ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+var generated = new List<ITaskItem>();
+foreach (var template in Templates)
+{
+    var path = template.GetMetadata("FullPath");
+    var name = template.GetMetadata("Filename");
+    var lines = File.ReadAllText(path).Replace("\r\n", "\n").Split('\n');
+
+    var regions = new List<KeyValuePair<string, List<string>>>();
+    List<string> current = null;
+    for (var i = 0; i < lines.Length; i++)
+    {
+        var trimmed = lines[i].Trim();
+        if (trimmed.StartsWith("#region ", StringComparison.Ordinal))
+        {
+            if (current != null)
+            {
+                Log.LogError(null, null, null, path, i + 1, 0, 0, 0, "A #region inside another region; header template regions do not nest.");
+                return false;
+            }
+
+            current = new List<string>();
+            regions.Add(new KeyValuePair<string, List<string>>(trimmed.Substring("#region ".Length).Trim(), current));
+        }
+        else if (trimmed == "#endregion")
+        {
+            if (current == null)
+            {
+                Log.LogError(null, null, null, path, i + 1, 0, 0, 0, "An #endregion with no #region open.");
+                return false;
+            }
+
+            current = null;
+        }
+        else if (current != null)
+        {
+            current.Add(lines[i]);
+        }
+        else if (trimmed.Length > 0)
+        {
+            Log.LogError(null, null, null, path, i + 1, 0, 0, 0, "A header template line outside every #region would be dropped.");
+            return false;
+        }
+    }
+
+    if (current != null)
+    {
+        Log.LogError(null, null, null, path, lines.Length, 0, 0, 0, "A #region is never closed.");
+        return false;
+    }
+
+    var code = new StringBuilder();
+    code.Append("// <auto-generated/>\n");
+    code.Append("// Generated at build time from ").Append(template.ItemSpec.Replace('\\', '/')).Append(" by eng/HeaderTemplates.targets.\n\n");
+    code.Append("namespace ").Append(template.GetMetadata("Namespace")).Append("\n{\n");
+    code.Append("    internal static class ").Append(name).Append("\n    {\n");
+    for (var r = 0; r < regions.Count; r++)
+    {
+        if (r > 0)
+            code.Append('\n');
+
+        code.Append("        public static readonly string[] ").Append(regions[r].Key).Append(" = new string[]\n        {\n");
+        foreach (var line in regions[r].Value)
+            code.Append("            \"").Append(line.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\t", "\\t")).Append("\",\n");
+
+        code.Append("        };\n");
+    }
+
+    code.Append("    }\n}\n");
+
+    var outputDir = template.GetMetadata("OutputDir");
+    var output = Path.Combine(outputDir, name + ".g.cs");
+    Directory.CreateDirectory(outputDir);
+    File.WriteAllText(output, code.ToString());
+    generated.Add(new TaskItem(output));
+}
+
+GeneratedFiles = generated.ToArray();
+]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!--================================================================================
+                                Header template compilation
+   =================================================================================-->
+
+  <!-- Extension points. -->
+  <Target Name="HeaderTemplate_BeforeCompile" />
+  <Target Name="HeaderTemplate_AfterCompile" />
+
+  <!-- Main compile sequence. Generation is gated by $(DisableHeaderTemplateDesignTimeBuild),
+       so the sequence is good for either design time or build time. -->
+  <Target Name="HeaderTemplate_Compile"
+          Condition=" '@(HeaderTemplate)' != '' "
+          DependsOnTargets=" HeaderTemplate_BeforeCompile;
+                             _HeaderTemplate_SelectFiles;
+                             HeaderTemplate_PrepareCompile;
+                             _HeaderTemplate_AugmentLanguageCompile;
+                             _HeaderTemplate_CoreCompile;
+                             HeaderTemplate_AfterCompile" />
+
+  <!-- Before BeforeCompile, which an IDE's design-time build runs although it never runs Build. -->
+  <Target Name="_HeaderTemplate_Compile_BeforeCsCompile"
+          BeforeTargets="BeforeCompile"
+          DependsOnTargets="HeaderTemplate_Compile"
+          Condition=" '$(HeaderTemplate_ProjectSupported)' == 'true' " />
+
+  <Target Name="_HeaderTemplate_SanityCheck"
+          BeforeTargets="PrepareForBuild"
+          Condition=" '@(HeaderTemplate)' != '' and '$(HeaderTemplate_ProjectSupported)' != 'true' ">
+    <Warning Text="HeaderTemplate items are only compiled in a C# project; this project's language is '$(Language)'." />
+  </Target>
+
+  <Target Name="_HeaderTemplate_SelectFiles">
+    <ItemGroup>
+      <HeaderTemplate_Compile Include="@(HeaderTemplate->'%(FullPath)')">
+        <Source>%(FullPath)</Source>
+      </HeaderTemplate_Compile>
+    </ItemGroup>
+  </Target>
+
+  <!-- Predict the output of every template; each carries its template as Source. -->
+  <Target Name="HeaderTemplate_PrepareCompile" Condition=" '@(HeaderTemplate_Compile)' != '' ">
+    <ItemGroup>
+      <HeaderTemplate_ExpectedOutputs Include="@(HeaderTemplate_Compile->'%(OutputDir)%(Filename).g.cs')">
+        <Source>%(HeaderTemplate_Compile.Source)</Source>
+      </HeaderTemplate_ExpectedOutputs>
+    </ItemGroup>
+  </Target>
+
+  <!-- Add all expected outputs, and only these, to language compile. An output already declared at evaluation keeps
+       that item, and with it the Link the IDE places it by. -->
+  <Target Name="_HeaderTemplate_AugmentLanguageCompile"
+          Condition=" '$(HeaderTemplate_ProjectSupported)' == 'true' ">
+    <ItemGroup>
+      <_HeaderTemplate_CodeCompile Include="@(HeaderTemplate_ExpectedOutputs->Distinct())"
+         Condition=" '%(Source)' != '' and '@(HeaderTemplate_Compile->WithMetadataValue('CompileOutputs', 'true'))' != '' " />
+      <_HeaderTemplate_CodeCompile Remove="@(Compile)" />
+      <Compile Include="@(_HeaderTemplate_CodeCompile->Distinct())" />
+    </ItemGroup>
+  </Target>
+
+  <!-- A template is out of date when its output is older than it or than any imported project file. -->
+  <Target Name="_HeaderTemplate_GatherStaleFiles"
+          Condition=" '@(HeaderTemplate_Compile)' != '' "
+          DependsOnTargets="_HeaderTemplate_GatherStaleBatched">
+    <ItemGroup>
+      <!-- Drop outputs from MSBuild inference (they won't have the '_Exec' metadata). -->
+      <_HeaderTemplate_OutOfDate Remove="@(_HeaderTemplate_OutOfDate->WithMetadataValue('_Exec',''))" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_HeaderTemplate_GatherStaleBatched"
+          Inputs="@(HeaderTemplate_Compile);%(Source);$(MSBuildAllProjects)"
+          Outputs="@(HeaderTemplate_ExpectedOutputs)">
+    <!-- The '_Exec' metadatum is set to distinguish really executed items from those MSBuild
+         infers in a bucketed task. For the same reason, cannot use the intrinsic ItemGroup task here. -->
+    <CreateItem Include="@(HeaderTemplate_Compile)" AdditionalMetadata="_Exec=true">
+      <Output TaskParameter="Include" ItemName="_HeaderTemplate_OutOfDate" />
+    </CreateItem>
+  </Target>
+
+  <Target Name="_HeaderTemplate_CoreCompile"
+          Condition=" '$(DisableHeaderTemplateDesignTimeBuild)' != 'true' "
+          DependsOnTargets="_HeaderTemplate_GatherStaleFiles">
+    <HeaderTemplateCompile Condition=" '@(_HeaderTemplate_OutOfDate)' != '' "
+                           Templates="@(_HeaderTemplate_OutOfDate)">
+      <Output TaskParameter="GeneratedFiles" ItemName="_HeaderTemplate_GeneratedFiles" />
+    </HeaderTemplateCompile>
+  </Target>
+
+  <!--================================================================================
+                                 Header template cleanup
+   =================================================================================-->
+
+  <!-- Extension points. -->
+  <Target Name="HeaderTemplate_BeforeClean" />
+  <Target Name="HeaderTemplate_AfterClean" />
+
+  <!-- Main cleanup sequence. -->
+  <Target Name="HeaderTemplate_Clean"
+          Condition=" '@(HeaderTemplate)' != '' "
+          DependsOnTargets=" HeaderTemplate_BeforeClean;
+                             _HeaderTemplate_SelectFiles;
+                             HeaderTemplate_PrepareCompile;
+                             _HeaderTemplate_CoreClean;
+                             HeaderTemplate_AfterClean" />
+
+  <Target Name="_HeaderTemplate_Clean_AfterCsClean"
+          AfterTargets="CoreClean"
+          DependsOnTargets="HeaderTemplate_Clean"
+          Condition=" '$(HeaderTemplate_ProjectSupported)' == 'true' " />
+
+  <Target Name="_HeaderTemplate_CoreClean">
+    <Delete Files="@(HeaderTemplate_ExpectedOutputs)" TreatErrorsAsWarnings="true" />
+  </Target>
+
+  <!--================================================================================
+                                  Design-time support
+   =================================================================================-->
+
+  <!-- Add every template to SourceFilesProjectOutputGroupOutput, so that Visual Studio triggers a
+       build when any of them changed. -->
+  <Target Name="_HeaderTemplate_SourceFilesProjectOutputGroup"
+          BeforeTargets="SourceFilesProjectOutputGroup"
+          Condition=" '@(HeaderTemplate)' != '' ">
+    <ItemGroup>
+      <SourceFilesProjectOutputGroupOutput Include="@(HeaderTemplate->'%(FullPath)')" />
+    </ItemGroup>
+  </Target>
+</Project>
