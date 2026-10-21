@@ -132,9 +132,8 @@ jobs:
           name: package
           path: artifacts/package/release/*.nupkg
 
-  # The netstandard2.0 asset under Mono, and Blazor WebAssembly under a headless browser. Linux,
-  # because that is where anyone runs Mono, and because a second platform is worth having for the
-  # rest of the smoke suite too.
+  # The netstandard2.0 asset under Mono, and Blazor WebAssembly under a headless browser. 
+  # Linux, because that is where anyone runs Mono, and because a second platform is worth having for the rest of the smoke suite too.
   smoke-linux:
     name: Smoke on Linux
     runs-on: ubuntu-latest
