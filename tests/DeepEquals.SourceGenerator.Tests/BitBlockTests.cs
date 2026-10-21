@@ -34,7 +34,7 @@ public sealed class BitBlockTests
         namespace Tests;
         """;
 
-    private static GeneratorRun Clean(string source) => GeneratorHost.RunClean(Prelude + source);
+    private static GeneratorRun Clean(string source, bool frameworkBlocks = true) => GeneratorHost.RunClean(Prelude + source, frameworkBlocks: frameworkBlocks);
 
     private static string SpanCore(string source, string element)
     {
@@ -173,6 +173,29 @@ public sealed class BitBlockTests
         Regex.IsMatch(source, @"_DeqBlocks\.\w+<(string|bool|int\?)>").Should().BeFalse("strings, bools and nullables are not bit blocks");
     }
 
+    [Fact]
+    public void Without_framework_blocks_every_sequence_takes_the_per_element_path()
+    {
+        var run = Clean($$"""
+                                         public readonly record struct Point3(double X, double Y, double Z);
+                                         public struct Pair { public int A; public int B; }
+                                         public sealed class Holder
+                                         {
+                                             public double[]? Doubles; public List<Guid>? Guids; public ImmutableArray<decimal> Decimals;
+                                             public IReadOnlyList<float>? Floats; public IEnumerable<Point3>? Points; public IList<long>? Longs;
+                                             public Pair[]? Pairs; public Memory<int> Memory;
+                                         }
+                                         [GenerateDeepEquals(typeof(Holder))]
+                                         public partial class Ctx : DeepEqualsContextBase { }
+                                         """, frameworkBlocks: false);
+
+        var source = run.GeneratedSource;
+        Regex.IsMatch(source, @"Not available:.*framework bit blocks").Should().BeTrue("the netstandard2.1 asset has no DeepEqualsBlocks");
+        source.Should().NotContain("_DeqBlocks.", "nothing may call a helper the referenced asset lacks");
+        source.Should().NotContain("_IsBitBlock", "a struct's size flag guards a block path that does not exist");
+        SpanCore(source, "Double").Should().Contain("for (int i = 0;", "a span compares element by element");
+    }
+
     /// <summary>An IReadOnlyList that is neither an array nor a List.</summary>
     public sealed class Custom<T>(T[] items) : IReadOnlyList<T>
     {
@@ -182,8 +205,10 @@ public sealed class BitBlockTests
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
-    [Fact]
-    public void Every_container_shape_of_a_bit_block_sequence_hashes_equal()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Every_container_shape_of_a_bit_block_sequence_hashes_equal(bool frameworkBlocks)
     {
         var run = Clean($$"""
                                          public readonly record struct Point3(double X, double Y, double Z);
@@ -194,7 +219,7 @@ public sealed class BitBlockTests
                                          }
                                          [GenerateDeepEquals(typeof(Holder))]
                                          public partial class Ctx : DeepEqualsContextBase { }
-                                         """);
+                                         """, frameworkBlocks);
 
         var doubles = new[] { 1.0, -0.0, double.NaN, 2.5, double.MaxValue };
         var point = run.Assembly!.GetTypes().Single(t => t.Name == "Point3");
@@ -231,14 +256,16 @@ public sealed class BitBlockTests
         Check("IEnumerableOfPoint3", points, enumerableToo: true);
     }
 
-    [Fact]
-    public void Bit_block_sequence_equality_is_bitwise()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Bit_block_sequence_equality_is_bitwise(bool frameworkBlocks)
     {
         var run = Clean($$"""
                                          public sealed class Holder { public double[]? Doubles; public decimal[]? Decimals; }
                                          [GenerateDeepEquals(typeof(Holder))]
                                          public partial class Ctx : DeepEqualsContextBase { }
-                                         """);
+                                         """, frameworkBlocks);
 
         var arrays = run.Comparer("Ctx", "ArrayOfDouble");
         run.Equals(arrays, new[] { 0.0 }, new[] { -0.0 }).Should().BeFalse("the sign of zero is a bit");

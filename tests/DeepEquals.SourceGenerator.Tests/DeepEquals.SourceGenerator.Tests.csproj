@@ -22,4 +22,21 @@
         <ProjectReference Include="..\..\src\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj" />
     </ItemGroup>
 
+    <!--
+      The netstandard2.1 framework asset has no DeepEqualsBlocks. Tests generate against it, from netstandard2.1\ in the
+      output, to cover the path every consumer of that asset takes.
+    -->
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\DeepEquals.SourceGeneration.Framework\DeepEquals.SourceGeneration.Framework.csproj"
+                          SetTargetFramework="TargetFramework=netstandard2.1"
+                          ReferenceOutputAssembly="false"
+                          OutputItemType="FrameworkWithoutBlocks" />
+    </ItemGroup>
+
+    <Target Name="CopyFrameworkWithoutBlocks" AfterTargets="ResolveProjectReferences" Condition=" '@(FrameworkWithoutBlocks)' != '' ">
+        <ItemGroup>
+            <None Include="@(FrameworkWithoutBlocks)" Link="netstandard2.1\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+        </ItemGroup>
+    </Target>
+
 </Project>

@@ -92,8 +92,9 @@ public sealed class RawBitsTests
         static bool IsFloatingOrDecimal(ITypeSymbol? type)
         {
             if (type is null) return false;
-            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol { TypeArguments: [var inner] })
-                type = inner;
+            // Not a list pattern: Rider sees the generator's internal System.Index polyfill beside the BCL's and resolves neither.
+            if (type.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T && type is INamedTypeSymbol nullable)
+                type = nullable.TypeArguments[0];
 
             return type.SpecialType is SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal || type.Name == "Half";
         }

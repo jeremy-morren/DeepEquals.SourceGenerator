@@ -67,12 +67,18 @@ internal sealed class GeneratorRun
 
 internal static class GeneratorHost
 {
-    private static readonly Lazy<ImmutableArray<MetadataReference>> s_references = new(LoadReferences);
+    private static readonly Lazy<ImmutableArray<MetadataReference>> s_references =
+        new(() => LoadReferences(typeof(DeepEqualsContextBase).Assembly.Location));
+
+    // The same references with the framework's netstandard2.1 asset, which has no DeepEqualsBlocks, in place of the
+    // executing one. Code generated against it loads against the executing framework, which has every member it calls.
+    private static readonly Lazy<ImmutableArray<MetadataReference>> s_referencesWithoutBlocks =
+        new(() => LoadReferences(Path.Combine(AppContext.BaseDirectory, "netstandard2.1", "DeepEquals.SourceGeneration.Framework.dll")));
 
     /// <summary>The executing runtime's managed references plus the framework assembly.</summary>
     public static ImmutableArray<MetadataReference> References => s_references.Value;
 
-    private static ImmutableArray<MetadataReference> LoadReferences()
+    private static ImmutableArray<MetadataReference> LoadReferences(string framework)
     {
         // The trusted platform assembly list holds managed assemblies only, unlike the runtime directory.
         var list = (string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!;
@@ -87,21 +93,21 @@ internal static class GeneratorHost
             }
         }
 
-        references.Add(MetadataReference.CreateFromFile(typeof(DeepEqualsContextBase).Assembly.Location));
+        references.Add(MetadataReference.CreateFromFile(framework));
         return [..references];
     }
 
     /// <summary>Runs the generator and asserts a clean result: no generator error, no compile error, and a loaded assembly.</summary>
-    public static GeneratorRun RunClean(string source, LanguageVersion languageVersion = LanguageVersion.Latest)
+    public static GeneratorRun RunClean(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool frameworkBlocks = true)
     {
-        var run = Run(source, languageVersion);
+        var run = Run(source, languageVersion, frameworkBlocks: frameworkBlocks);
         run.GeneratorDiagnostics.Where(d => d.Severity == DiagnosticSeverity.Error).Should().BeEmpty();
         run.CompileErrors.Should().BeEmpty(run.GeneratedSource);
         run.Assembly.Should().NotBeNull();
         return run;
     }
 
-    public static GeneratorRun Run(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool load = true, string assemblyName = "GeneratedTests", bool checkedArithmetic = false)
+    public static GeneratorRun Run(string source, LanguageVersion languageVersion = LanguageVersion.Latest, bool load = true, string assemblyName = "GeneratedTests", bool checkedArithmetic = false, bool frameworkBlocks = true)
     {
         // Every warning wave, and documentation diagnostics, so a generated file cannot hide a warning behind the defaults.
         var parseOptions = new CSharpParseOptions(languageVersion, DocumentationMode.Diagnose);
@@ -109,7 +115,7 @@ internal static class GeneratorHost
         var compilation = CSharpCompilation.Create(
             $"{assemblyName}_{Guid.NewGuid():N}",
             [tree],
-            s_references.Value,
+            frameworkBlocks ? s_references.Value : s_referencesWithoutBlocks.Value,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable, allowUnsafe: true, checkOverflow: checkedArithmetic, warningLevel: 9999));
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create([new DeepEqualsGenerator().AsSourceGenerator()], parseOptions: parseOptions);
