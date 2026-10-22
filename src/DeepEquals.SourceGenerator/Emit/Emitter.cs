@@ -540,7 +540,7 @@ internal sealed class Emitter
     }
 
     /// <summary>Suppressions for a method, then the method itself: the attributes and what they decorate are one unit.</summary>
-    private IDisposable Method(TypeModel type, string signature)
+    private Scope Method(TypeModel type, string signature)
     {
         EmitSuppressions(type);
         return _w.Member(signature);
@@ -557,7 +557,7 @@ internal sealed class Emitter
     /// The cycle guard, for the types that need one: a pair already being compared is taken as equal, which is what
     /// bounds the recursion. The boxed adapter has its own kind, and its own reason to be guarded.
     /// </summary>
-    private IDisposable GuardScope(TypeModel type, bool boxed = false)
+    private Scope GuardScope(TypeModel type, bool boxed = false)
     {
         if (!(boxed ? type.BoxedAdapterGuarded : type.IsGuarded))
             return NoScope;
@@ -612,7 +612,7 @@ internal sealed class Emitter
     /// Under Path, a tail loop is the chain of its ancestors: every node's pair stays entered while the loop walks on,
     /// exactly as nested calls would keep them, and all of them leave together when the loop ends, however it ends.
     /// </summary>
-    private IDisposable TailLoopScope(TypeModel type)
+    private Scope TailLoopScope(TypeModel type)
     {
         if (!type.IsGuarded || !_model.Options.IsPath)
             return NoScope;

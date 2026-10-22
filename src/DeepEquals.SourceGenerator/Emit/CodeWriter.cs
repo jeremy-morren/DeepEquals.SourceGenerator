@@ -126,13 +126,12 @@ internal sealed class CodeWriter
     /// that often depends on guards and preludes that write nothing for most types, so the choice is made from what
     /// was written rather than predicted at each call site.
     /// </summary>
-    public IDisposable Member(string signature)
+    public Scope Member(string signature)
     {
         var start = _builder.Length;
         var indent = _indent;
         Open(signature, Kind.None);
-        var bodyStart = _builder.Length;
-        return new Scope(() => CloseMember(signature, start, indent, bodyStart));
+        return new Scope(this, ScopeEnd.Member, signature, start, indent, _builder.Length);
     }
 
     private void CloseMember(string signature, int start, int indent, int bodyStart)
@@ -182,40 +181,42 @@ internal sealed class CodeWriter
     /// <c>try</c>, <c>finally</c>, <c>switch</c> or <c>using</c>. The emitter's own nesting then mirrors the
     /// generated code's, and the compiler rather than convention keeps the braces balanced.
     /// </summary>
-    public IDisposable Block(string header)
+    public Scope Block(string header)
     {
         Open(header, Kind.None);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary>A <c>try</c> whose <c>finally</c> holds <paramref name="cleanup"/>, written when the returned scope is disposed.</summary>
-    public IDisposable TryFinally(string cleanup)
+    public Scope TryFinally(string cleanup)
     {
-        var body = Block("try");
-        return new Scope(() =>
-        {
-            body.Dispose();
-            using (Block("finally"))
-                Line(cleanup);
-        });
+        Open("try", Kind.None);
+        return new Scope(this, ScopeEnd.Finally, cleanup);
+    }
+
+    private void CloseTry(string cleanup)
+    {
+        Close();
+        using (Block("finally"))
+            Line(cleanup);
     }
 
     /// <summary>A scope that writes nothing, for a caller whose block turns out not to be needed.</summary>
-    public static IDisposable NoScope { get; } = new Scope(null);
+    public static Scope NoScope => default;
 
     /// <summary>A bare braced block, for a switch section that declares locals.</summary>
-    public IDisposable Block()
+    public Scope Block()
     {
         Count(Statement.Compound);
         OpenBrace(Kind.None);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary>An <c>if</c> whose block loses its braces when it holds a single statement that can stand alone.</summary>
-    public IDisposable If(string condition)
+    public Scope If(string condition)
     {
         Open($"if ({condition})", Kind.If);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary><c>if (condition)</c>, then <paramref name="statement"/> on the next line one level in.</summary>
@@ -226,24 +227,24 @@ internal sealed class CodeWriter
     }
 
     /// <summary>The <c>else</c> of the <see cref="If(string)"/> closed just before it.</summary>
-    public IDisposable Else()
+    public Scope Else()
     {
         Open("else", Kind.Else);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary>A counted loop over <c>i</c> from zero to <paramref name="limit"/>, the shape every element walk takes.</summary>
-    public IDisposable For(string limit)
+    public Scope For(string limit)
     {
         Open($"for (int i = 0; i < {limit}; i++)", Kind.Loop);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary><c>foreach (iteration)</c>, where <paramref name="iteration"/> is the <c>T e in source</c> part.</summary>
-    public IDisposable Foreach(string iteration)
+    public Scope Foreach(string iteration)
     {
         Open($"foreach ({iteration})", Kind.Loop);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary><c>foreach (iteration)</c>, then <paramref name="statement"/> on the next line one level in.</summary>
@@ -253,10 +254,10 @@ internal sealed class CodeWriter
             Line(statement);
     }
 
-    public IDisposable While(string condition)
+    public Scope While(string condition)
     {
         Open($"while ({condition})", Kind.Loop);
-        return new Scope(Close);
+        return new Scope(this, ScopeEnd.Close);
     }
 
     /// <summary>
@@ -417,8 +418,63 @@ internal sealed class CodeWriter
         _builder.Append(text);
     }
 
-    private sealed class Scope(Action? dispose) : IDisposable
+    /// <summary>What disposing a <see cref="Scope"/> writes.</summary>
+    internal enum ScopeEnd
     {
-        public void Dispose() => dispose?.Invoke();
+        /// <summary>Nothing: <see cref="NoScope"/>, and the default value.</summary>
+        None,
+
+        /// <summary><see cref="Close"/>.</summary>
+        Close,
+
+        /// <summary><see cref="CloseMember"/>, which may rewrite the body as an expression body.</summary>
+        Member,
+
+        /// <summary>The <c>try</c>'s <see cref="Close"/>, then the <c>finally</c> block.</summary>
+        Finally,
+    }
+
+    /// <summary>
+    /// An open block, closed when disposed. A struct, so opening one allocates nothing: a generated file opens a
+    /// block for nearly every member and statement it writes. It carries what closing needs, the member's signature
+    /// and where it began, or the <c>finally</c>'s cleanup, in place of a closure capturing them.
+    /// </summary>
+    public readonly struct Scope : IDisposable
+    {
+        private readonly CodeWriter? _writer;
+        private readonly ScopeEnd _end;
+
+        /// <summary>The member's signature, or the <c>finally</c>'s cleanup statement.</summary>
+        private readonly string? _text;
+
+        private readonly int _start;
+        private readonly int _indent;
+        private readonly int _bodyStart;
+
+        internal Scope(CodeWriter writer, ScopeEnd end, string? text = null, int start = 0, int indent = 0, int bodyStart = 0)
+        {
+            _writer = writer;
+            _end = end;
+            _text = text;
+            _start = start;
+            _indent = indent;
+            _bodyStart = bodyStart;
+        }
+
+        public void Dispose()
+        {
+            switch (_end)
+            {
+                case ScopeEnd.Close:
+                    _writer!.Close();
+                    break;
+                case ScopeEnd.Member:
+                    _writer!.CloseMember(_text!, _start, _indent, _bodyStart);
+                    break;
+                case ScopeEnd.Finally:
+                    _writer!.CloseTry(_text!);
+                    break;
+            }
+        }
     }
 }
