@@ -527,8 +527,8 @@ analysis; the generator tests compile every generated file that way and fail on 
 - **System.IO.Hashing is chosen per framework asset**: the newest release that builds without a warning on every runtime
   that asset serves. 10.0.12 on net10.0, net8.0 and netstandard2.0 (.NET Framework 4.6.2 and later); 8.0.0 on net6.0,
   because 9.x and 10.x warn on net6.0 and net7.0.
-- **The netstandard2.1 asset has no block helpers**: every System.IO.Hashing release warns on the netcoreapp3.1 to
-  net5.0 runtimes it serves. The generator probes `HasFrameworkBlocks`, a target-framework capability.
+- **The netstandard2.1 and net5.0 assets have no block helpers**: every System.IO.Hashing release warns on the netcoreapp3.x
+  and net5.0 runtimes they serve. The generator probes `HasFrameworkBlocks`, a target-framework capability.
 - **System.Memory 4.6.3 is pinned on netstandard2.0**, so .NET Framework consumers get `ReadOnlySpan<T>` and the span
   paths.
 - Left alone on purpose: FluentAssertions 8 (licence change) and xunit.runner.visualstudio 4 (targets xunit v3).
@@ -572,7 +572,7 @@ analysis; the generator tests compile every generated file that way and fail on 
   conversion from a floating-point or decimal type to an integer, and any `GetHashCode` on one. A textual scan is fooled
   by comments and unrelated `unchecked` integer casts.
 - **The generator test host always enables nullable**, which C# 7.3 rejects (CS8630), so it tests C# 9 and later; the
-  fixtures compile the generated code at C# 7.3 and 8 on .NET Framework and .NET Core 3.1.
+  fixtures compile the generated code at C# 7.3 on .NET Framework and .NET Core 2.2, and at C# 8 on .NET Core 3.1.
 - **The `DEQ036` test's version override is async-local**, so it cannot leak into parallel tests.
 - **Downstream restores into `downstream/.packages`**, cached by version. After repacking at an unchanged version,
   delete the `deepequals.*` folders there, or the old packages are used.

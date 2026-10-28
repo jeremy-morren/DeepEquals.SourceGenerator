@@ -115,8 +115,10 @@ internal sealed class Emitter
             ("framework Hash(Int128)", c.HasFrameworkHash128),
             ("Nullable.GetValueRefOrDefaultRef", c.HasNullableGetValueRefOrDefaultRef),
             ("decimal.GetBits(Span<int>)", c.HasDecimalGetBitsSpan),
+            ("BitConverter.HalfToUInt16Bits", c.HasBitConverterHalfBits),
             ("framework bit blocks", c.BitBlocks),
             ("[RequiresUnreferencedCode]", c.HasRequiresUnreferencedCode),
+            ("[RequiresUnreferencedCode] on classes", c.HasRequiresUnreferencedCodeOnClasses),
             ("[RequiresDynamicCode]", c.HasRequiresDynamicCode),
             ("[UnconditionalSuppressMessage]", c.HasUnconditionalSuppressMessage)
         ];
@@ -519,10 +521,13 @@ internal sealed class Emitter
             "This comparer compiles expression trees for private field access.");
     }
 
-    /// <summary><c>[RequiresUnreferencedCode]</c> and <c>[RequiresDynamicCode]</c> with their messages, each where the target defines it.</summary>
-    private void EmitRequiresAttributes(string unreferencedCode, string dynamicCode)
+    /// <summary>
+    /// <c>[RequiresUnreferencedCode]</c> and <c>[RequiresDynamicCode]</c> with their messages, each where the target
+    /// defines it, and on a class only where the target's attribute admits classes.
+    /// </summary>
+    private void EmitRequiresAttributes(string unreferencedCode, string dynamicCode, bool onClass = false)
     {
-        if (_model.Capabilities.HasRequiresUnreferencedCode)
+        if (onClass ? _model.Capabilities.HasRequiresUnreferencedCodeOnClasses : _model.Capabilities.HasRequiresUnreferencedCode)
             _w.Line($"[global::System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode(\"{unreferencedCode}\")]");
 
         if (_model.Capabilities.HasRequiresDynamicCode)
@@ -1027,7 +1032,15 @@ internal sealed class Emitter
 
     private static string DoubleBits(string value) => $"{KnownTypes.DeqHelpers}.DoubleBits({value})";
 
-    private static string HalfBits(string value) => $"global::System.BitConverter.HalfToUInt16Bits({value})";
+    /// <summary>
+    /// .NET 5 has <c>Half</c> but no <c>BitConverter</c> method for it, so there the value is reinterpreted through
+    /// <c>Unsafe</c>, which is in-box wherever <c>Half</c> is; <c>AsRef</c> takes it by <c>in</c>, which accepts any
+    /// expression. Generated code does this itself rather than through a framework helper, so it depends on no
+    /// framework member that a mismatched package could lack.
+    /// </summary>
+    private string HalfBits(string value) => _model.Capabilities.HasBitConverterHalfBits
+        ? $"global::System.BitConverter.HalfToUInt16Bits({value})"
+        : $"global::System.Runtime.CompilerServices.Unsafe.As<global::System.Half, ushort>(ref global::System.Runtime.CompilerServices.Unsafe.AsRef({value}))";
 
     /// <summary>The four bytes of a float as a narrow hash word.</summary>
     private static string FloatWord(string value) => $"unchecked((int){FloatBits(value)})";
@@ -2976,7 +2989,8 @@ internal sealed class Emitter
         {
             EmitRequiresAttributes(
                 "Reads private fields by name through reflection-built delegates.",
-                "Compiles expression trees for private field access.");
+                "Compiles expression trees for private field access.",
+                onClass: true);
 
             using (_w.Block($"private static class {holder.HolderName}"))
             {

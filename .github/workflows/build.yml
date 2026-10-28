@@ -32,10 +32,12 @@ jobs:
       - name: Install .NET SDKs
         uses: actions/setup-dotnet@v6
         with:
-          # 3.1 and 6.0 are here for their runtimes: the framework ships assets for both and the
-          # test matrix runs on them. global.json pins the SDK that builds.
+          # 2.2, 3.1, 5.0 and 6.0 are here for their runtimes: the test matrix runs the framework's assets
+          # on them (2.2 the netstandard2.0 asset on .NET Core). global.json pins the SDK that builds.
           dotnet-version: |
+            2.2.x
             3.1.x
+            5.0.x
             6.0.x
             7.0.x
             8.0.x
@@ -47,7 +49,7 @@ jobs:
       - name: Build
         run: dotnet build DeepEquals.SourceGenerator.slnx --no-restore -c Release
 
-      - name: Test (framework, generator and fixtures on net472, netcoreapp3.1, net6.0, net8.0 and net10.0)
+      - name: Test (framework, generator and fixtures on net472, netcoreapp2.2, netcoreapp3.1, net5.0, net6.0, net8.0 and net10.0)
         run: >-
           dotnet test DeepEquals.SourceGenerator.slnx --no-build -c Release
           --settings eng/coverage.runsettings

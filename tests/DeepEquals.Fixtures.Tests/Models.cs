@@ -163,6 +163,50 @@ namespace DeepEquals.Fixtures
         public Box<string> Text;
     }
 
+#if NET5_0_OR_GREATER
+    /// <summary>
+    /// <see cref="Half"/> in every position the generator reads one from. .NET 5 has the type but no
+    /// <c>BitConverter</c> method for its bits, so its generated code reinterprets them itself.
+    /// </summary>
+    public sealed class Halves
+    {
+        private Half _secret;
+
+        public Halves(Half secret)
+        {
+            _secret = secret;
+        }
+
+        public Half Secret
+        {
+            get { return _secret; }
+        }
+
+        public Half Value;
+
+        public Half? Maybe;
+
+        public HalfPair Pair;
+
+        public Half[] Values;
+
+        public List<Half> List;
+
+        public object Boxed;
+    }
+
+    public struct HalfPair
+    {
+        public Half A;
+        public Half B;
+    }
+
+    [GenerateDeepEquals(typeof(Halves))]
+    public partial class HalfFixtureContext : DeepEqualsContextBase
+    {
+    }
+#endif
+
     [GenerateDeepEquals(typeof(Person))]
     [GenerateDeepEquals(typeof(Node))]
     [GenerateDeepEquals(typeof(Circle))]

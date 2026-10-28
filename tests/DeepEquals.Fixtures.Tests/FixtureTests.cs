@@ -243,6 +243,70 @@ namespace DeepEquals.Fixtures
             FixtureContext.Boxes.Equals(a, b).Should().BeFalse("the private field of the generic type is compared");
         }
 
+#if NET5_0_OR_GREATER
+        private static readonly Half PositiveZero = HalfFromBits(0x0000);
+        private static readonly Half NegativeZero = HalfFromBits(0x8000);
+        private static readonly Half QuietNaN = HalfFromBits(0x7E00);
+        private static readonly Half PayloadNaN = HalfFromBits(0x7E01);
+
+        /// <summary>A <see cref="Half"/> from its bits; .NET 5 has no <c>BitConverter</c> method for it.</summary>
+        private static Half HalfFromBits(ushort bits)
+        {
+            return System.Runtime.CompilerServices.Unsafe.As<ushort, Half>(ref bits);
+        }
+
+        private static Halves MakeHalves(Half secret)
+        {
+            var h = new Halves(secret);
+            h.Value = (Half)1.5f;
+            h.Maybe = (Half)(-3f);
+            h.Pair = new HalfPair { A = (Half)0.25f, B = Half.MaxValue };
+            h.Values = new[] { (Half)1f, QuietNaN, Half.Epsilon };
+            h.List = new List<Half> { (Half)4f, Half.NegativeInfinity };
+            h.Boxed = (Half)5f;
+            return h;
+        }
+
+        /// <summary>Two otherwise equal instances that differ only in what <paramref name="set"/> stores.</summary>
+        private static void HalvesDiffer(Action<Halves, Half> set, Half left, Half right, string because)
+        {
+            var x = MakeHalves(PositiveZero);
+            var y = MakeHalves(PositiveZero);
+            set(x, left);
+            set(y, right);
+            HalfFixtureContext.Halves.Equals(x, y).Should().BeFalse(because);
+        }
+
+        [Fact]
+        public void Half_compares_and_hashes_its_bits()
+        {
+            var a = MakeHalves((Half)2.5f);
+            var b = MakeHalves((Half)2.5f);
+            HalfFixtureContext.Halves.Equals(a, b).Should().BeTrue("a NaN equals the same NaN bits");
+            HalfFixtureContext.Halves.GetHashCode(a).Should().Be(HalfFixtureContext.Halves.GetHashCode(b));
+
+            a.Value = PayloadNaN;
+            b.Value = PayloadNaN;
+            HalfFixtureContext.Halves.Equals(a, b).Should().BeTrue();
+            HalfFixtureContext.Halves.GetHashCode(a).Should().Be(HalfFixtureContext.Halves.GetHashCode(b));
+
+            HalfFixtureContext.Halves.Equals(MakeHalves(PositiveZero), MakeHalves(NegativeZero))
+                .Should().BeFalse("a private field is compared bitwise");
+
+            HalvesDiffer((h, v) => h.Value = v, PositiveZero, NegativeZero, "+0 and -0 differ");
+            HalvesDiffer((h, v) => h.Value = v, QuietNaN, PayloadNaN, "NaN payloads differ");
+            HalvesDiffer((h, v) => h.Maybe = v, PositiveZero, NegativeZero, "a nullable payload is compared bitwise");
+            HalvesDiffer((h, v) => h.Pair.B = v, PositiveZero, NegativeZero, "a struct member is compared bitwise");
+            HalvesDiffer((h, v) => h.Values[0] = v, PositiveZero, NegativeZero, "array elements are compared bitwise");
+            HalvesDiffer((h, v) => h.List[0] = v, PositiveZero, NegativeZero, "list elements are compared bitwise");
+            HalvesDiffer((h, v) => h.Boxed = v, PositiveZero, NegativeZero, "a boxed Half is compared bitwise");
+
+            var none = MakeHalves(PositiveZero);
+            none.Maybe = null;
+            HalfFixtureContext.Halves.Equals(none, MakeHalves(PositiveZero)).Should().BeFalse();
+        }
+#endif
+
         [Fact]
         public void Empty_type_and_generic_lookup()
         {

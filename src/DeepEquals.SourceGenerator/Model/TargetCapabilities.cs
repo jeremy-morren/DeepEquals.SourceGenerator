@@ -19,7 +19,9 @@ internal sealed record TargetCapabilities(
     bool HasFrameworkHash128,
     bool HasNullableGetValueRefOrDefaultRef,
     bool HasDecimalGetBitsSpan,
+    bool HasBitConverterHalfBits,
     bool HasRequiresUnreferencedCode,
+    bool HasRequiresUnreferencedCodeOnClasses,
     bool HasRequiresDynamicCode,
     bool HasUnconditionalSuppressMessage,
     bool HasFrameworkBlocks)
@@ -33,5 +35,5 @@ internal sealed record TargetCapabilities(
     /// <summary>Sequences of bit-block elements compare as bytes and hash through XxHash3: the framework asset has the helpers and the target has spans.</summary>
     public bool BitBlocks => HasFrameworkBlocks && HasReadOnlySpan;
 
-    public static readonly TargetCapabilities Empty = new(-1, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false);
+    public static readonly TargetCapabilities Empty = new(-1, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false);
 }

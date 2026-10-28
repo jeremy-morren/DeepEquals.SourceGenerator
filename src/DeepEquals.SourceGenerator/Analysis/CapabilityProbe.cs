@@ -30,6 +30,7 @@ internal static class CapabilityProbe
                          hashCode.GetMembers("Hash").OfType<IMethodSymbol>().Any(m => m.Parameters is [{ Type.Name: "Int128" }]);
         var nullable = Find(compilation, "System.Nullable");
         var @decimal = Find(compilation, "System.Decimal");
+        var requiresUnreferencedCode = Find(compilation, KnownTypes.RequiresUnreferencedCode);
 
         return new TargetCapabilities(
             LanguageVersion: (int)languageVersion,
@@ -46,7 +47,11 @@ internal static class CapabilityProbe
             HasFrameworkHash128: hasHash128,
             HasNullableGetValueRefOrDefaultRef: HasMethod(nullable, "GetValueRefOrDefaultRef"),
             HasDecimalGetBitsSpan: @decimal is not null && @decimal.GetMembers("GetBits").OfType<IMethodSymbol>().Any(m => m.Parameters.Length == 2),
-            HasRequiresUnreferencedCode: Find(compilation, KnownTypes.RequiresUnreferencedCode) is not null,
+            // From .NET 6; .NET 5 has Half without it.
+            HasBitConverterHalfBits: HasMethod(Find(compilation, "System.BitConverter"), "HalfToUInt16Bits"),
+            HasRequiresUnreferencedCode: requiresUnreferencedCode is not null,
+            // .NET 5's in-box attribute targets constructors and methods only; .NET 6 added classes.
+            HasRequiresUnreferencedCodeOnClasses: AllowsClasses(requiresUnreferencedCode),
             HasRequiresDynamicCode: Find(compilation, KnownTypes.RequiresDynamicCode) is not null,
             HasUnconditionalSuppressMessage: Find(compilation, KnownTypes.UnconditionalSuppressMessage) is not null,
             // The netstandard2.1 asset has no block helpers: System.IO.Hashing warns on the runtimes it serves.
@@ -91,4 +96,15 @@ internal static class CapabilityProbe
 
     private static bool HasMethod(INamedTypeSymbol? type, string name)
         => type is not null && type.GetMembers(name).OfType<IMethodSymbol>().Any();
+
+    /// <summary>Whether an attribute type's <c>[AttributeUsage]</c> admits classes. An attribute without one admits every target.</summary>
+    private static bool AllowsClasses(INamedTypeSymbol? attribute)
+    {
+        if (attribute is null)
+            return false;
+
+        var usage = attribute.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.AttributeUsageAttribute");
+        return usage is not { ConstructorArguments: [{ Value: int targets }, ..] } ||
+               ((AttributeTargets)targets & AttributeTargets.Class) != 0;
+    }
 }

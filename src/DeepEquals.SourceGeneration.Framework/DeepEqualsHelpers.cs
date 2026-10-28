@@ -49,7 +49,7 @@ public static class DeepEqualsHelpers
     {
 #if NET6_0_OR_GREATER
         return BitConverter.SingleToUInt32Bits(value);
-#elif NETSTANDARD2_1
+#elif NETSTANDARD2_1 || NET5_0
         return unchecked((uint)BitConverter.SingleToInt32Bits(value));
 #else
         return Unsafe.As<float, uint>(ref value);
@@ -62,7 +62,7 @@ public static class DeepEqualsHelpers
     {
 #if NET6_0_OR_GREATER
         return BitConverter.DoubleToUInt64Bits(value);
-#elif NETSTANDARD2_1
+#elif NETSTANDARD2_1 || NET5_0
         return unchecked((ulong)BitConverter.DoubleToInt64Bits(value));
 #else
         return Unsafe.As<double, ulong>(ref value);

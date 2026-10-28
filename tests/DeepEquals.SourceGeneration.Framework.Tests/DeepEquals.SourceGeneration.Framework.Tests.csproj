@@ -2,7 +2,7 @@
 
     <PropertyGroup>
         <!-- Target everything from .NET Framework 4.7.2 to .NET 10.0 -->
-        <TargetFrameworks>net472;netcoreapp3.1;net6.0;net8.0;net10.0</TargetFrameworks>
+        <TargetFrameworks>net472;netcoreapp2.2;netcoreapp3.1;net5.0;net6.0;net8.0;net10.0</TargetFrameworks>
         <LangVersion>latest</LangVersion>
         <Nullable>enable</Nullable>
         <ImplicitUsings>disable</ImplicitUsings>
@@ -11,8 +11,8 @@
         <RootNamespace>DeepEquals.SourceGeneration.Framework.Tests</RootNamespace>
         
         <!-- 
-          netcoreapp3.1 and net472 are deliberate out-of-support fixture runtimes
-          to test the netstandard2.0 and netstandard2.1 assets on real runtimes.
+          net472, netcoreapp2.2, netcoreapp3.1 and net5.0 are deliberate out-of-support fixture runtimes to test the
+          netstandard2.0 asset on .NET Framework and .NET Core, and the netstandard2.1 and net5.0 assets, on real runtimes.
          -->
         <SuppressTfmSupportBuildErrors>true</SuppressTfmSupportBuildErrors>
         <SuppressTfmSupportBuildWarnings>true</SuppressTfmSupportBuildWarnings>
@@ -20,26 +20,44 @@
         <NoWarn>$(NoWarn);NU1701</NoWarn>
     </PropertyGroup>
 
+    <!-- The netcoreapp2.2 leg's platform package, out of support since 2019; these advisories will never be fixed in it. -->
+    <ItemGroup>
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-x5qj-9vmx-7g6g" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-2xjx-v99w-gqf3" />
+        <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-6px8-22w5-w334" />
+    </ItemGroup>
+
     <ItemGroup>
         <PackageReference Include="xunit" Version="2.9.3" />
         <PackageReference Include="FluentAssertions" Version="7.2.0" />
     </ItemGroup>
 
-    <!-- 17.14 ships no test host below net8.0, so the netcoreapp3.1 and net6.0 legs take the last one that does. -->
-    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1' or '$(TargetFramework)' == 'net6.0'">
+    <!--
+      Each leg takes the newest test host and xunit adapter that still run on it. 17.14 ships no test host below net8.0,
+      so the netcoreapp3.1, net5.0 and net6.0 legs take 17.11; 17.3 is the last with a netcoreapp2.x host.
+    -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp2.2'">
+        <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.3.3" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1' or '$(TargetFramework)' == 'net5.0' or '$(TargetFramework)' == 'net6.0'">
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     </ItemGroup>
 
-    <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp3.1' and '$(TargetFramework)' != 'net6.0'">
+    <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp2.2' and '$(TargetFramework)' != 'netcoreapp3.1' and '$(TargetFramework)' != 'net5.0' and '$(TargetFramework)' != 'net6.0'">
         <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     </ItemGroup>
 
-    <!-- The last runner with a netcoreapp3.1 adapter; every other leg takes the current one. -->
-    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1'">
+    <!-- 2.4.3 is the last adapter for netcoreapp2.x and 2.4.5 the last for netcoreapp3.1 and net5.0; every other leg takes the current one. -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp2.2'">
+        <PackageReference Include="xunit.runner.visualstudio" Version="2.4.3" PrivateAssets="all" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(TargetFramework)' == 'netcoreapp3.1' or '$(TargetFramework)' == 'net5.0'">
         <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5" PrivateAssets="all" />
     </ItemGroup>
 
-    <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp3.1'">
+    <ItemGroup Condition="'$(TargetFramework)' != 'netcoreapp2.2' and '$(TargetFramework)' != 'netcoreapp3.1' and '$(TargetFramework)' != 'net5.0'">
         <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" PrivateAssets="all" />
     </ItemGroup>
 

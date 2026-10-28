@@ -2,7 +2,7 @@
 <!--
   Coverage settings for `dotnet test`, passed with the settings switch. The collector is the one that ships
   with Microsoft.NET.Test.Sdk, so no test project needs an extra package reference, and it runs on the
-  net472 and netcoreapp3.1 legs as well as the modern ones.
+  net472, netcoreapp2.2 and netcoreapp3.1 legs as well as the modern ones.
 
   Only the two shipping assemblies are instrumented: the test assemblies and everything from NuGet
   would otherwise dominate the totals.

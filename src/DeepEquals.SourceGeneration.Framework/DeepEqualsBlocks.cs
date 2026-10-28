@@ -4,9 +4,10 @@
 
 // ReSharper disable InconsistentNaming
 
-// Absent from the netstandard2.1 asset, which serves netcoreapp3.1 to net5.0: System.IO.Hashing does not support them
-// without a build warning. The generator probes for this type and keeps the per-element path where it is missing.
-#if !NETSTANDARD2_1
+// Absent from the netstandard2.1 asset, which serves netcoreapp3.x, and the net5.0 asset: System.IO.Hashing does not
+// support those runtimes without a build warning. The generator probes for this type and keeps the per-element path
+// where it is missing.
+#if !NETSTANDARD2_1 && !NET5_0
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;

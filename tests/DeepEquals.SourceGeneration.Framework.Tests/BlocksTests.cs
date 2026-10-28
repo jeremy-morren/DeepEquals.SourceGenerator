@@ -2,8 +2,8 @@
 // Source code is available at https://github.com/jeremy-morren/DeepEquals.SourceGenerator
 // Use of this source code is governed by the MIT License as found in the LICENSE.txt file
 
-// netcoreapp3.1 resolves the netstandard2.1 asset, which has no block helpers on purpose.
-#if !NETCOREAPP3_1
+// netcoreapp3.1 resolves the netstandard2.1 asset and net5.0 the net5.0 asset, neither of which has block helpers, on purpose.
+#if !NETCOREAPP3_1 && !NET5_0
 using System;
 using System.Collections;
 using System.Collections.Generic;
